@@ -532,18 +532,9 @@ class _KioskMapEditorState extends State<_KioskMapEditor> {
     if (name.text.trim().length < 2) {
       setState(() => error = 'Enter a kiosk name.'); return;
     }
-    final data = widget.original;
-    final requiredPrices = ['digitalPriceMinor', 'printPriceMinor',
-      'bundlePriceMinor'];
-    if (requiredPrices.any((key) => data[key] is! num)) {
-      setState(() => error = 'Photo checkout settings are incomplete. Configure existing prices first.');
-      return;
-    }
     setState(() { saving = true; error = null; });
     try {
-      await widget.repository.request('savePhotoSettings', {
-        for (final key in requiredPrices) key: (data[key] as num).toInt(),
-        'largePrintSurchargeMinor': (data['largePrintSurchargeMinor'] as num?)?.toInt() ?? 0,
+      await widget.repository.request('savePhotoKioskLocation', {
         'kioskName': name.text.trim(),
         'kioskLatitude': selected.latitude,
         'kioskLongitude': selected.longitude,
@@ -578,7 +569,10 @@ class _KioskMapEditorState extends State<_KioskMapEditor> {
                         point.latitude <= VenueConfiguration.north! &&
                         point.longitude >= VenueConfiguration.west! &&
                         point.longitude <= VenueConfiguration.east!) {
-                      setState(() => selected = point);
+                      setState(() {
+                        selected = point;
+                        error = null;
+                      });
                     } else { setState(() => error = 'Choose a point inside the park.'); }
                   }), children: [
                     const ProviderTileLayer(),

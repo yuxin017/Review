@@ -40,6 +40,26 @@ function createParkManagementHandlers({db,FieldValue,clock=()=>new Date(),fetchW
     for(const [key,bound]of [['kioskLatitude',90],['kioskLongitude',180]]){if(d[key]!==null&&d[key]!==undefined&&(!Number.isFinite(d[key])||Math.abs(d[key])>bound))fail('invalid-argument','Enter the kiosk’s actual coordinates.');fields[key]=d[key]??null;}
     await db.doc('parkSettings/photos').set({...fields,updatedAt:FieldValue.serverTimestamp(),updatedBy:uid},{merge:true});await audit(uid,'photo_prices_saved','photos');return{saved:true};
   }
+  async function savePhotoKioskLocation(request) {
+    const uid = await access(request);
+    const {kioskName, kioskLatitude, kioskLongitude} = request.data;
+    const name = text(kioskName, 2, 100, 'the kiosk name');
+    if (!Number.isFinite(kioskLatitude) || Math.abs(kioskLatitude) > 90 ||
+        !Number.isFinite(kioskLongitude) || Math.abs(kioskLongitude) > 180) {
+      fail('invalid-argument', 'Choose a valid kiosk location on the map.');
+    }
+    const updatedAt = FieldValue.serverTimestamp();
+    const batch = db.batch();
+    batch.set(db.doc('parkSettings/photos'), {
+      kioskName: name, kioskLatitude, kioskLongitude, updatedAt, updatedBy: uid,
+    }, {merge: true});
+    batch.set(db.collection('adminAudit').doc(), {
+      actorUid: uid, action: 'photo_kiosk_location_saved',
+      subject: 'photos', createdAt: updatedAt,
+    });
+    await batch.commit();
+    return {saved: true};
+  }
   async function saveReward(request){
     const uid=await access(request),d=request.data,id=d.id??crypto.randomUUID();if(!refId(id))fail('invalid-argument','Choose a valid reward.');
     if(!['dining','shopping','photo'].includes(d.category))fail('invalid-argument','Choose a reward category.');
@@ -113,6 +133,6 @@ function createParkManagementHandlers({db,FieldValue,clock=()=>new Date(),fetchW
     const redeemed=vouchers.filter(v=>v.status==='used').length;
     return{start:start.toISOString(),end:end.toISOString(),currency:'MYR',summary:{revenueMinor:[...daily.values()].reduce((n,d)=>n+d.revenueMinor,0),ticketOrders:orders.filter(o=>o.status==='completed').length,photoOrders:photos.filter(o=>o.status==='confirmed').length,parkAdmissions:admissions.length,rideAdmissions:visits.length,reservations:reservations.length,cancellations:reservations.filter(r=>r.status==='cancelled').length,vouchersIssued:vouchers.length,vouchersRedeemed:redeemed,voucherUseEvents:voucherUses.length,voucherRedemptionRate:vouchers.length?Math.round(redeemed/vouchers.length*1000)/10:0},daily:[...daily.values()].sort((a,b)=>a.day.localeCompare(b.day)),topProducts:[...products.values()].sort((a,b)=>b.revenueMinor-a.revenueMinor).slice(0,10),topAttractions:[...rideCounts].map(([name,visits])=>({name,visits})).sort((a,b)=>b.visits-a.visits).slice(0,10)};
   }
-  return{saveCampaign,saveLoyalty,savePhotoSettings,saveReward,saveWeather,refreshWeather,claimWeather,report,runWeather};
+  return{saveCampaign,saveLoyalty,savePhotoSettings,savePhotoKioskLocation,saveReward,saveWeather,refreshWeather,claimWeather,report,runWeather};
 }
 module.exports={createParkManagementHandlers,parkDay};
