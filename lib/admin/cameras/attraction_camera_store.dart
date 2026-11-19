@@ -15,6 +15,14 @@ class AttractionCameraStore {
   CollectionReference<Map<String, dynamic>> get assignments =>
       db.collection('attractionCameras');
 
+  // PARKSMART_V16_REFUND_CROWD_HISTORY: only anonymous counts, no image/video/face data.
+  CollectionReference<Map<String,dynamic>> get crowdCounts =>
+      db.collection('attractionCrowdCounts');
+
+  Future<void> publishCrowdCount(String id,String session,int count) =>
+      crowdCounts.doc(id).set({'session':session,'ownerUid':uid,
+        'count':count,'updatedAt':FieldValue.serverTimestamp()});
+
   DocumentReference<Map<String, dynamic>> broadcast(String attractionId) =>
       db.collection('cameraBroadcasts').doc(attractionId);
 

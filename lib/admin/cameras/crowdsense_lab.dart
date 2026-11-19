@@ -32,6 +32,7 @@ class _CrowdSenseLabState extends State<CrowdSenseLab> {
   final Map<String, List<CrowdSensorReading>> _history = {};
   final Map<String, DateTime> _lastSeen = {};
   Timer? _clock;
+  Set<String> _freshCameraIds = {}; // PARKSMART_V15_PAYMENT_CROWD
   bool _whatIf = false;
   int _capacity = 3;
   String _closed = '';
@@ -40,9 +41,8 @@ class _CrowdSenseLabState extends State<CrowdSenseLab> {
   void initState() {
     super.initState();
     widget.readings.addListener(_collect);
-    _clock = Timer.periodic(const Duration(seconds: 2), (_) {
-      if (mounted) setState(() {}); // expire stale camera samples
-    });
+    // Update ONLY when a camera count becomes stale, not every two seconds.
+    _clock = Timer.periodic(const Duration(seconds: 3), (_) => _refreshFreshness());
     _collect();
   }
 
@@ -63,9 +63,25 @@ class _CrowdSenseLabState extends State<CrowdSenseLab> {
     super.dispose();
   }
 
+  // Avoid rebuilding the full camera overview while there are 0 live cameras.
+  void _refreshFreshness() {
+    if (!mounted) return;
+    final now = DateTime.now();
+    final fresh = <String>{
+      for (final item in widget.readings.value.entries)
+        if (item.value.isRecent(now)) item.key,
+    };
+    if (!setEquals(_freshCameraIds, fresh)) {
+      _freshCameraIds = fresh;
+      setState(() {});
+    }
+  }
+
   void _collect() {
+    var changed = false;
     for (final entry in widget.readings.value.entries) {
       if (_lastSeen[entry.key] == entry.value.receivedAt) continue;
+      changed = true;
       _lastSeen[entry.key] = entry.value.receivedAt;
       final list = _history.putIfAbsent(entry.key, () => []);
       list.add(entry.value);
@@ -75,7 +91,13 @@ class _CrowdSenseLabState extends State<CrowdSenseLab> {
       );
       if (list.length > 60) list.removeRange(0, list.length - 60);
     }
-    if (mounted) setState(() {});
+    if (changed && mounted) {
+      _freshCameraIds = {
+        for (final item in widget.readings.value.entries)
+          if (item.value.isRecent(DateTime.now())) item.key,
+      };
+      setState(() {});
+    }
   }
 
   List<CrowdSenseZone> _zones() {

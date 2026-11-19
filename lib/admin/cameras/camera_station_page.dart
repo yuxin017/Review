@@ -37,6 +37,8 @@ class _CameraStationPageState extends State<CameraStationPage>
   RTCPeerConnection? _peer;
   RTCDataChannel? _channel;
   Timer? _heartbeat;
+  DateTime? _lastCountPublished; // PARKSMART_V16_REFUND_CROWD_HISTORY
+  bool _countPublishing=false;
   String? _selected, _session, _viewId, _error;
   CameraHeatmap? _heat;
   bool _working = false, _pinging = false;
@@ -76,6 +78,13 @@ class _CameraStationPageState extends State<CameraStationPage>
     }).toList();
     final heat = CameraHeatmap.fromBoxes(boxes);
     setState(() => _heat = heat);
+    // Publish at most once per 5 seconds even when nobody views the feed.
+    final now=DateTime.now();
+    if (!_countPublishing && (_lastCountPublished == null ||
+        now.difference(_lastCountPublished!) >= const Duration(seconds:5))) {
+      _lastCountPublished=now;
+      unawaited(_publishAnonymousCount(heat.count));
+    }
     final channel = _channel;
     if (channel?.state == RTCDataChannelState.RTCDataChannelOpen) {
       try {
@@ -84,6 +93,17 @@ class _CameraStationPageState extends State<CameraStationPage>
         // The viewer can disconnect between the state check and send.
       }
     }
+  }
+
+  Future<void> _publishAnonymousCount(int count) async {
+    final id=_selected,session=_session;
+    if (id==null || session==null || _countPublishing) return;
+    _countPublishing=true;
+    try {
+      await widget.store.publishCrowdCount(id,session,count);
+    } catch (_) {
+      // A lost camera assignment/session must not publish simulated data.
+    } finally {_countPublishing=false;}
   }
 
   Future<void> _start(String id) async {
@@ -116,6 +136,7 @@ class _CameraStationPageState extends State<CameraStationPage>
         return;
       }
       _session = session;
+      _lastCountPublished=null;
       _preview.srcObject = stream;
       await _native.invokeMethod<void>('start', {
         'trackId': stream.getVideoTracks().single.id,

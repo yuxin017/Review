@@ -28,6 +28,26 @@ class _LiveCamerasPanelState extends State<LiveCamerasPanel> {
   String? _error;
   final ValueNotifier<Map<String, CrowdSensorReading>> _sensorReadings =
       ValueNotifier(<String, CrowdSensorReading>{});
+  StreamSubscription<QuerySnapshot<Map<String,dynamic>>>? _countSub; // PARKSMART_V16_REFUND_CROWD_HISTORY
+
+  @override
+  void initState() {
+    super.initState();
+    _countSub=widget.store.crowdCounts.snapshots().listen((snap) {
+      final now=DateTime.now();
+      final readings=<String,CrowdSensorReading>{};
+      for (final doc in snap.docs) {
+        final d=doc.data(),time=d['updatedAt'];
+        if (time is! Timestamp || d['count'] is! int ||
+            d['count']<0 || d['count']>60) continue;
+        final reading=CrowdSensorReading(d['count'] as int,time.toDate());
+        if (reading.isRecent(now)) readings[doc.id]=reading;
+      }
+      if (mounted) _sensorReadings.value=readings;
+    },onError:(Object e) {
+      // Overview can still show WebRTC readings if Firestore is unavailable.
+    });
+  }
 
   void _onCameraCount(String attractionId, int count) {
     if (!mounted) return;
@@ -39,6 +59,7 @@ class _LiveCamerasPanelState extends State<LiveCamerasPanel> {
 
   @override
   void dispose() {
+    _countSub?.cancel();
     _sensorReadings.dispose();
     super.dispose();
   }
@@ -218,11 +239,17 @@ class _CameraTileState extends State<_CameraTile> {
   late final _feed = widget.store.broadcast(widget.place.id).snapshots();
   Timer? _clock;
   String? _watching;
+  Map<String, dynamic>? _broadcastData; // PARKSMART_V15_PAYMENT_CROWD
+  bool _wasOnline = false;
 
   @override
   void initState() {
     super.initState();
-    _clock = Timer.periodic(const Duration(seconds: 3), (_) => setState(() {}));
+    _clock = Timer.periodic(const Duration(seconds: 3), (_) {
+      if (!mounted || _broadcastData == null) return;
+      final current = AttractionCameraStore.isFresh(_broadcastData, DateTime.now());
+      if (_wasOnline != current) setState(() => _wasOnline = current);
+    });
   }
 
   @override
@@ -237,9 +264,11 @@ class _CameraTileState extends State<_CameraTile> {
         stream: _feed,
         builder: (context, snapshot) {
           final data = snapshot.data?.data();
+          _broadcastData = data;
           final online =
               !snapshot.hasError &&
               AttractionCameraStore.isFresh(data, DateTime.now());
+          _wasOnline = online;
           final session = online ? data!['session'] as String : null;
           final viewing = session != null && session == _watching;
           return AdminCard(

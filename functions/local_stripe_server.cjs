@@ -10,6 +10,8 @@ const {getFirestore, FieldValue} = require('firebase-admin/firestore');
 const {createStripeGateway,verifyStripeEvent} = require('./src/stripe_ticket_gateway');
 const {createCommerceStripeGateway} = require('./src/stripe_commerce_gateway');
 const {createPhotoHandlers} = require('./src/photos');
+const {createCommerceOperations} = require('./src/stripe_commerce_operations'); // PARKSMART_V15_PAYMENT_CROWD
+const {createRefundRequestHandlers} = require('./src/stripe_refund_requests'); // PARKSMART_V16_REFUND_CROWD_HISTORY
 
 const port = Number(process.env.LOCAL_STRIPE_PORT || 8788);
 const host = '127.0.0.1';
@@ -38,7 +40,18 @@ const commerce=createCommerceStripeGateway({db:getFirestore(),FieldValue,project
     mailReady:()=>true}),
   getStripeKey:()=>process.env.STRIPE_SECRET_KEY,
 });
+const operations=createCommerceOperations({
+  db:getFirestore(),FieldValue,commerce,
+  getStripeKey:()=>process.env.STRIPE_SECRET_KEY,
+});
+const refundRequests=createRefundRequestHandlers({db:getFirestore(),FieldValue,operations});
 const handlers = {
+  '/stripeSouvenirRefundRequest':refundRequests.requestRefund,
+  '/stripeSouvenirRefundDecision':refundRequests.decideRefund,
+  '/stripeCommerceRecover':refundRequests.recoverCheckout,
+  '/stripeCommerceCancel':operations.cancel,
+  // v16: removed direct refund route; approval is mandatory.
+
   '/stripeSouvenirQuote':commerce.quote,
   '/stripeCommerceCheckout':commerce.start,
   '/stripeCommerceStatus':commerce.status,
@@ -92,6 +105,11 @@ http.createServer(async(req,res)=>{
       // Signature verification MUST occur before any payment/order mutation.
       const event=verifyStripeEvent(raw,req.headers['stripe-signature'],process.env.STRIPE_WEBHOOK_SECRET);
       const session=event.data?.object;
+      if(['refund.created','refund.updated','refund.failed'].includes(event.type)) {
+        const verified=await operations.onRefundEvent(event);
+        if (verified) await refundRequests.syncRefundStatus(event.data?.object?.metadata?.orderId);
+        reply(res,200,{received:true});return;
+      }
       if(['souvenir','photo'].includes(session?.metadata?.checkoutType)) {
         if(['checkout.session.completed','checkout.session.async_payment_succeeded'].includes(event.type) && session.payment_status==='paid') {
           await commerce.fulfill(session);
@@ -134,3 +152,16 @@ http.createServer(async(req,res)=>{
   console.log('Use Stripe CLI `stripe listen --forward-to 127.0.0.1:'+port+'/stripeTicketWebhook` in a separate terminal.');
   console.log('This process must remain running while you test payment.');
 });
+
+// PARKSMART_V15_PAYMENT_CROWD: a bounded reconciliation pass while local TEST server runs.
+let commerceReconcileBusy=false;
+const commerceReconcileTimer=setInterval(async()=>{
+  if(commerceReconcileBusy)return;
+  commerceReconcileBusy=true;
+  try{const summary=await operations.reconcilePending({limit:35});
+    if(summary.expired||summary.paid||summary.refundsSettled||summary.errors||summary.missing)
+      console.log('[commerce-reconcile]',summary);
+  }catch(e){console.error('[commerce-reconcile]',e);}
+  finally{commerceReconcileBusy=false;}
+},60000);
+commerceReconcileTimer.unref();

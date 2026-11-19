@@ -8,7 +8,8 @@ import '../../commerce/stripe_commerce_client.dart';
 import '../widgets/souvenir_product_image.dart';
 
 class SouvenirShopPage extends StatefulWidget {
-  const SouvenirShopPage({super.key});
+  const SouvenirShopPage({super.key, this.initialOrders = false});
+  final bool initialOrders;
   @override
   State<SouvenirShopPage> createState() => _SouvenirShopPageState();
 }
@@ -18,6 +19,8 @@ class _SouvenirShopPageState extends State<SouvenirShopPage> with WidgetsBinding
   final Map<String,int> _cart = {};
   String? _shopId, _pendingPaymentId, _pendingRequestId, _notice;
   bool _busy = false, _orders = false;
+  List<Map<String,dynamic>>? _failedCheckoutItems; // PARKSMART_V16_REFUND_CROWD_HISTORY
+  bool _checkoutFailed = false;
   Timer? _paymentStatusTimer;
   bool _paymentCheckRunning = false;
   int _paymentAutoAttempts = 0;
@@ -33,6 +36,7 @@ class _SouvenirShopPageState extends State<SouvenirShopPage> with WidgetsBinding
   @override
   void initState() {
     super.initState();
+    _orders = widget.initialOrders;
     WidgetsBinding.instance.addObserver(this);
     _loadPending();
   }
@@ -87,7 +91,11 @@ class _SouvenirShopPageState extends State<SouvenirShopPage> with WidgetsBinding
 
   Future<void> _checkPayment({bool silent = false}) async {
     final id = _pendingPaymentId;
-    if (id == null || _paymentCheckRunning || (silent && _busy)) return;
+    if (id == null || (silent && _busy)) return;
+    if (_paymentCheckRunning) {
+      if (!silent && mounted) setState(() => _notice='Payment status is already being checked.');
+      return;
+    }
     _paymentCheckRunning = true;
     if (!silent) setState(() {_busy = true; _notice = null;});
     try {
@@ -126,6 +134,47 @@ class _SouvenirShopPageState extends State<SouvenirShopPage> with WidgetsBinding
       if (mounted && !silent) setState(() => _busy = false);
     }
   }
+  // PARKSMART_V15_PAYMENT_CROWD: cancellation requires Stripe's EXPIRED state.
+  Future<void> _cancelPendingCheckout() async {
+    final id = _pendingPaymentId;
+    if (id == null || _busy) return;
+    final agreed = await showDialog<bool>(context: context, builder: (ctx) =>
+      AlertDialog(title: const Text('Cancel unpaid checkout?'),
+        content: const Text('Stripe must confirm that the payment has not completed. Only then will reserved stock be released.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Keep Checkout')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Cancel Checkout')),
+        ]));
+    if (agreed != true || !mounted) return;
+    setState(() { _busy = true; _notice = null; });
+    try {
+      final result = await _client.cancel(id);
+      if (!mounted) return;
+      final status = result['status'];
+      if (status == 'expired') {
+        await (await SharedPreferences.getInstance()).remove(_pendingKey);
+        if (!mounted) return;
+        _paymentStatusTimer?.cancel();
+        setState(() {
+          _pendingPaymentId = null;
+          _pendingRequestId = null;
+          _notice = 'Checkout cancelled. Stripe confirmed expiry and reserved stock was restored.';
+        });
+      } else if (status == 'paid') {
+        setState(() => _notice = 'Payment already completed. Checking your order...');
+      } else {
+        setState(() => _notice = 'Payment is still processing. Stock remains reserved until Stripe confirms it has ended.');
+      }
+    } catch (error) {
+      if (mounted) setState(() => _notice = 'Cancellation not confirmed: $error');
+    } finally {
+      if (mounted) {
+        setState(() => _busy = false);
+        if (_pendingPaymentId != null) _startAutomaticPaymentCheck();
+      }
+    }
+  }
+
   Future<void> _checkout(List<QueryDocumentSnapshot<Map<String,dynamic>>> products) async {
     if (_busy || _cart.isEmpty || _pendingPaymentId!=null) return;
     final selected = <Map<String,dynamic>>[];
@@ -148,7 +197,9 @@ class _SouvenirShopPageState extends State<SouvenirShopPage> with WidgetsBinding
       if (agreed != true || !mounted) return;
       final requestId = _pendingRequestId ?? _newId();
       _pendingRequestId = requestId;
+      _failedCheckoutItems = selected;
       final response = await _client.checkout('souvenir',requestId,{'items':selected});
+      _checkoutFailed=false;
       if (!mounted) return;
       _pendingPaymentId=response['orderId'] as String?;
       final id=_pendingPaymentId;
@@ -162,13 +213,74 @@ class _SouvenirShopPageState extends State<SouvenirShopPage> with WidgetsBinding
         throw StateError('No checkout URL. Please check payment status.');
       }
     } catch(e) {
-      if(mounted) setState(() => _notice=e.toString());
+      if(mounted) setState(() { _checkoutFailed=true; _notice='Checkout could not open. Do not pay again until status is checked. $e'; });
+      if (_pendingPaymentId == null && _pendingRequestId != null) {
+        try {
+          final recovered=await _client.recoverCheckout(_pendingRequestId!);
+          if (mounted && recovered['orderId'] is String) {
+            final id=recovered['orderId'] as String;
+            await (await SharedPreferences.getInstance()).setString(_pendingKey,id);
+            if (mounted) setState(() => _pendingPaymentId=id);
+          }
+        } catch (_) { /* Keep the same request reference for safe retry. */ }
+      }
     } finally {
       if (mounted) {
         setState(() => _busy = false);
         if (_pendingPaymentId != null) _startAutomaticPaymentCheck();
       }
     }
+  }
+
+  // PARKSMART_V16_REFUND_CROWD_HISTORY: retry exactly the same checkout reference.
+  Future<void> _retryFailedCheckout() async {
+    final id = _pendingRequestId;
+    final items = _failedCheckoutItems;
+    if (_busy || id == null || items == null) return;
+    setState(() {_busy=true;_notice=null;});
+    try {
+      final res=await _client.checkout('souvenir',id,{'items':items});
+      if (!mounted) return;
+      final orderId=res['orderId'] as String?;
+      if (orderId != null) {
+        await (await SharedPreferences.getInstance()).setString(_pendingKey,orderId);
+        if (mounted) setState(() => _pendingPaymentId=orderId);
+      }
+      if (res['url'] is String) {
+        await _client.openCheckout(res['url'] as String);
+        if (mounted) setState(() => _checkoutFailed=false);
+      } else if (res['status']=='paid') {
+        await _checkPayment(silent:true);
+        if (mounted) setState(() => _checkoutFailed=false);
+      } else if (mounted) {
+        setState(() => _notice='Checkout is pending. Use Check Payment Status.');
+      }
+    } catch(e) {
+      if (mounted) setState(() => _notice='Retry failed: $e');
+    } finally {
+      if (mounted) setState(() => _busy=false);
+    }
+  }
+
+  // PARKSMART_REFUND_FORM_V18: do not close dialog before API confirmation.
+  Future<void> _requestSouvenirRefund(String orderId) async {
+    if (_busy || !mounted) return;
+    final result = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => _ParkSmartRefundRequestDialogV18(
+        client: _client,
+        orderId: orderId,
+      ),
+    );
+    if (!mounted || result == null) return;
+    final message = result == 'requested'
+        ? 'Refund request submitted. Waiting for Admin approval.'
+        : 'Your refund request is already being reviewed. Status: $result.';
+    setState(() => _notice = message);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
+    );
   }
 
   // SOUVENIR_UI_V8: owner-only order list and a responsive product catalogue.
@@ -223,8 +335,13 @@ class _SouvenirShopPageState extends State<SouvenirShopPage> with WidgetsBinding
             final order = orders[index - 1];
             final data = order.data();
             final rows = data['items'] as List? ?? [];
-            final status = (data['fulfillmentStatus'] ?? 'awaiting_collection')
-                .toString().replaceAll('_', ' ');
+            final refundStatus = (data['refundStatus'] ?? '').toString();
+            final status = data['status'] == 'refunded' ? 'refunded'
+                : refundStatus=='requested' ? 'refund requested'
+                : refundStatus=='pending' ? 'refund processing'
+                : refundStatus=='rejected' ? 'refund rejected'
+                : (data['fulfillmentStatus'] ?? 'awaiting_collection')
+                    .toString().replaceAll('_', ' ');
             final price = (data['totalMinor'] as num?)?.toInt() ?? 0;
             final paidAt = data['paidAt'] as Timestamp?;
             final date = paidAt?.toDate();
@@ -257,6 +374,14 @@ class _SouvenirShopPageState extends State<SouvenirShopPage> with WidgetsBinding
                           Text(_money((item['lineMinor'] as num?)?.toInt() ?? 0),
                               style: const TextStyle(fontWeight: FontWeight.w600)),
                         ])),
+                  if (data['status']=='paid' &&
+                      data['fulfillmentStatus']=='awaiting_collection' &&
+                      !['requested','pending','succeeded','rejected'].contains(refundStatus))
+                    Align(alignment:Alignment.centerRight,
+                      child:TextButton.icon(
+                        onPressed:_busy ? null : ()=>_requestSouvenirRefund(order.id),
+                        icon:const Icon(Icons.currency_exchange_outlined,size:17),
+                        label:const Text('Request Refund'))),
                   const SizedBox(height: 9),
                   Row(children: [
                     Container(
@@ -334,9 +459,18 @@ class _SouvenirShopPageState extends State<SouvenirShopPage> with WidgetsBinding
         MaterialBanner(
           content: const Text('Payment verification pending. This page checks automatically; you can also check manually.'),
           actions: [TextButton(
-            onPressed: _busy || _paymentCheckRunning ? null : () => _checkPayment(),
+            onPressed: _busy ? null : () => _checkPayment(),
             child: const Text('Check Payment Status'),
+          ), TextButton(
+            onPressed: _busy ? null : _cancelPendingCheckout,
+            child: const Text('Cancel Checkout'),
           )],
+        ),
+      if (_checkoutFailed && _pendingRequestId != null && _failedCheckoutItems != null)
+        MaterialBanner(
+          content: const Text('Checkout was interrupted. Retry the same request to avoid duplicate stock reservations.'),
+          actions: [TextButton(onPressed: _busy ? null : _retryFailedCheckout,
+            child: const Text('Retry Checkout'))],
         ),
       if (_notice != null)
         Padding(padding: const EdgeInsets.fromLTRB(14, 8, 14, 4),
@@ -703,5 +837,151 @@ class _SouvenirShopPageState extends State<SouvenirShopPage> with WidgetsBinding
         },
       );
     },
+  );
+}
+
+
+// PARKSMART_REFUND_FORM_V18: validated form keeps network errors visible in dialog.
+class _ParkSmartRefundRequestDialogV18 extends StatefulWidget {
+  const _ParkSmartRefundRequestDialogV18({
+    required this.client,
+    required this.orderId,
+  });
+
+  final StripeCommerceClient client;
+  final String orderId;
+
+  @override
+  State<_ParkSmartRefundRequestDialogV18> createState() =>
+      _ParkSmartRefundRequestDialogV18State();
+}
+
+class _ParkSmartRefundRequestDialogV18State
+    extends State<_ParkSmartRefundRequestDialogV18> {
+  final _form = GlobalKey<FormState>();
+  final _reason = TextEditingController();
+  bool _submitting = false;
+  String? _serverError;
+
+  @override
+  void dispose() {
+    _reason.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (_submitting || !_form.currentState!.validate()) return;
+    FocusScope.of(context).unfocus();
+    setState(() {
+      _submitting = true;
+      _serverError = null;
+    });
+    try {
+      final result = await widget.client.requestSouvenirRefund(
+        widget.orderId,
+        _reason.text.trim(),
+      );
+      if (!mounted) return;
+      final status = (result['status'] ?? '').toString();
+      if (['requested', 'processing', 'approved', 'needs_review']
+          .contains(status)) {
+        Navigator.of(context).pop(status);
+      } else {
+        setState(() => _serverError =
+            'Unexpected refund response. Please check your order status.');
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() => _serverError =
+            'Request could not be submitted: $error');
+      }
+    } finally {
+      if (mounted) setState(() => _submitting = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('Request a Souvenir Refund'),
+    content: ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 430),
+      child: SingleChildScrollView(
+        child: Form(
+          key: _form,
+          autovalidateMode: AutovalidateMode.onUserInteraction,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Tell us why you are requesting a refund. '
+                'An administrator must approve your request before Stripe '
+                'will process a refund.',
+              ),
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: _reason,
+                enabled: !_submitting,
+                autofocus: true,
+                minLines: 2,
+                maxLines: 4,
+                maxLength: 500,
+                textCapitalization: TextCapitalization.sentences,
+                decoration: const InputDecoration(
+                  labelText: 'Reason *',
+                  helperText: 'Required · 8–500 characters',
+                  border: OutlineInputBorder(),
+                  alignLabelWithHint: true,
+                ),
+                validator: (value) {
+                  final reason = (value ?? '').trim();
+                  if (reason.isEmpty) return 'Reason is required.';
+                  if (reason.length < 8) {
+                    return 'Please provide at least 8 characters.';
+                  }
+                  if (reason.length > 500) {
+                    return 'Reason must not exceed 500 characters.';
+                  }
+                  return null;
+                },
+              ),
+              if (_serverError != null) ...[
+                const SizedBox(height: 10),
+                Text(
+                  _serverError!,
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.error,
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: _submitting ? null : () => Navigator.of(context).pop(),
+        child: const Text('Back'),
+      ),
+      FilledButton(
+        onPressed: _submitting ? null : _submit,
+        child: _submitting
+            ? const Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SizedBox(
+                    height: 16,
+                    width: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                  SizedBox(width: 8),
+                  Text('Submitting...'),
+                ],
+              )
+            : const Text('Submit Request'),
+      ),
+    ],
   );
 }

@@ -4,6 +4,9 @@ import 'dart:typed_data';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
+import '../../commerce/stripe_commerce_client.dart'; // PARKSMART_V15_PAYMENT_CROWD
 import '../admin_models.dart';
 import '../admin_widgets.dart';
 
@@ -34,6 +37,8 @@ class ParkSouvenirOrder {
   String get ownerUid => (data['ownerUid'] ?? '').toString();
   String get fulfillment => (data['fulfillmentStatus'] ?? 'awaiting_collection').toString();
   bool get isPaid => data['status'] == 'paid' && data['currency'] == 'MYR';
+  bool get isRefunded => data['status'] == 'refunded';
+  bool get refundInProgress => ['requested','pending'].contains(data['refundStatus']);
   int get amountMinor => _amount(data['totalMinor']);
   DateTime? get paidAt => adminDate(data['paidAt']);
   DateTime? get collectedAt => adminDate(data['collectedAt']);
@@ -467,8 +472,9 @@ class SouvenirOrdersAdminPage extends StatefulWidget {
 class _SouvenirOrdersAdminPageState extends State<SouvenirOrdersAdminPage> {
   String filter = 'All', search = '';
   String? markingId;
+  String? refundingId;
   bool exporting = false;
-  static const filters = ['All', 'Awaiting Collection', 'Collected'];
+  static const filters = ['All', 'Awaiting Collection', 'Collected', 'Refunded'];
 
   String buyer(String uid) {
     for (final visitor in widget.visitors) {
@@ -484,7 +490,7 @@ class _SouvenirOrdersAdminPageState extends State<SouvenirOrdersAdminPage> {
   }
 
   Future<void> markCollected(ParkSouvenirOrder order) async {
-    if (!order.isPaid || order.fulfillment != 'awaiting_collection' || markingId != null) return;
+    if (!order.isPaid || order.refundInProgress || order.fulfillment != 'awaiting_collection' || markingId != null) return;
     final agreed = await showDialog<bool>(context: context, builder: (ctx) => AlertDialog(
       title: const Text('Confirm souvenir collection'),
       content: Text('Have you handed every item in ${souvenirShortId(order.id)} to '
@@ -519,6 +525,35 @@ class _SouvenirOrdersAdminPageState extends State<SouvenirOrdersAdminPage> {
     } finally {
       if (mounted) setState(() => markingId = null);
     }
+  }
+
+  // PARKSMART_V16_REFUND_CROWD_HISTORY: review visitor requests before Stripe calls.
+  Future<void> reviewRefund(ParkSouvenirOrder order, String decision) async {
+    if (!order.isPaid || order.fulfillment != 'awaiting_collection' ||
+        order.data['refundStatus'] != 'requested' || refundingId != null) return;
+    final approving = decision == 'approve';
+    final agreed = await showDialog<bool>(context: context, builder: (ctx) => AlertDialog(
+      title: Text(approving ? 'Approve visitor refund request?' : 'Reject visitor refund request?'),
+      content: Text('Order ${souvenirShortId(order.id)} · ${souvenirMoney(order.amountMinor)}\n'
+        'Reason: ${order.data['refundReason'] ?? 'Not provided'}\n\n'
+        '${approving ? 'Stripe Test refund starts only after approval.' : 'The order remains paid and can then be collected.'}'),
+      actions: [TextButton(onPressed: () => Navigator.pop(ctx,false),child: const Text('Back')),
+        FilledButton(onPressed: () => Navigator.pop(ctx,true),
+          child: Text(approving ? 'Approve Refund' : 'Reject Request'))],
+    ));
+    if (agreed != true || !mounted) return;
+    setState(() => refundingId=order.id);
+    try {
+      final auth = FirebaseAuth.instanceFor(app: Firebase.app('ThemeParkAdmin'));
+      final response = await StripeCommerceClient(auth: auth).reviewSouvenirRefund(order.id, decision);
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(
+        response['status'] == 'refunded' ? 'Stripe refund confirmed; inventory restored.' :
+        response['status'] == 'rejected' ? 'Request rejected; order remains paid.' :
+        'Decision submitted; refund status is being verified.')));
+    } catch(e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Refund decision failed. Check Stripe status before retry: $e')));
+    } finally { if (mounted) setState(() => refundingId=null); }
   }
 
   // Excel/Sheets formula injection protection for user-controlled names.
@@ -591,7 +626,7 @@ class _SouvenirOrdersAdminPageState extends State<SouvenirOrdersAdminPage> {
       ))),
       actions: [
         TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close')),
-        if (order.isPaid && order.fulfillment == 'awaiting_collection')
+        if (order.isPaid && !order.refundInProgress && order.fulfillment == 'awaiting_collection')
           FilledButton(onPressed: () {
             Navigator.pop(ctx);
             markCollected(order);
@@ -642,14 +677,16 @@ class _SouvenirOrdersAdminPageState extends State<SouvenirOrdersAdminPage> {
             if (!snap.hasData) return const Center(child:Padding(
               padding: EdgeInsets.all(35),child:CircularProgressIndicator()));
             final all = [for (final doc in snap.data!.docs)
-              if (doc.data()['status'] == 'paid' && doc.data()['currency'] == 'MYR')
+              if (['paid','refunded'].contains(doc.data()['status']) && doc.data()['currency'] == 'MYR')
                 ParkSouvenirOrder(doc.id, doc.data())]
               ..sort((a,b) => (b.paidAt?.millisecondsSinceEpoch ?? 0)
                 .compareTo(a.paidAt?.millisecondsSinceEpoch ?? 0));
             final q=search.trim().toLowerCase();
             final filtered=all.where((o) {
               if(filter == 'Awaiting Collection' && o.fulfillment != 'awaiting_collection') return false;
-              if(filter == 'Collected' && o.fulfillment != 'collected') return false;
+              if(filter == 'Collected' && (o.fulfillment != 'collected' || o.isRefunded)) return false;
+              if(filter == 'Refunded' && !o.isRefunded) return false;
+              if(filter == 'Awaiting Collection' && o.isRefunded) return false;
               if(q.isEmpty) return true;
               return o.id.toLowerCase().contains(q) ||
                 buyer(o.ownerUid).toLowerCase().contains(q) ||
@@ -657,10 +694,14 @@ class _SouvenirOrdersAdminPageState extends State<SouvenirOrdersAdminPage> {
                 o.lines.any((x) => (x['name'] ?? '').toString().toLowerCase().contains(q));
             }).toList();
             final pending = all.where((o)=>o.isPaid && o.fulfillment=='awaiting_collection').length;
+            final refunds = all.where((o)=>o.isRefunded).length;
+            final requests = all.where((o)=>o.data['refundStatus']=='requested').length;
             final collected = all.where((o)=>o.isPaid && o.fulfillment=='collected').length;
             return Column(crossAxisAlignment: CrossAxisAlignment.stretch,children: [
               Wrap(spacing: 12, runSpacing: 8, children: [
-                Chip(label: Text('${all.length} paid orders')),
+                Chip(label: Text('${all.length} confirmed/refunded orders')),
+                Chip(label: Text('$refunds refunded')),
+                Chip(label: Text('$requests refund requests')),
                 Chip(label: Text('$pending awaiting collection')),
                 Chip(label: Text('$collected collected')),
               ]),
@@ -701,25 +742,36 @@ class _SouvenirOrdersAdminPageState extends State<SouvenirOrdersAdminPage> {
                       style:const TextStyle(color:adminMuted)),
                     const SizedBox(height: 10),
                     Wrap(spacing: 12,runSpacing: 8, children: [
-                      Chip(label:Text(order.fulfillment.replaceAll('_',' '))),
+                      Chip(label:Text(order.isRefunded ? 'refunded' :
+                        order.refundInProgress ? 'refund processing' : order.fulfillment.replaceAll('_',' '))),
                       Text(souvenirMoney(order.amountMinor),style:const TextStyle(
                         fontWeight:FontWeight.w800,fontSize:17,color:adminRose)),
                       TextButton.icon(onPressed:()=>details(order,shops),
                         icon:const Icon(Icons.receipt_long_outlined),label:const Text('Details')),
-                      if(order.isPaid && order.fulfillment == 'awaiting_collection')
+                      if(order.isPaid && !order.refundInProgress && order.fulfillment == 'awaiting_collection')
                         FilledButton.icon(
                           onPressed:markingId==null ? ()=>markCollected(order):null,
                           icon:markingId==order.id
                             ? const SizedBox(width:15,height:15,child:CircularProgressIndicator(strokeWidth:2))
                             : const Icon(Icons.check_circle_outline),
                           label:const Text('Mark Collected')),
+                      if(order.isPaid && order.data['refundStatus']=='requested' &&
+                          order.fulfillment=='awaiting_collection') ...[
+                        FilledButton.icon(
+                          onPressed:refundingId==null ? ()=>reviewRefund(order,'approve') : null,
+                          icon:const Icon(Icons.verified_outlined),
+                          label:Text(refundingId==order.id ? 'Reviewing...' : 'Approve Refund')),
+                        OutlinedButton.icon(
+                          onPressed:refundingId==null ? ()=>reviewRefund(order,'reject') : null,
+                          icon:const Icon(Icons.close_rounded),
+                          label:const Text('Reject Request')),
+                      ],
                     ]),
                   ],
                 )),
               ),
               const SizedBox(height: 8),
-              const Text('Only verified paid orders appear here. Refunds and manual order edits '
-                'are intentionally disabled until secure server-side refund handling is added.',
+              const Text('Refund requires a visitor request and Admin approval. Stripe verifies payment and stock restoration.',
                 style:TextStyle(fontSize:11,color:adminMuted)),
             ]);
           },

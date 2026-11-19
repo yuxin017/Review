@@ -5,6 +5,7 @@ import 'pages/tickets_page.dart';
 import 'pages/map_page.dart';
 import 'pages/queue_page.dart';
 import 'pages/profile_page.dart';
+import 'pages/souvenir_shop_page.dart'; // PARKSMART_V16_REFUND_CROWD_HISTORY
 import 'widgets/visitor_bottom_nav.dart';
 
 class VisitorMainPage extends StatefulWidget {
@@ -46,6 +47,12 @@ class _VisitorMainPageState extends State<VisitorMainPage> {
   void initState() {
     super.initState();
     _active = this;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _commerceReturnOpened || !Uri.base.queryParameters.containsKey('commerce_payment')) return;
+      _commerceReturnOpened=true;
+      Navigator.of(context).push(MaterialPageRoute(builder: (_) =>
+        const SouvenirShopPage(initialOrders:true)));
+    });
   }
 
   @override
@@ -55,6 +62,7 @@ class _VisitorMainPageState extends State<VisitorMainPage> {
     super.dispose();
   }
 
+  bool _commerceReturnOpened = false;
   int _selectedIndex = 0;
   final _startPlace = ValueNotifier<String?>(null);
 

@@ -57,13 +57,31 @@ class StripeCommerceClient {
   Future<Map<String,dynamic>> status(String orderId) =>
       post('stripeCommerceStatus', {'orderId':orderId});
 
+  // PARKSMART_V15_PAYMENT_CROWD: verified server-only payment operations.
+  Future<Map<String, dynamic>> cancel(String orderId) =>
+      post('stripeCommerceCancel', {'orderId': orderId});
+
+  // PARKSMART_V16_REFUND_CROWD_HISTORY
+  Future<Map<String,dynamic>> requestSouvenirRefund(String orderId, String reason) =>
+      post('stripeSouvenirRefundRequest', {'orderId':orderId,'reason':reason});
+
+  Future<Map<String,dynamic>> reviewSouvenirRefund(String orderId, String decision) =>
+      post('stripeSouvenirRefundDecision', {'orderId':orderId,'decision':decision});
+
+  Future<Map<String,dynamic>> recoverCheckout(String requestId) =>
+      post('stripeCommerceRecover', {'type':'souvenir','requestId':requestId});
+
   Future<void> openCheckout(String url) async {
     final uri = Uri.tryParse(url);
     if (uri == null || uri.scheme != 'https' ||
         uri.host != 'checkout.stripe.com') {
       throw StateError('Payment service returned an unsafe payment address.');
     }
-    if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+    // PARKSMART_V16_REFUND_CROWD_HISTORY: web uses current tab, not an extra browser tab.
+    final opened = kIsWeb
+        ? await launchUrl(uri, mode: LaunchMode.platformDefault, webOnlyWindowName: '_self')
+        : await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (!opened) {
       throw StateError('Could not open the secure checkout page.');
     }
   }

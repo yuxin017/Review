@@ -241,9 +241,11 @@ class _ParkMenuManagementPageState extends State<ParkMenuManagementPage> {
           const Text('JPG / PNG / WebP · under 2 MB',
             style: TextStyle(fontSize: 12, color: adminMuted)),
           const SizedBox(height: 15),
-          const Text('Products are linked to the selected Park Facilities location. '
-              'Online checkout and stock tracking are not connected yet.',
-            style: TextStyle(color: adminMuted, fontSize: 12, height: 1.5)),
+          // PARKSMART_V15_PAYMENT_CROWD: distinguish food from live souvenir inventory.
+          Text(dining
+              ? 'Dining products are linked to Park Facilities. Online food checkout is not enabled.'
+              : 'Souvenir products are linked to Park Facilities. Stock is reserved on Stripe Checkout and managed through Souvenir Orders.',
+            style: const TextStyle(color: adminMuted, fontSize: 12, height: 1.5)),
         ]);
 
         return AlertDialog(

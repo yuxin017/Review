@@ -190,6 +190,8 @@ function createCommerceStripeGateway({db, FieldValue, photos, projectId, getStri
        session.currency!=='myr'||session.amount_total!==data.amountMinor||
        (data.sessionId && session.id!==data.sessionId)) bad('failed-precondition','Payment verification mismatch.');
     if(data.status==='paid') return 'paid';
+    // PARKSMART_V15_PAYMENT_CROWD: paid refund is an immutable terminal state.
+    if(data.status==='refunded') return 'refunded';
     if(data.status==='expired') bad('failed-precondition','Expired order received payment; needs manual refund review.');
     if(type==='souvenir') {
       await db.runTransaction(async tx=>{
@@ -258,7 +260,7 @@ function createCommerceStripeGateway({db, FieldValue, photos, projectId, getStri
     const ref=paymentRef(id),doc=await ref.get();
     if(!doc.exists||doc.data().ownerUid!==uid)bad('permission-denied','Order not found for this account.');
     const value=doc.data();
-    if(value.status==='paid'||value.status==='manual_review'||value.status==='expired'){
+    if(value.status==='paid'||value.status==='manual_review'||value.status==='expired'||value.status==='refunded'){
       return {status:value.status,orderId:id,photoOrderId:value.photoOrderId??null};
     }
     if(!value.sessionId)return {status:'pending',orderId:id,url:value.url??null};

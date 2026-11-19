@@ -1042,6 +1042,26 @@ service cloud.firestore {
       allow delete: if cameraStaff() && resource.data.ownerUid == request.auth.uid;
     }
 
+    // PARKSMART_V16_REFUND_CROWD_HISTORY: authenticated anonymous camera headcounts.
+    match /attractionCrowdCounts/{id} {
+      allow get, list: if cameraStaff();
+      function validCount() {
+        let d=request.resource.data;
+        let camera=cameraBroadcast(id);
+        return cameraStaff() && cameraAssigned(id)
+          && d.keys().hasOnly(['session','ownerUid','count','updatedAt'])
+          && d.keys().hasAll(['session','ownerUid','count','updatedAt'])
+          && d.ownerUid == request.auth.uid
+          && d.session == camera.session
+          && camera.ownerUid == request.auth.uid
+          && camera.updatedAt > request.time - duration.value(24,'s')
+          && d.count is int && d.count >= 0 && d.count <= 60
+          && d.updatedAt == request.time;
+      }
+      allow create, update: if validCount();
+      allow delete: if false;
+    }
+
     match /cameraViewRequests/{id} {
       function validOffer() {
         let data = request.resource.data;
@@ -1686,6 +1706,8 @@ service cloud.firestore {
         && resource.data.status == 'paid'
         && resource.data.currency == 'MYR'
         && resource.data.fulfillmentStatus == 'awaiting_collection'
+        && resource.data.get('refundStatus', '') != 'pending'
+        && resource.data.get('refundStatus', '') != 'requested'
         && request.resource.data.fulfillmentStatus == 'collected'
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
           'fulfillmentStatus', 'collectedAt', 'collectedByUid'])

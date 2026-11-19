@@ -1,4 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'souvenir_shop_page.dart'; // PARKSMART_V16_REFUND_CROWD_HISTORY
 import 'package:flutter/material.dart';
 import '../../photos/photo_repository.dart';
 import '../../photos/photo_order_pages.dart';
@@ -47,224 +49,111 @@ class _CombinedPurchaseHistoryPageState
   );
 }
 
+// PARKSMART_V16_REFUND_CROWD_HISTORY: three live order channels, one history.
 class PurchaseHistoryBody extends StatefulWidget {
   final List<TicketOrder> orders;
   final PhotoRepository? photos;
   final ValueChanged<TicketOrder> onTickets;
-  const PurchaseHistoryBody({
-    super.key,
-    required this.orders,
-    required this.onTickets,
-    this.photos,
-  });
+  const PurchaseHistoryBody({super.key,required this.orders,required this.onTickets,this.photos});
   @override
-  State<PurchaseHistoryBody> createState() => _PurchaseHistoryBodyState();
+  State<PurchaseHistoryBody> createState()=>_PurchaseHistoryBodyState();
 }
-
 class _PurchaseHistoryBodyState extends State<PurchaseHistoryBody> {
-  late final photoOrders =
-      widget.photos?.orders() ?? Stream<List<ParkPhoto>>.value([]);
-  String filter = 'All', query = '';
+  late final photoOrders=widget.photos?.orders() ?? Stream<List<ParkPhoto>>.value([]);
+  late final souvenirOrders=FirebaseFirestore.instance.collection('souvenirOrders')
+    .where('ownerUid',isEqualTo:FirebaseAuth.instance.currentUser?.uid ?? '').snapshots();
+  String filter='All',query='';
   @override
-  Widget build(BuildContext context) => StreamBuilder<List<ParkPhoto>>(
-    stream: photoOrders,
-    builder: (context, s) {
-      final rows =
-          <({DateTime? time, TicketOrder? ticket, ParkPhoto? photo})>[
-            if (filter != 'Photos')
-              for (final t in widget.orders)
-                (time: t.createdAt, ticket: t, photo: null),
-            if (filter != 'Tickets')
-              for (final p in s.data ?? [])
-                (
-                  time: (p.data['createdAt'] as Timestamp?)?.toDate(),
-                  ticket: null,
-                  photo: p,
-                ),
-          ]..sort(
-            (a, b) =>
-                (b.time ?? DateTime(1970)).compareTo(a.time ?? DateTime(1970)),
-          );
-      final matched = rows
-          .where(
-            (row) =>
-                '${row.ticket?.packageName ?? (row.photo?.data['items'] as List? ?? []).map((p) => p['title']).join(' ')} ${row.ticket?.reference ?? photoOrderReference(row.photo!.id)}'
-                    .toLowerCase()
-                    .contains(query.toLowerCase()),
-          )
-          .toList();
-      return ListView(
-        padding: const EdgeInsets.all(20),
-        children: [
-          Row(
-            children: [
-              for (final v in ['All', 'Tickets', 'Photos', 'Purchases'])
-                Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 2),
-                    child: ChoiceChip(
-                      label: Text(v, style: const TextStyle(fontSize: 11)),
-                      showCheckmark: false,
-                      selected: filter == v,
-                      onSelected: (_) => setState(() => filter = v),
-                    ),
-                  ),
-                ),
-            ],
-          ),
-          const SizedBox(height: 22),
-          TextField(
-            onChanged: (v) => setState(() => query = v),
-            decoration: const InputDecoration(
-              hintText: 'Search purchase or order number',
-              prefixIcon: Icon(Icons.search),
-              border: OutlineInputBorder(),
-              isDense: true,
-            ),
-          ),
-          const SizedBox(height: 23),
-          const Text(
-            'Recent Purchases',
-            style: TextStyle(fontSize: 21, fontWeight: FontWeight.w700),
-          ),
-          const SizedBox(height: 16),
-          if (s.hasError)
-            const PhotoPanel(
-              child: Text(
-                'Photo orders could not be loaded. Please reopen Purchase History.',
-              ),
-            ),
-          if (matched.isEmpty)
-            const PhotoPanel(
-              child: Padding(
-                padding: EdgeInsets.all(25),
-                child: Column(
-                  children: [
-                    Icon(
-                      Icons.receipt_long_outlined,
-                      size: 55,
-                      color: photoRose,
-                    ),
-                    SizedBox(height: 17),
-                    Text(
-                      'No purchases found',
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                    SizedBox(height: 10),
-                    Text(
-                      'Confirmed orders and receipts will appear here.',
-                      textAlign: TextAlign.center,
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          for (final row in matched)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 16),
-              child: PhotoPanel(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        CircleAvatar(
-                          backgroundColor: const Color(0xFFF3E3DE),
-                          child: Icon(
-                            row.ticket != null
-                                ? Icons.confirmation_number_outlined
-                                : Icons.photo_library_outlined,
-                            color: photoRose,
-                          ),
-                        ),
-                        const SizedBox(width: 13),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                row.ticket?.packageName ??
-                                    'Park Photo Purchase',
-                                style: const TextStyle(
-                                  fontSize: 17,
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                              const SizedBox(height: 6),
-                              Text(
-                                row.ticket?.reference ??
-                                    photoOrderReference(row.photo!.id),
-                                style: const TextStyle(
-                                  fontSize: 11,
-                                  color: Color(0xFF7C8289),
-                                ),
-                              ),
-                              const SizedBox(height: 5),
-                              Text(
-                                row.time == null
-                                    ? ''
-                                    : '${row.time!.toLocal().day}/${row.time!.toLocal().month}/${row.time!.toLocal().year}',
-                                style: const TextStyle(
-                                  fontSize: 11,
-                                  color: Color(0xFF7C8289),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        Text(
-                          row.ticket?.paymentLabel ??
-                              photoMoney(row.photo!.data['totalMinor'] as num),
-                          style: const TextStyle(
-                            fontSize: 15,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const Divider(height: 29),
-                    Text(
-                      row.ticket != null
-                          ? '${row.ticket!.quantity} tickets • ${displayParkDate(row.ticket!.visitDate)}'
-                          : '${(row.photo!.data['items'] as List).length} photos • Confirmed',
-                      style: const TextStyle(fontSize: 12, color: photoRose),
-                    ),
-                    const SizedBox(height: 14),
-                    if (row.ticket != null) ...[
-                      PhotoButton(
-                        'View Tickets',
-                        outlined: true,
-                        onPressed: () => widget.onTickets(row.ticket!),
-                      ),
-                      TextButton(
-                        onPressed: () =>
-                            downloadTicketReceipt(context, row.ticket!),
-                        child: const Text('View Receipt'),
-                      ),
-                    ] else
-                      PhotoButton(
-                        'View Photo Order',
-                        outlined: true,
-                        onPressed: () => Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => PhotoOrderDetailPage(
-                              repository: widget.photos!,
-                              orderId: row.photo!.id,
-                            ),
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-            ),
-        ],
-      );
-    },
+  Widget build(BuildContext context)=>StreamBuilder<List<ParkPhoto>>(
+    stream:photoOrders,
+    builder:(context,photos)=>StreamBuilder<QuerySnapshot<Map<String,dynamic>>>(
+      stream:souvenirOrders,
+      builder:(context,souvenirs){
+        final rows=<({DateTime? time,TicketOrder? ticket,ParkPhoto? photo,QueryDocumentSnapshot<Map<String,dynamic>>? souvenir})>[
+          if(filter=='All'||filter=='Tickets')
+            for(final t in widget.orders) (time:t.createdAt,ticket:t,photo:null,souvenir:null),
+          if(filter=='All'||filter=='Photos')
+            for(final p in photos.data??<ParkPhoto>[])
+              (time:(p.data['createdAt'] as Timestamp?)?.toDate(),ticket:null,photo:p,souvenir:null),
+          if(filter=='All'||filter=='Souvenirs')
+            for(final d in souvenirs.data?.docs??<QueryDocumentSnapshot<Map<String,dynamic>>>[])
+              if(['paid','refunded'].contains(d.data()['status']))
+                (time:(d.data()['paidAt'] as Timestamp?)?.toDate(),ticket:null,photo:null,souvenir:d),
+        ]..sort((a,b)=>(b.time??DateTime(1970)).compareTo(a.time??DateTime(1970)));
+        final matched=rows.where((r){
+          final name=r.ticket?.packageName ?? (r.photo!=null
+            ? (r.photo!.data['items'] as List? ?? []).map((x)=>x['title']).join(' ')
+            : (r.souvenir!.data()['items'] as List? ?? []).map((x)=>x['name']).join(' '));
+          final reference=r.ticket?.reference ?? (r.photo!=null
+            ? photoOrderReference(r.photo!.id) : r.souvenir!.id);
+          return '$name $reference'.toLowerCase().contains(query.toLowerCase());
+        }).toList();
+        return ListView(padding:const EdgeInsets.all(20),children:[
+          Wrap(spacing:7,runSpacing:7,children:[
+            for(final value in ['All','Tickets','Photos','Souvenirs'])
+              ChoiceChip(label:Text(value),selected:filter==value,
+                onSelected:(_)=>setState(()=>filter=value)),
+          ]),
+          const SizedBox(height:18),
+          TextField(onChanged:(v)=>setState(()=>query=v),
+            decoration:const InputDecoration(hintText:'Search purchase or order number',
+              prefixIcon:Icon(Icons.search),border:OutlineInputBorder(),isDense:true)),
+          const SizedBox(height:21),
+          const Text('Recent Purchases',style:TextStyle(fontSize:21,fontWeight:FontWeight.w700)),
+          const SizedBox(height:12),
+          if(photos.hasError) const PhotoPanel(child:Text('Photo orders cannot be loaded.')),
+          if(souvenirs.hasError) const PhotoPanel(child:Text('Souvenir orders cannot be loaded. Check Firestore permissions.')),
+          if(matched.isEmpty && !photos.hasError && !souvenirs.hasError)
+            const PhotoPanel(child:Padding(padding:EdgeInsets.all(24),
+              child:Text('No confirmed purchases found.'))),
+          for(final row in matched)
+            Padding(padding:const EdgeInsets.only(bottom:12),child:PhotoPanel(
+              child:Column(crossAxisAlignment:CrossAxisAlignment.stretch,children:[
+                Row(children:[
+                  CircleAvatar(backgroundColor:const Color(0xFFF3E3DE),
+                    child:Icon(row.ticket!=null?Icons.confirmation_number_outlined:
+                      row.photo!=null?Icons.photo_library_outlined:Icons.shopping_bag_outlined,
+                      color:photoRose)),
+                  const SizedBox(width:12),
+                  Expanded(child:Column(crossAxisAlignment:CrossAxisAlignment.start,children:[
+                    Text(row.ticket?.packageName ?? (row.photo!=null?'Park Photo Purchase':'Souvenir Purchase'),
+                      style:const TextStyle(fontSize:16,fontWeight:FontWeight.w700)),
+                    const SizedBox(height:4),
+                    Text(row.ticket?.reference ?? (row.photo!=null
+                      ? photoOrderReference(row.photo!.id)
+                      : '#${row.souvenir!.id.substring(0,10).toUpperCase()}'),
+                      style:const TextStyle(fontSize:11,color:Color(0xFF7C8289))),
+                    if(row.time!=null) Text('${row.time!.toLocal().day}/${row.time!.toLocal().month}/${row.time!.toLocal().year}',
+                      style:const TextStyle(fontSize:11,color:Color(0xFF7C8289))),
+                  ])),
+                  Text(row.ticket?.paymentLabel ?? photoMoney(row.photo!=null
+                    ? (row.photo!.data['totalMinor'] as num? ?? 0)
+                    : (row.souvenir!.data()['totalMinor'] as num? ?? 0)),
+                    style:const TextStyle(fontSize:15,fontWeight:FontWeight.w700)),
+                ]),
+                const Divider(height:24),
+                Text(row.ticket!=null
+                  ? '${row.ticket!.quantity} tickets · ${displayParkDate(row.ticket!.visitDate)}'
+                  : row.photo!=null
+                    ? '${(row.photo!.data['items'] as List? ?? []).length} photos · Confirmed'
+                    : '${(row.souvenir!.data()['items'] as List? ?? []).length} item types · ${row.souvenir!.data()['status']=='refunded'?'Refunded':(row.souvenir!.data()['refundStatus']=='requested'?'Refund requested':'Paid')}',
+                  style:const TextStyle(fontSize:12,color:photoRose)),
+                const SizedBox(height:12),
+                if(row.ticket!=null) ...[
+                  PhotoButton('View Tickets',outlined:true,onPressed:()=>widget.onTickets(row.ticket!)),
+                  TextButton(onPressed:()=>downloadTicketReceipt(context,row.ticket!),
+                    child:const Text('View Receipt')),
+                ] else if(row.photo!=null)
+                  PhotoButton('View Photo Order',outlined:true,onPressed:()=>Navigator.push(
+                    context,MaterialPageRoute(builder:(_)=>PhotoOrderDetailPage(
+                      repository:widget.photos!,orderId:row.photo!.id))))
+                else
+                  PhotoButton('View Souvenir Order',outlined:true,onPressed:()=>Navigator.push(
+                    context,MaterialPageRoute(builder:(_)=>const SouvenirShopPage(initialOrders:true)))),
+              ]),
+            )),
+        ]);
+      },
+    ),
   );
 }

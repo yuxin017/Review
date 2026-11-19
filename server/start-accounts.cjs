@@ -46,7 +46,7 @@ if(process.env.FIRESTORE_EMULATOR_HOST||process.env.FIREBASE_AUTH_EMULATOR_HOST)
    }),
  };
  operations['/v1/park/exchangeRates']=exchangeRates.rates;
- for(const [name,handler]of Object.entries(ticketPromotions))operations['/v1/tickets/'+name]=handler;
+ for(const [name,handler]of Object.entries(ticketPromotions))if(name!=='checkout')operations['/v1/tickets/'+name]=handler;
  const groups=createGroupHandlers({db:sharedFirestore(),FieldValue});
  for(const [name,handler]of Object.entries(groups))operations['/v1/groups/'+name]=handler;
  const ai=new PythonWorker(),photos=createPhotoHandlers({db:sharedFirestore(),FieldValue,ai,mailReady});
@@ -59,7 +59,7 @@ if(process.env.FIRESTORE_EMULATOR_HOST||process.env.FIREBASE_AUTH_EMULATOR_HOST)
  for(const [name,handler]of Object.entries(locations))operations['/v1/location/'+name]=handler;
  const intelligence=createParkIntelligenceHandlers({db:sharedFirestore(),FieldValue,ai});
  for(const [name,handler]of Object.entries(intelligence))operations['/v1/ai/'+name]=handler;
- for(const [name,handler]of Object.entries(photos))if(name!=='runMatchingJobs')operations['/v1/photos/'+name]=handler;
+ for(const [name,handler]of Object.entries(photos))if(!['runMatchingJobs','checkoutPaid'].includes(name))operations['/v1/photos/'+name]=handler;
  const management=createParkManagementHandlers({db:sharedFirestore(),FieldValue});
  for(const [name,handler]of Object.entries(management))if(name!=='runWeather')operations['/v1/park/'+name]=handler;
  let weatherRunning=false;
