@@ -5,7 +5,6 @@ import 'package:file_picker/file_picker.dart';
 import '../admin_catalog_image.dart';
 import 'package:flutter/services.dart';
 import '../../visitor/models/tickets.dart';
-import '../admin_models.dart';
 import '../admin_store.dart';
 import '../admin_widgets.dart';
 
@@ -57,15 +56,16 @@ class _TicketBundleManagementPageState extends State<TicketBundleManagementPage>
           color: adminRose, size: 22),
       ),
     );
-    if (url.isEmpty) return placeholder('No imageUrl saved in this bundle document. Open Edit and select the photo again.');
     return ClipRRect(
       borderRadius: BorderRadius.circular(7),
-      child: Image.network(url, width: 52, height: 44,
-        fit: BoxFit.cover,
-        errorBuilder: (context, error, stackTrace) {
-          debugPrint('Group bundle thumbnail failed to load: $error');
-          return placeholder('Image URL exists, but could not load. Check browser Network and Storage access.');
-        }),
+      child: ParkCatalogNetworkImage(
+        url: url,
+        width: 52,
+        height: 44,
+        fallback: placeholder(url.isEmpty
+            ? 'No photo. Open Edit to add one.'
+            : 'Photo unavailable. Open Edit to replace it.'),
+      ),
     );
   }
 

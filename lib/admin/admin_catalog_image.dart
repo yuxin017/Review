@@ -99,9 +99,10 @@ class ParkCatalogImagePicker extends StatelessWidget {
             borderRadius: BorderRadius.circular(12),
             child: SizedBox(height: 120, child: bytes != null
                 ? Image.memory(bytes!, fit: BoxFit.cover)
-                : Image.network(existingUrl!, fit: BoxFit.cover,
-                    errorBuilder: (_, __, ___) => const Center(
-                      child: Icon(Icons.broken_image_outlined))),
+                : ParkCatalogNetworkImage(
+                    url: existingUrl!,
+                    fallback: const Center(child: Icon(Icons.broken_image_outlined)),
+                  ),
           ))
         else
           Container(height: 100,
@@ -116,6 +117,39 @@ class ParkCatalogImagePicker extends StatelessWidget {
           label: Text(hasPreview ? 'Replace photo' : 'Choose photo'),
         ),
       ]),
+    );
+  }
+}
+
+/// Catalogue URLs are public download URLs. On web, use the browser image
+/// element as a fallback for hosts that allow images but block canvas fetches.
+class ParkCatalogNetworkImage extends StatelessWidget {
+  const ParkCatalogNetworkImage({
+    super.key,
+    required this.url,
+    required this.fallback,
+    this.width,
+    this.height,
+    this.fit = BoxFit.cover,
+  });
+
+  final String url;
+  final Widget fallback;
+  final double? width;
+  final double? height;
+  final BoxFit fit;
+
+  @override
+  Widget build(BuildContext context) {
+    final source = url.trim();
+    if (source.isEmpty) return fallback;
+    return Image.network(
+      source,
+      width: width,
+      height: height,
+      fit: fit,
+      webHtmlElementStrategy: WebHtmlElementStrategy.fallback,
+      errorBuilder: (_, _, _) => fallback,
     );
   }
 }

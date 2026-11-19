@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../../visitor/models/tickets.dart';
 import '../admin_widgets.dart';
+import '../admin_catalog_image.dart';
 import '../admin_models.dart';
 
 /// Merchandise and dining catalogues link to an existing Park Facilities place
@@ -144,11 +145,14 @@ class _ParkMenuManagementPageState extends State<ParkMenuManagementPage> {
           ? Image.memory(photoBytes!, width: double.infinity,
               height: 165, fit: BoxFit.cover)
           : originalImageUrl.isNotEmpty
-            ? Image.network(originalImageUrl, width: double.infinity,
-                height: 165, fit: BoxFit.cover,
-                errorBuilder: (_, __, ___) => const Center(
-                  child: Icon(Icons.broken_image_outlined, size: 42,
-                    color: adminRose)))
+            ? ParkCatalogNetworkImage(
+                url: originalImageUrl,
+                width: double.infinity,
+                height: 165,
+                fallback: const Center(
+                  child: Icon(Icons.broken_image_outlined, size: 42, color: adminRose),
+                ),
+              )
             : const Center(child: Icon(Icons.add_photo_alternate_outlined,
                 size: 48, color: adminRose));
 
@@ -490,17 +494,19 @@ class _ParkMenuManagementPageState extends State<ParkMenuManagementPage> {
                           leading: ClipRRect(
                             borderRadius: BorderRadius.circular(9),
                             child: SizedBox(width: 48, height: 48,
-                              child: (entry.data()['imageUrl'] as String? ?? '').isNotEmpty
-                                ? Image.network(entry.data()['imageUrl'] as String,
-                                    width: 48, height: 48, fit: BoxFit.cover,
-                                    errorBuilder: (_, __, ___) => Icon(
-                                      dining ? Icons.restaurant_menu_outlined :
-                                        Icons.shopping_bag_outlined,
-                                      color: adminRose))
-                                : Container(color: const Color(0xFFF5E9E5),
-                                    child: Icon(dining ? Icons.restaurant_menu_outlined
-                                      : Icons.shopping_bag_outlined,
-                                      color: adminRose)),
+                              child: ParkCatalogNetworkImage(
+                                url: entry.data()['imageUrl']?.toString() ?? '',
+                                width: 48,
+                                height: 48,
+                                fallback: Container(
+                                  color: const Color(0xFFF5E9E5),
+                                  child: Icon(
+                                    dining ? Icons.restaurant_menu_outlined
+                                        : Icons.shopping_bag_outlined,
+                                    color: adminRose,
+                                  ),
+                                ),
+                              ),
                             ),
                           ),
                           title: Text(_label(entry.data())),

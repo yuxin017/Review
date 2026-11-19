@@ -9,6 +9,7 @@ import 'package:latlong2/latlong.dart';
 import '../../park/venue_configuration.dart';
 import '../../park/venue_map.dart';
 import '../admin_widgets.dart';
+import '../admin_catalog_image.dart';
 import '../operations/park_admin_repository.dart';
 import '../operations/park_management_page.dart';
 
@@ -54,14 +55,16 @@ class _PhotoProductCataloguePageState extends State<PhotoProductCataloguePage> {
           color: _pink, size: 22),
       ),
     );
-    if (url.isEmpty) return placeholder('No imageUrl saved in this photoProducts document. Open Edit and select the photo again.');
-    return ClipRRect(borderRadius: BorderRadius.circular(7),
-      child: Image.network(url, width: 52, height: 44,
-        fit: BoxFit.cover,
-        errorBuilder: (context, error, stackTrace) {
-          debugPrint('Photo product thumbnail failed to load: $error');
-          return placeholder('Image URL exists, but failed to load. Check browser Network and Storage access.');
-        }),
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(7),
+      child: ParkCatalogNetworkImage(
+        url: url,
+        width: 52,
+        height: 44,
+        fallback: placeholder(url.isEmpty
+            ? 'No photo. Open Edit to add one.'
+            : 'Photo unavailable. Open Edit to replace it.'),
+      ),
     );
   }
 
@@ -242,7 +245,7 @@ class _PhotoProductCataloguePageState extends State<PhotoProductCataloguePage> {
                   )),
               const SizedBox(height: 10),
               const Text(
-                'Admin catalogue only until the checkout pricing API supports product IDs.',
+                'Visitor checkout uses the prices shown above.',
                 style: TextStyle(fontSize: 12, color: adminMuted)),
             ],
           ],
@@ -414,8 +417,13 @@ class _PhotoProductEditorState extends State<_PhotoProductEditor> {
                 child: Image.memory(preview!, width: double.infinity,
                   height: 135, fit: BoxFit.cover)) :
                 (widget.initial?['imageUrl'] as String? ?? '').isNotEmpty
-                ? Image.network(widget.initial!['imageUrl'] as String,
-                  height: 130, fit: BoxFit.contain) :
+                ? ParkCatalogNetworkImage(
+                    url: widget.initial!['imageUrl'] as String,
+                    width: double.infinity,
+                    height: 130,
+                    fit: BoxFit.contain,
+                    fallback: const Icon(Icons.broken_image_outlined, color: _pink),
+                  ) :
                 const Icon(Icons.add_photo_alternate_outlined, color: _pink, size: 42)),
             const SizedBox(height: 10),
             OutlinedButton.icon(onPressed: busy ? null : pick,
