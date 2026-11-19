@@ -5,6 +5,7 @@ import 'staff_access.dart';
 import 'staff_records.dart';
 import 'staff_records_repository.dart';
 import 'staff_schedule_utils.dart';
+import 'staff_schedule_arrangement.dart';
 
 /// Real Firestore draft -> human review -> approved shift publication.
 /// All writes must be authorized independently by deployed Firestore rules.
@@ -32,86 +33,46 @@ class _StaffScheduleReviewPageState extends State<StaffScheduleReviewPage> {
   String get weekKey => StaffWeek.key(monday);
   FirebaseFirestore get db => widget.repository.db;
 
+  Future<ScheduleDraft> _arrange() async {
+    final directory = await widget.repository.watchStaffDirectory().first;
+    final availabilitySnap = await db.collection('staffAvailability')
+        .where('weekStart', isEqualTo: weekKey).get();
+    final availability = <String, Set<String>>{};
+    for (final doc in availabilitySnap.docs) {
+      final data = doc.data();
+      final uid = data['staffUid'];
+      if (uid is String) {
+        availability[uid] = (data['availableDays'] as List?)
+                ?.whereType<String>().toSet() ?? <String>{};
+      }
+    }
+    final leaveSnap = await db.collection('staffLeaveRequests')
+        .where('status', isEqualTo: 'approved').get();
+    final leaves = leaveSnap.docs.map((doc) => doc.data());
+    final qualificationsSnap = await db.collection('staffQualifications').get();
+    final qualifications = <StaffQualification>[];
+    for (final doc in qualificationsSnap.docs) {
+      try { qualifications.add(StaffQualification.fromMap(doc.id, doc.data())); }
+      catch (_) { /* Invalid training never grants eligibility. */ }
+    }
+    return arrangeStaffWeek(
+      monday: monday,
+      roles: selectedRoles,
+      directory: directory,
+      availability: availability,
+      leaves: leaves,
+      qualifications: qualifications,
+    );
+  }
+
   Future<void> _generate() async {
     if (busy) return;
     setState(() { busy = true; message = null; draft = []; gaps = []; });
     try {
-      final directory = await widget.repository.watchStaffDirectory().first;
-      final eligiblePeople = directory.where((p) => p.isActive).toList();
-      final availabilitySnap = await db.collection('staffAvailability')
-          .where('weekStart', isEqualTo: weekKey).get();
-      final availability = <String, Set<String>>{};
-      for (final doc in availabilitySnap.docs) {
-        final data = doc.data();
-        final uid = data['staffUid'];
-        if (uid is String) {
-          availability[uid] = (data['availableDays'] as List?)
-                  ?.whereType<String>().toSet() ?? <String>{};
-        }
-      }
-      final leaveSnap = await db.collection('staffLeaveRequests').get();
-      final leaves = leaveSnap.docs.map((e) => e.data())
-          .where((e) => e['status'] == 'approved').toList();
-      final qualificationsSnap = await db.collection('staffQualifications').get();
-      final qualifications = <StaffQualification>[];
-      for (final doc in qualificationsSnap.docs) {
-        try { qualifications.add(StaffQualification.fromMap(doc.id, doc.data())); }
-        catch (_) { /* Invalid training never grants eligibility. */ }
-      }
-      final output = <StaffShiftPlan>[];
-      final problems = <String>[];
-      final weeklyCount = <String, int>{};
-      final assignedOn = <String>{};
-      for (var offset = 0; offset < 7; offset++) {
-        final date = StaffWeek.day(monday, offset);
-        final dayKey = StaffWeek.key(date);
-        final at = DateTime(date.year, date.month, date.day, 9);
-        for (final role in StaffRole.values) {
-          if (role == StaffRole.superAdmin || !selectedRoles.contains(role)) continue;
-          final possible = <(StaffProfile, String?)>[];
-          for (final person in eligiblePeople) {
-            if (!person.eligibleRoles.contains(role) ||
-                !(availability[person.uid]?.contains(dayKey) ?? false) ||
-                (weeklyCount[person.uid] ?? 0) >= 5 ||
-                assignedOn.contains('$dayKey:${person.uid}') ||
-                leaves.any((leave) => leave['staffUid'] == person.uid &&
-                    staffLeaveIncludes(leave, dayKey))) continue;
-            String? attractionId;
-            if (role == StaffRole.attractionOperator) {
-              for (final q in qualifications) {
-                if (q.staffUid == person.uid && q.role == role &&
-                    q.validAt(at) && q.attractionId != null &&
-                    q.attractionId!.isNotEmpty) {
-                  attractionId = q.attractionId;
-                  break;
-                }
-              }
-              if (attractionId == null) continue;
-            } else if (!StaffTrainingPolicy.isEligible(
-                staff: person, qualifications: qualifications, role: role, at: at)) {
-              continue;
-            }
-            possible.add((person, attractionId));
-          }
-          possible.sort((a, b) {
-            final cmp = (weeklyCount[a.$1.uid] ?? 0).compareTo(weeklyCount[b.$1.uid] ?? 0);
-            return cmp != 0 ? cmp : a.$1.fullName.compareTo(b.$1.fullName);
-          });
-          if (possible.isEmpty) {
-            problems.add('$dayKey · ${role.label} — no available qualified staff');
-            continue;
-          }
-          final chosen = possible.first;
-          output.add(StaffShiftPlan(date: date, staffUid: chosen.$1.uid,
-              staffName: chosen.$1.fullName, roleCode: role.code,
-              attractionId: chosen.$2));
-          weeklyCount[chosen.$1.uid] = (weeklyCount[chosen.$1.uid] ?? 0) + 1;
-          assignedOn.add('$dayKey:${chosen.$1.uid}');
-        }
-      }
+      final result = await _arrange();
       if (mounted) setState(() {
-        draft = output; gaps = problems;
-        message = output.isEmpty ? 'No eligible shifts. Ask staff to submit availability.'
+        draft = result.assignments; gaps = result.gaps;
+        message = draft.isEmpty ? 'No eligible shifts. Ask staff to submit availability.'
             : 'Draft ready. Review coverage before approving.';
       });
     } catch (_) {
@@ -148,8 +109,8 @@ class _StaffScheduleReviewPageState extends State<StaffScheduleReviewPage> {
       builder: (ctx) => AlertDialog(
         title: const Text('Approve weekly schedule?'),
         content: Text(gaps.isEmpty
-          ? 'Publish ${draft.length} shifts for the week of $weekKey? Staff will see their assignments.'
-          : '${gaps.length} shifts remain unfilled. Publish ${draft.length} available shifts anyway?'),
+          ? 'Publish ${draft.length} shifts for the week of $weekKey? This replaces that week’s published schedule.'
+          : '${gaps.length} shifts remain unfilled. Publish ${draft.length} shifts and replace that week’s published schedule?'),
         actions: [TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
           FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Approve & Publish'))],
       ),
@@ -157,6 +118,23 @@ class _StaffScheduleReviewPageState extends State<StaffScheduleReviewPage> {
     if (confirmed != true || !mounted) return;
     setState(() { busy = true; message = null; });
     try {
+      final latest = await _arrange();
+      final latestByShift = {
+        for (final shift in latest.assignments) shift.docId: shift,
+      };
+      final changed = latestByShift.length != draft.length || draft.any((shift) {
+        final current = latestByShift[shift.docId];
+        return current?.staffUid != shift.staffUid ||
+            current?.attractionId != shift.attractionId;
+      });
+      if (changed) {
+        if (mounted) setState(() {
+          draft = latest.assignments;
+          gaps = latest.gaps;
+          message = 'Staff details changed. Review the updated draft before publishing.';
+        });
+        return;
+      }
       // Replace that week's previously published assignments atomically.
       final old = await db.collection('staffPublishedShifts')
           .where('weekStart', isEqualTo: weekKey).get();

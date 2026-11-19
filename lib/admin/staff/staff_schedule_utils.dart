@@ -9,6 +9,9 @@ class StaffWeek {
   }
   static DateTime day(DateTime monday, int offset) =>
       DateTime(monday.year, monday.month, monday.day + offset);
+  static DateTime parkTime(DateTime date, int hour) =>
+      DateTime.utc(date.year, date.month, date.day, hour - 8);
+
   static String key(DateTime date) =>
       '${date.year.toString().padLeft(4, '0')}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
   static String id(String uid, DateTime weekStart) => '${uid}_${key(weekStart)}';
@@ -30,8 +33,8 @@ class StaffShiftPlan {
 
   String get docId => '${StaffWeek.key(date)}_$roleCode';
   Map<String, dynamic> toFirestore(String weekKey, {bool published = false}) {
-    final starts = DateTime(date.year, date.month, date.day, 9);
-    final ends = DateTime(date.year, date.month, date.day, 17);
+    final starts = StaffWeek.parkTime(date, 9);
+    final ends = StaffWeek.parkTime(date, 17);
     return {
       'weekStart': weekKey,
       'staffUid': staffUid,
