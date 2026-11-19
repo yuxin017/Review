@@ -29,12 +29,20 @@ class StaffShiftPlan {
     required this.staffName,
     required this.roleCode,
     this.attractionId,
+    this.slot = 0,
+    this.attractionName,
   });
   final DateTime date;
   final String staffUid, staffName, roleCode;
   final String? attractionId;
+  final int slot;
+  final String? attractionName;
 
-  String get docId => '${StaffWeek.key(date)}_$roleCode';
+  String get docId {
+    final prefix = '${StaffWeek.key(date)}_$roleCode';
+    if (attractionId != null) return '${prefix}_$attractionId';
+    return slot == 0 ? prefix : '${prefix}_$slot';
+  }
   Map<String, dynamic> toFirestore(String weekKey, {bool published = false}) {
     final starts = StaffWeek.parkTime(date, 9);
     final ends = StaffWeek.parkTime(date, 17);

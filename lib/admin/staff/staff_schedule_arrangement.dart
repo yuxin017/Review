@@ -13,6 +13,7 @@ ScheduleDraft arrangeStaffWeek({
   required Map<String, Set<String>> availability,
   required Iterable<Map<String, dynamic>> leaves,
   required List<StaffQualification> qualifications,
+  Map<String, String>? attractions,
 }) {
   final people =
       directory
@@ -43,7 +44,11 @@ ScheduleDraft arrangeStaffWeek({
   for (final staffNode in staffNodes.values) {
     connect(staffNode, 1, 5);
   }
-  final slots = <({String label, List<(_Edge, StaffShiftPlan)> options})>[];
+  final optionalEdges = <_Edge>[];
+  final slots =
+      <
+        ({String label, bool required, List<(_Edge, StaffShiftPlan)> options})
+      >[];
   for (var offset = 0; offset < 7; offset++) {
     final date = StaffWeek.day(monday, offset);
     final key = StaffWeek.key(date);
@@ -70,47 +75,69 @@ ScheduleDraft arrangeStaffWeek({
           fixedDutyRoles.contains(role) ||
           !roles.contains(role))
         continue;
-      final slotNode = node();
-      connect(0, slotNode, 1);
-      final options = <(_Edge, StaffShiftPlan)>[];
-      for (final person in available) {
-        final valid = qualifications.where(
-          (qualification) =>
-              qualification.staffUid == person.uid &&
-              qualification.role == role &&
-              qualification.validAt(start) &&
-              qualification.validAt(beforeEnd),
-        );
-        final attraction = role == StaffRole.attractionOperator
-            ? (valid
-                      .map((qualification) => qualification.attractionId)
-                      .whereType<String>()
-                      .where((id) => id.isNotEmpty)
-                      .toList()
-                    ..sort())
-                  .firstOrNull
-            : null;
-        if (!StaffTrainingPolicy.isEligible(
-          staff: person,
-          qualifications: valid,
-          role: role,
-          at: start,
-          attractionId: attraction,
-        )) {
-          continue;
-        }
-        options.add((
-          connect(slotNode, personDays[person.uid]!, 1),
-          StaffShiftPlan(
-            date: date,
-            staffUid: person.uid,
-            staffName: person.fullName,
-            roleCode: role.code,
+      final List<String?> targets = switch (role) {
+        StaffRole.attractionOperator =>
+          attractions == null ? [null] : attractions.keys.toList(),
+        StaffRole.admissionStaff => [null, if (attractions != null) null],
+        StaffRole.photographer => [
+          null,
+          if (attractions != null) ...[null, null],
+        ],
+        _ => [null],
+      };
+      for (final (index, target) in targets.indexed) {
+        final isRequired = index == 0 || role == StaffRole.attractionOperator;
+        final slotNode = node();
+        final demand = connect(0, slotNode, isRequired ? 1 : 0);
+        if (!isRequired) optionalEdges.add(demand);
+        final options = <(_Edge, StaffShiftPlan)>[];
+        for (final person in available) {
+          final valid = qualifications.where(
+            (qualification) =>
+                qualification.staffUid == person.uid &&
+                qualification.role == role &&
+                qualification.validAt(start) &&
+                qualification.validAt(beforeEnd),
+          );
+          final attraction = role == StaffRole.attractionOperator
+              ? target ??
+                    (valid
+                            .map((qualification) => qualification.attractionId)
+                            .whereType<String>()
+                            .where((id) => id.isNotEmpty)
+                            .toList()
+                          ..sort())
+                        .firstOrNull
+              : null;
+          if (!StaffTrainingPolicy.isEligible(
+            staff: person,
+            qualifications: valid,
+            role: role,
+            at: start,
             attractionId: attraction,
-          ),
+          )) {
+            continue;
+          }
+          options.add((
+            connect(slotNode, personDays[person.uid]!, 1),
+            StaffShiftPlan(
+              date: date,
+              staffUid: person.uid,
+              staffName: person.fullName,
+              roleCode: role.code,
+              attractionId: attraction,
+              slot: index,
+              attractionName: attractions?[attraction],
+            ),
+          ));
+        }
+        slots.add((
+          label:
+              '$key · ${role.label}${target == null ? '' : ' · ${attractions?[target] ?? target}'}',
+          required: isRequired,
+          options: options,
         ));
       }
-      slots.add((label: '$key · ${role.label}', options: options));
     }
   }
 
@@ -130,6 +157,12 @@ ScheduleDraft arrangeStaffWeek({
   while (assign(0, <int>{})) {
     // Each pass fills one more shift.
   }
+  for (final edge in optionalEdges) {
+    edge.remaining = 1;
+  }
+  while (assign(0, <int>{})) {
+    // Add extra entrance and photography coverage after required posts.
+  }
   final assignments = <StaffShiftPlan>[];
   final gaps = <String>[];
   for (final slot in slots) {
@@ -137,7 +170,8 @@ ScheduleDraft arrangeStaffWeek({
         .where((option) => option.$1.remaining == 0)
         .firstOrNull;
     if (selected == null) {
-      gaps.add('${slot.label} — no available qualified staff');
+      if (slot.required)
+        gaps.add('${slot.label} — no available qualified staff');
     } else {
       assignments.add(selected.$2);
     }

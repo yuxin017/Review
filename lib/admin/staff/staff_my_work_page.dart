@@ -191,37 +191,92 @@ class _StaffMyWorkPageState extends State<StaffMyWorkPage> {
       if (date != null && mounted) setState(() => monday = StaffWeek.start(date));
     });
 
-  Widget _schedule() => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-    _weekPicker(), const SizedBox(height: 12),
-    if (widget.profile.eligibleRoles.any(fixedDutyRoles.contains))
-      const Card(child: ListTile(
-        leading: Icon(Icons.event_repeat_outlined),
-        title: Text('Regular duty'),
-        subtitle: Text('Every day · 09:00–17:00, except approved leave'),
-      ))
-    else
-    StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: widget.db.collection('staffPublishedShifts')
-        .where('staffUid', isEqualTo: widget.profile.uid).snapshots(),
-      builder: (context, snapshot) {
-        if (snapshot.hasError) return const Card(child: ListTile(
-          title: Text('Could not load your schedule.'), subtitle: Text('Check your connection or ask your supervisor.')));
-        if (!snapshot.hasData) return const LinearProgressIndicator();
-        final shifts = snapshot.data!.docs.where((doc) =>
-            doc.data()['weekStart'] == weekKey && doc.data()['published'] == true).toList()
-          ..sort((a,b) => (StaffWeek.fromTimestamp(a.data()['startsAt']) ?? DateTime(1970))
-              .compareTo(StaffWeek.fromTimestamp(b.data()['startsAt']) ?? DateTime(1970)));
-        if (shifts.isEmpty) return const Card(child: ListTile(
-          title: Text('No approved shifts this week'),
-          subtitle: Text('Your supervisor will publish your schedule after review.')));
-        return Column(children: [for (final shift in shifts) Card(child: ListTile(
-          leading: const Icon(Icons.event_available_outlined),
-          title: Text((shift.data()['roleCode'] ?? '').toString().replaceAll('_',' ')),
-          subtitle: Text('${StaffWeek.key(StaffWeek.fromTimestamp(shift.data()['startsAt']) ?? DateTime.now())} · 09:00–17:00'),
-        ))]);
-      },
-    ),
-  ]);
+  Widget _schedule() => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      Align(alignment: Alignment.centerLeft, child: _weekPicker()),
+      const SizedBox(height: 12),
+      StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+        stream: _ownLeave(),
+        builder: (context, leave) {
+          if (leave.hasError) return const Text('Could not load approved leave.');
+          if (!leave.hasData) return const LinearProgressIndicator();
+          final leaveDays = staffLeaveDays(
+            monday, leave.data!.docs.map((doc) => doc.data()),
+          );
+          final fixed = widget.profile.eligibleRoles.where(fixedDutyRoles.contains).firstOrNull;
+          if (fixed != null) {
+            return _weekSchedule({}, leaveDays, fixedRole: fixed);
+          }
+          return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+            stream: widget.db.collection('staffPublishedShifts')
+                .where('staffUid', isEqualTo: widget.profile.uid).snapshots(),
+            builder: (context, snapshot) {
+              if (snapshot.hasError) return const Text('Could not load your schedule.');
+              if (!snapshot.hasData) return const LinearProgressIndicator();
+              final shifts = <String, Map<String, dynamic>>{};
+              for (final doc in snapshot.data!.docs) {
+                final shift = doc.data();
+                final starts = StaffWeek.fromTimestamp(shift['startsAt']);
+                if (shift['weekStart'] != weekKey ||
+                    shift['published'] != true || starts == null) continue;
+                shifts[StaffWeek.key(StaffWeek.parkCalendar(starts))] = shift;
+              }
+              return _weekSchedule(shifts, leaveDays);
+            },
+          );
+        },
+      ),
+    ],
+  );
+
+  Widget _weekSchedule(
+    Map<String, Map<String, dynamic>> shifts,
+    Set<String> leaveDays, {
+    StaffRole? fixedRole,
+  }) {
+    final theme = Theme.of(context);
+    final today = StaffWeek.key(StaffWeek.parkCalendar(DateTime.now()));
+    final labels = MaterialLocalizations.of(context);
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      child: Column(children: [
+        for (var index = 0; index < 7; index++)
+          Builder(builder: (context) {
+            final date = StaffWeek.day(monday, index);
+            final key = StaffWeek.key(date);
+            final shift = shifts[key];
+            final onLeave = leaveDays.contains(key);
+            final role = fixedRole ?? StaffRole.fromCode(shift?['roleCode']?.toString() ?? '');
+            final hasShift = role != null && !onLeave;
+            final start = StaffWeek.fromTimestamp(shift?['startsAt']);
+            final end = StaffWeek.fromTimestamp(shift?['endsAt']);
+            String displayTime(DateTime instant) => labels.formatTimeOfDay(
+              TimeOfDay.fromDateTime(StaffWeek.parkCalendar(instant)),
+            );
+            final hours = start != null && end != null
+                ? '${displayTime(start)} – ${displayTime(end)}'
+                : '09:00–17:00';
+            return Column(children: [
+              if (index > 0) const Divider(height: 1),
+              ListTile(
+                tileColor: key == today ? theme.colorScheme.primaryContainer : null,
+                leading: CircleAvatar(
+                  backgroundColor: theme.colorScheme.surfaceContainerHighest,
+                  child: Text('${date.day}'),
+                ),
+                title: Text(labels.formatMediumDate(date),
+                  style: const TextStyle(fontWeight: FontWeight.w700)),
+                subtitle: Text(
+                  onLeave ? 'Approved leave' : hasShift ? role.label : 'No scheduled shift',
+                ),
+                trailing: hasShift ? Text(hours) : null,
+              ),
+            ]);
+          }),
+      ]),
+    );
+  }
 
   Widget _availability() => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
     _weekPicker(), const SizedBox(height: 12),

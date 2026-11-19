@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
 import 'staff_access.dart';
+import '../../attractions/models/attraction.dart';
 import 'staff_records.dart';
 import 'staff_records_repository.dart';
 import 'staff_schedule_utils.dart';
@@ -24,14 +25,33 @@ class _StaffScheduleReviewPageState extends State<StaffScheduleReviewPage> {
   bool busy = false;
   bool showPublished = true;
   bool draftGenerated = false;
-  final selectedRoles = <StaffRole>{
+  static const requiredRoles = <StaffRole>{
     StaffRole.attractionOperator,
     StaffRole.admissionStaff, StaffRole.photographer,
-    StaffRole.photoCounterStaff, StaffRole.customerSupport,
+    StaffRole.photoCounterStaff,
   };
+
+  final selectedRoles = <StaffRole>{...requiredRoles, StaffRole.customerSupport};
 
   String get weekKey => StaffWeek.key(monday);
   FirebaseFirestore get db => widget.repository.db;
+
+  late final _attractionNames = _readAttractions();
+
+  Future<Map<String, String>> _readAttractions({bool openOnly = false}) async {
+    final snapshot = await db.collection('attractions').get();
+    final attractions = <String, String>{};
+    for (final doc in snapshot.docs) {
+      final data = doc.data();
+      if (openOnly && (data['deletedAt'] != null || data['status'] != 'open')) continue;
+      final kind = ParkPlaceKind.values.where((item) => item.name == data['kind']).firstOrNull ??
+          ParkPlaceKind.fromCategory(data['category']?.toString() ?? '');
+      if (kind == ParkPlaceKind.attractions) {
+        attractions[doc.id] = data['name']?.toString() ?? doc.id;
+      }
+    }
+    return attractions;
+  }
 
   Future<ScheduleDraft> _arrange() async {
     final directory = await widget.repository.watchStaffDirectory().first;
@@ -62,6 +82,7 @@ class _StaffScheduleReviewPageState extends State<StaffScheduleReviewPage> {
       availability: availability,
       leaves: leaves,
       qualifications: qualifications,
+      attractions: await _readAttractions(openOnly: true),
     );
   }
 
@@ -201,7 +222,7 @@ class _StaffScheduleReviewPageState extends State<StaffScheduleReviewPage> {
     }
   }
 
-  Widget _timetable(Map<(StaffRole, String), String> assigned, {
+  Widget _timetable(Map<(StaffRole, String), List<String>> assigned, {
     Set<StaffRole> scheduledRoles = const {},
     bool isDraft = false,
   }) {
@@ -216,7 +237,7 @@ class _StaffScheduleReviewPageState extends State<StaffScheduleReviewPage> {
             Theme.of(context).colorScheme.surfaceContainerHighest,
           ),
           dataRowMinHeight: 60,
-          dataRowMaxHeight: 76,
+          dataRowMaxHeight: double.infinity,
           columns: [
             const DataColumn(label: Text('Role')),
             for (final date in days)
@@ -234,10 +255,8 @@ class _StaffScheduleReviewPageState extends State<StaffScheduleReviewPage> {
                       child: Text(
                         fixedDutyRoles.contains(role)
                             ? 'Regular duty'
-                            : assigned[(role, StaffWeek.key(date))] ??
+                            : assigned[(role, StaffWeek.key(date))]?.join('\n') ??
                                 (isDraft ? 'Unfilled' : '—'),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
                         style: TextStyle(
                           color: isDraft && !fixedDutyRoles.contains(role) &&
                               !assigned.containsKey((role, StaffWeek.key(date)))
@@ -252,11 +271,32 @@ class _StaffScheduleReviewPageState extends State<StaffScheduleReviewPage> {
     );
   }
 
-  Widget _previewDraft() => _timetable({
-    for (final shift in draft)
-      (StaffRole.fromCode(shift.roleCode)!, StaffWeek.key(shift.date)):
-        shift.staffName,
-  }, scheduledRoles: draftGenerated ? selectedRoles : const {}, isDraft: true);
+  Widget _previewDraft() {
+    final assigned = <(StaffRole, String), List<String>>{};
+    for (final shift in draft) {
+      final key = (StaffRole.fromCode(shift.roleCode)!, StaffWeek.key(shift.date));
+      assigned.putIfAbsent(key, () => []).add(
+        shift.attractionName == null ? shift.staffName
+            : '${shift.staffName} · ${shift.attractionName}',
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (gaps.isNotEmpty)
+          Card(
+            color: Theme.of(context).colorScheme.errorContainer,
+            child: ExpansionTile(
+              initiallyExpanded: true,
+              leading: const Icon(Icons.warning_amber_rounded),
+              title: Text('${gaps.length} required posts are unfilled'),
+              children: [for (final gap in gaps) ListTile(dense: true, title: Text(gap))],
+            ),
+          ),
+        _timetable(assigned, scheduledRoles: draftGenerated ? selectedRoles : const {}, isDraft: true),
+      ],
+    );
+  }
 
   Widget _publishedHistory() => StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
     stream: db.collection('staffPublishedShifts')
@@ -264,16 +304,24 @@ class _StaffScheduleReviewPageState extends State<StaffScheduleReviewPage> {
     builder: (context, snapshot) {
       if (snapshot.hasError) return const Text('Could not load the published schedule.');
       if (!snapshot.hasData) return const LinearProgressIndicator();
-      final assigned = <(StaffRole, String), String>{};
-      for (final doc in snapshot.data!.docs) {
-        final data = doc.data();
-        final role = StaffRole.fromCode(data['roleCode']?.toString() ?? '');
-        final start = StaffWeek.fromTimestamp(data['startsAt']);
-        if (role == null || start == null) continue;
-        assigned[(role, StaffWeek.key(StaffWeek.parkCalendar(start)))] =
-            data['staffName']?.toString() ?? 'Staff';
-      }
-      return _timetable(assigned, scheduledRoles: assigned.keys.map((key) => key.$1).toSet());
+      return FutureBuilder<Map<String, String>>(
+        future: _attractionNames,
+        builder: (context, names) {
+          final assigned = <(StaffRole, String), List<String>>{};
+          for (final doc in snapshot.data!.docs) {
+            final data = doc.data();
+            final role = StaffRole.fromCode(data['roleCode']?.toString() ?? '');
+            final start = StaffWeek.fromTimestamp(data['startsAt']);
+            if (role == null || start == null) continue;
+            final key = (role, StaffWeek.key(StaffWeek.parkCalendar(start)));
+            final ids = (data['attractionIds'] as List?)?.whereType<String>() ?? const <String>[];
+            final places = ids.map((id) => names.data?[id]).whereType<String>().join(', ');
+            final staffName = data['staffName']?.toString() ?? 'Staff';
+            assigned.putIfAbsent(key, () => []).add(places.isEmpty ? staffName : '$staffName · $places');
+          }
+          return _timetable(assigned, scheduledRoles: assigned.keys.map((key) => key.$1).toSet());
+        },
+      );
     },
   );
 
@@ -326,7 +374,7 @@ class _StaffScheduleReviewPageState extends State<StaffScheduleReviewPage> {
                 if (role != StaffRole.superAdmin && !fixedDutyRoles.contains(role))
                   FilterChip(label: Text(role.label),
                     selected: selectedRoles.contains(role),
-                    onSelected: busy ? null : (v) => setState(() {
+                    onSelected: busy || requiredRoles.contains(role) ? null : (v) => setState(() {
                       if (v) { selectedRoles.add(role); }
                       else { selectedRoles.remove(role); }
                       draft = []; gaps = []; draftGenerated = false;

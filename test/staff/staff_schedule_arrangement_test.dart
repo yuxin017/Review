@@ -120,4 +120,81 @@ void main() {
     expect(result.assignments, isEmpty);
     expect(result.gaps, hasLength(7));
   });
+
+  test(
+    'each open ride has its own required post and optional staff never masks a shortage',
+    () {
+      final result = arrangeStaffWeek(
+        monday: monday,
+        roles: {operator, admission},
+        directory: [
+          staff('A', {operator, admission}),
+          staff('B', {admission}),
+          staff('C', {admission}),
+        ],
+        availability: {
+          for (final uid in ['A', 'B', 'C']) uid: {'2026-11-16'},
+        },
+        leaves: [],
+        qualifications: [
+          qualification('A', operator),
+          qualification('A', admission),
+          qualification('B', admission),
+          qualification('C', admission),
+        ],
+        attractions: {'coaster': 'Coaster', 'wheel': 'Ferris Wheel'},
+      );
+      final mondayShifts = result.assignments
+          .where((shift) => shift.date == monday)
+          .toList();
+      expect(mondayShifts, hasLength(3));
+      expect(mondayShifts.map((shift) => shift.docId).toSet(), hasLength(3));
+      expect(
+        mondayShifts
+            .singleWhere((shift) => shift.attractionId != null)
+            .attractionId,
+        'coaster',
+      );
+      expect(
+        result.gaps.where((gap) => gap.startsWith('2026-11-16')).single,
+        contains('Ferris Wheel'),
+      );
+    },
+  );
+
+  test('photography fills up to three posts while the counter needs one', () {
+    const photographer = StaffRole.photographer;
+    const counter = StaffRole.photoCounterStaff;
+    final ids = ['A', 'B', 'C', 'D', 'E'];
+    final result = arrangeStaffWeek(
+      monday: monday,
+      roles: {photographer, counter},
+      directory: [
+        for (final uid in ids) staff(uid, {photographer, counter}),
+      ],
+      availability: {
+        for (final uid in ids) uid: {'2026-11-16'},
+      },
+      leaves: [],
+      qualifications: [
+        for (final uid in ids) ...[
+          qualification(uid, photographer),
+          qualification(uid, counter),
+        ],
+      ],
+      attractions: {},
+    );
+    expect(
+      result.assignments.where((shift) => shift.roleCode == photographer.code),
+      hasLength(3),
+    );
+    expect(
+      result.assignments.where((shift) => shift.roleCode == counter.code),
+      hasLength(1),
+    );
+    expect(
+      result.assignments.map((shift) => shift.staffUid).toSet(),
+      hasLength(4),
+    );
+  });
 }
