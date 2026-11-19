@@ -90,6 +90,7 @@ class _ParkMenuManagementPageState extends State<ParkMenuManagementPage> {
         text: item?['description']?.toString() ?? '');
     final price = TextEditingController(text: item?['priceMinor'] is num
         ? ((item!['priceMinor'] as num) / 100).toStringAsFixed(2) : '');
+    final stock = TextEditingController(text: (item?['stockQuantity'] as num?)?.toInt().toString() ?? '0');
     final isDining = dining;
     final choices = isDining ? foodCategories : retailCategories;
     String category = choices.contains(item?['category'])
@@ -167,6 +168,19 @@ class _ParkMenuManagementPageState extends State<ParkMenuManagementPage> {
             decoration: const InputDecoration(hintText: 'e.g. 18.90'),
             validator: (v) => parseMoneyMinor(v ?? '') == null
               ? 'Enter a price from RM0.01 to RM100,000.' : null),
+           const SizedBox(height: 14),
+           if (!isDining) ...[
+             const Text('Inventory quantity *', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
+             const SizedBox(height: 8),
+             TextFormField(controller: stock, enabled: !saving,
+               keyboardType: TextInputType.number,
+               inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+               decoration: const InputDecoration(hintText: 'e.g. 50'),
+               validator: (v) { final n = int.tryParse(v ?? '');
+                 return n == null || n < 0 || n > 1000000 ? 'Enter stock from 0 to 1,000,000.' : null;
+               }),
+             const SizedBox(height: 16),
+           ],
           const SizedBox(height: 18),
           Container(
             decoration: BoxDecoration(
@@ -327,6 +341,7 @@ class _ParkMenuManagementPageState extends State<ParkMenuManagementPage> {
                     'description': description.text.trim(),
                     'category': category,
                     'priceMinor': parseMoneyMinor(price.text)!,
+                    if (!isDining) 'stockQuantity': int.parse(stock.text),
                     'currency': 'MYR',
                     'active': active,
                     'imageUrl': imageUrl,
@@ -396,7 +411,9 @@ class _ParkMenuManagementPageState extends State<ParkMenuManagementPage> {
       const SizedBox(height: 11),
       Text('Select a ${dining ? 'restaurant or café' : 'shop'} from Park Facilities. '
           'Products are grouped under that location, not stored as duplicate park places. '
-          'Online checkout / inventory tracking is not connected.',
+          + (dining
+            ? 'Food catalogue only. Online food checkout is not enabled.'
+            : 'Souvenir inventory is reserved during Stripe checkout. Process paid purchases in Products & Sales > Bookings & Orders.'),
           style: const TextStyle(color: adminMuted, fontSize: 12)),
       const SizedBox(height: 15),
       StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
@@ -511,7 +528,8 @@ class _ParkMenuManagementPageState extends State<ParkMenuManagementPage> {
                           ),
                           title: Text(_label(entry.data())),
                           subtitle: Text('${entry.data()['category'] ?? 'Other'} · '
-                            '${entry.data()['active'] == true ? 'Available' : 'Unavailable'}'),
+                            '${entry.data()['active'] == true ? 'Available' : 'Unavailable'}'
+                             '${!dining ? ' · Stock: ${(entry.data()['stockQuantity'] as num?)?.toInt() ?? 0}' : ''}'),
                           trailing: Wrap(spacing: 12,
                             crossAxisAlignment: WrapCrossAlignment.center,
                             children: [

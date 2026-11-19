@@ -1,4 +1,5 @@
 import 'dart:typed_data';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:pdf/pdf.dart';
@@ -6,11 +7,45 @@ import 'package:pdf/widgets.dart' as pw;
 import '../../photos/photo_repository.dart';
 import '../admin_models.dart';
 import '../admin_widgets.dart';
+import '../products/souvenir_admin_page.dart';
 import 'park_admin_repository.dart';
+
+// PARKSMART_UNIFIED_SALES_V12: aggregate separate sales channels exactly once.
+// Server report daily rows represent Ticket + Photo; confirmed souvenir rows
+// are merged by Malaysia reporting day for unified PDF totals.
+List<Map<String, dynamic>> _combinedParkDaily(Map<String, dynamic> report) {
+  final days = <String, Map<String, dynamic>>{};
+  void merge(dynamic raw) {
+    if (raw is! Map) return;
+    final day = (raw['day'] ?? '').toString();
+    if (!RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(day)) return;
+    final existing = days.putIfAbsent(day, () => {
+      'day': day, 'orders': 0, 'revenueMinor': 0,
+    });
+    existing['orders'] = ((existing['orders'] as num) +
+      ((raw['orders'] as num?) ?? 0)).toInt();
+    existing['revenueMinor'] = ((existing['revenueMinor'] as num) +
+      ((raw['revenueMinor'] as num?) ?? 0)).toInt();
+  }
+  for (final raw in (report['daily'] as List? ?? const [])) merge(raw);
+  final souvenir = report['souvenir'];
+  if (souvenir is Map) {
+    for (final raw in (souvenir['daily'] as List? ?? const [])) merge(raw);
+  }
+  return days.values.toList()..sort((a, b) =>
+    (a['day'] as String).compareTo(b['day'] as String));
+}
 
 Future<Uint8List> buildParkReportPdf(Map<String, dynamic> report) async {
   final document = pw.Document(),
       summary = Map<String, dynamic>.from(report['summary']);
+  final channel = report['souvenir'] is Map ? (report['souvenir'] as Map) : <String, dynamic>{};
+  final ticketPhotoMinor = (summary['revenueMinor'] as num? ?? 0).toInt();
+  final souvenirMinor = (channel['revenueMinor'] as num? ?? 0).toInt();
+  final totalMinor = ticketPhotoMinor + souvenirMinor;
+  final totalOrders = (((summary['ticketOrders'] as num?) ?? 0) +
+     ((summary['photoOrders'] as num?) ?? 0) +
+     ((channel['paidOrders'] as num?) ?? 0)).toInt();
   document.addPage(
     pw.MultiPage(
       pageFormat: PdfPageFormat.a4,
@@ -21,7 +56,7 @@ Future<Uint8List> buildParkReportPdf(Map<String, dynamic> report) async {
         ),
         pw.SizedBox(height: 8),
         pw.Text(
-          'Sales & Attendance Report',
+          'Unified Sales & Attendance Report',
           style: const pw.TextStyle(fontSize: 18),
         ),
         pw.Text('${report['start']} to ${report['end']}'),
@@ -29,7 +64,10 @@ Future<Uint8List> buildParkReportPdf(Map<String, dynamic> report) async {
         pw.TableHelper.fromTextArray(
           headers: ['Measure', 'Total'],
           data: [
-            ['Confirmed purchase value', photoMoney(summary['revenueMinor'])],
+            ['Total confirmed sales (all channels)', photoMoney(totalMinor)],
+            ['Ticket + Photo sales', photoMoney(ticketPhotoMinor)],
+            ['Souvenir sales', photoMoney(souvenirMinor)],
+            ['Paid orders (all channels)', '$totalOrders'],
             ['Ticket orders', '${summary['ticketOrders']}'],
             ['Photo orders', '${summary['photoOrders']}'],
             ['Park admissions', '${summary['parkAdmissions']}'],
@@ -50,20 +88,20 @@ Future<Uint8List> buildParkReportPdf(Map<String, dynamic> report) async {
         ),
         pw.SizedBox(height: 24),
         pw.Text(
-          'Daily Sales',
+          'Combined Daily Sales (All Channels)',
           style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold),
         ),
         pw.SizedBox(height: 10),
         pw.TableHelper.fromTextArray(
           headers: ['Park Day', 'Orders', 'Amount (MYR)'],
           data: [
-            for (final row in (report['daily'] as List).cast<Map>())
+            for (final row in _combinedParkDaily(report))
               [row['day'], '${row['orders']}', photoMoney(row['revenueMinor'])],
           ],
         ),
         pw.SizedBox(height: 22),
         pw.Text(
-          'Top 10 Products',
+          'Top 10 Ticket + Photo Products',
           style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold),
         ),
         pw.SizedBox(height: 10),
@@ -78,6 +116,40 @@ Future<Uint8List> buildParkReportPdf(Map<String, dynamic> report) async {
               ],
           ],
         ),
+        // SOUVENIR_ADMIN_V11: separate channel accounting and combined total.
+        if (report['souvenir'] is Map) ...[
+          pw.SizedBox(height: 22),
+          pw.Text('Souvenir Sales',
+            style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold)),
+          pw.SizedBox(height: 10),
+          pw.TableHelper.fromTextArray(
+            headers: ['Metric', 'Value'],
+            data: [
+              ['Ticket + Photo', photoMoney(summary['revenueMinor'])],
+              ['Souvenir', photoMoney((report['souvenir'] as Map)['revenueMinor'])],
+              ['Combined confirmed sales', photoMoney(
+                ((summary['revenueMinor'] as num? ?? 0) +
+                 (((report['souvenir'] as Map)['revenueMinor'] as num?) ?? 0)).toInt())],
+              ['Paid souvenir orders', '${(report['souvenir'] as Map)['paidOrders']}'],
+              ['Souvenir units sold', '${(report['souvenir'] as Map)['units']}'],
+              ['Awaiting collection', '${(report['souvenir'] as Map)['awaitingCollection']}'],
+              ['Collected', '${(report['souvenir'] as Map)['collected']}'],
+            ],
+          ),
+          pw.SizedBox(height: 10),
+          pw.Text('Top Souvenir Products',
+            style: pw.TextStyle(fontSize: 13, fontWeight: pw.FontWeight.bold)),
+          pw.TableHelper.fromTextArray(
+            headers: ['Product', 'Units', 'Paid Value'],
+            data: [
+              if (((report['souvenir'] as Map)['topProducts'] as List).isEmpty)
+                ['No souvenir sales', '0', 'RM 0.00']
+              else
+                for (final item in ((report['souvenir'] as Map)['topProducts'] as List).cast<Map>())
+                  [item['name'], '${item['quantity']}', photoMoney(item['revenueMinor'])],
+            ],
+          ),
+        ],
         pw.SizedBox(height: 22),
         pw.Text(
           'Top 10 Attractions',
@@ -111,8 +183,9 @@ Future<Uint8List> buildParkReportPdf(Map<String, dynamic> report) async {
 
 class ParkReportsPage extends StatefulWidget {
   final ParkAdminRepository repository;
-  const ParkReportsPage({super.key, required this.repository, this.embedded = false});
+  const ParkReportsPage({super.key, required this.repository, this.embedded = false, this.souvenirDb});
   final bool embedded;
+  final FirebaseFirestore? souvenirDb;
   @override
   State<ParkReportsPage> createState() => _ParkReportsPageState();
 }
@@ -224,7 +297,12 @@ class _ParkReportsPageState extends State<ParkReportsPage> {
             'ThemePark-Report-${period.start.toIso8601String().substring(0, 10)}.pdf',
         type: FileType.custom,
         allowedExtensions: ['pdf'],
-        bytes: await buildParkReportPdf(data),
+        bytes: await buildParkReportPdf({
+          ...data,
+          // SOUVENIR_ADMIN_V11: include verified souvenir totals in exported PDF.
+          if (widget.souvenirDb != null)
+            'souvenir': await loadSouvenirSales(widget.souvenirDb!, period.start, period.end),
+        }),
       );
     } catch (e) {
       if (mounted) {
@@ -268,6 +346,7 @@ class _ParkReportsPageState extends State<ParkReportsPage> {
           ],
         ),
         const SizedBox(height: 20),
+
         if (s.hasError)
           AdminCard(
             child: Column(
@@ -299,15 +378,34 @@ class _ParkReportsPageState extends State<ParkReportsPage> {
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
+                  // PARKSMART_REPORT_V13_INTEGRATED: one unified dashboard.
+                  // Do not show Ticket+Photo cards/chart again underneath.
+                  if (widget.souvenirDb != null) ...[
+                    SouvenirSalesReportPanel(
+                      db: widget.souvenirDb!,
+                      start: period.start,
+                      end: period.end,
+                      ticketPhotoRevenueMinor:
+                        (summary['revenueMinor'] as num? ?? 0).toInt(),
+                      ticketPhotoOrderCount:
+                        ((summary['ticketOrders'] as num? ?? 0) +
+                         (summary['photoOrders'] as num? ?? 0)).toInt(),
+                      ticketPhotoDaily: daily,
+                    ),
+                    const SizedBox(height: 18),
+                  ] else ...[
+                  const Text('Ticket + Photo Breakdown',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
+                  const SizedBox(height: 10),
                   AdminStats(children: [
-                    AdminStat('Confirmed Sales',
+                    AdminStat('Ticket + Photo Sales',
                       photoMoney(summary['revenueMinor']),
                       'Recorded sales',
                       Icons.payments_outlined),
-                    AdminStat('Paid Orders',
+                    AdminStat('Ticket + Photo Orders',
                       '${((summary['ticketOrders'] as num? ?? 0) + (summary['photoOrders'] as num? ?? 0)).toInt()}',
                       'Paid transactions', Icons.receipt_long_outlined),
-                    AdminStat('Average Order Value',
+                    AdminStat('Ticket + Photo Average',
                       photoMoney(((summary['ticketOrders'] as num? ?? 0) + (summary['photoOrders'] as num? ?? 0)) > 0
                           ? (((summary['revenueMinor'] as num? ?? 0) /
                               ((summary['ticketOrders'] as num? ?? 0) + (summary['photoOrders'] as num? ?? 0))).round()) : 0),
@@ -323,7 +421,7 @@ class _ParkReportsPageState extends State<ParkReportsPage> {
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
                         const Text(
-                          'Daily Purchase Value',
+                          'Daily Ticket + Photo Purchase Value',
                           style: TextStyle(
                             fontSize: 21,
                             fontWeight: FontWeight.w700,
@@ -364,6 +462,7 @@ class _ParkReportsPageState extends State<ParkReportsPage> {
                     ),
                   ),
                   const SizedBox(height: 16),
+                  ],
                   Wrap(spacing: 10, runSpacing: 10, children: [
                     AdminButton(exporting ? 'Exporting…' : 'Download Sales Report (PDF)',
                       icon: Icons.picture_as_pdf_outlined,
@@ -372,7 +471,7 @@ class _ParkReportsPageState extends State<ParkReportsPage> {
                   ]),
                   const SizedBox(height: 20),
                   _table(
-                    'Top 10 Products',
+                    'Top 10 Ticket + Photo Products',
                     ['Product', 'Quantity', 'Purchase Value'],
                     [
                       for (final row in (d['topProducts'] as List).cast<Map>())
@@ -401,40 +500,278 @@ class _ParkReportsPageState extends State<ParkReportsPage> {
       ],
     ),
   );
+  // PARKSMART_REPORT_V14_RANKING_GRID
+  // Full-width responsive ranking cards, replacing the old narrow DataTable.
   Widget _table(
     String title,
     List<String> headers,
     List<List<dynamic>> rows,
-  ) => AdminCard(
-    padding: EdgeInsets.zero,
-    child: ExpansionTile(
-      initiallyExpanded: false,
-      iconColor: adminRose,
-      collapsedIconColor: adminRose,
-      tilePadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
-      title: Text(title,
-        style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
+  ) {
+    final isAttractions = title.toLowerCase().contains('attraction');
 
-      children: [
-        if (rows.isEmpty)
-          const Padding(
-            padding: EdgeInsets.all(24),
-            child: Text('No records in this period.'),
-          )
-        else
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: DataTable(
-              columns: [for (final header in headers) DataColumn(label: Text(header))],
-              rows: [
-                for (final row in rows)
-                  DataRow(cells: [for (final cell in row) DataCell(Text('$cell'))]),
-              ],
-            ),
+    double score(List<dynamic> row) {
+      final raw = isAttractions
+          ? (row.length > 1 ? row[1] : 0)
+          : (row.length > 2 ? row[2] : 0);
+      final cleaned = raw.toString().replaceAll(RegExp(r'[^0-9.]'), '');
+      return double.tryParse(cleaned) ?? 0;
+    }
+
+    final maxScore = rows.fold<double>(
+      1,
+      (current, row) => score(row) > current ? score(row) : current,
+    );
+    final totalCount = rows.fold<int>(
+      0,
+      (current, row) => current +
+          (row.length > 1 ? (int.tryParse('${row[1]}') ?? 0) : 0),
+    );
+
+    return AdminCard(
+      padding: EdgeInsets.zero,
+      child: Theme(
+        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+        child: ExpansionTile(
+          initiallyExpanded: true,
+          tilePadding:
+              const EdgeInsets.symmetric(horizontal: 22, vertical: 12),
+          childrenPadding: EdgeInsets.zero,
+          iconColor: adminRose,
+          collapsedIconColor: adminRose,
+          title: Row(
+            children: [
+              Container(
+                height: 42,
+                width: 42,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF9ECEB),
+                  borderRadius: BorderRadius.circular(13),
+                ),
+                child: Icon(
+                  isAttractions
+                      ? Icons.attractions_outlined
+                      : Icons.workspace_premium_outlined,
+                  color: adminRose,
+                  size: 23,
+                ),
+              ),
+              const SizedBox(width: 13),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: const TextStyle(
+                        fontSize: 19,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      isAttractions
+                          ? 'Ranked by completed check-ins'
+                          : 'Ranked by confirmed purchase value',
+                      style:
+                          const TextStyle(color: adminMuted, fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ),
-      ],
-    ),
-  );
+          children: [
+            const Divider(height: 1, color: adminBorder),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 18, 20, 22),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Wrap(
+                    spacing: 10,
+                    runSpacing: 8,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 13,
+                          vertical: 9,
+                        ),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF9EEED),
+                          borderRadius: BorderRadius.circular(9),
+                        ),
+                        child: Text(
+                          '${rows.length} ${isAttractions ? 'attractions' : 'products'} ranked',
+                          style: const TextStyle(
+                            color: Color(0xFF9F505C),
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 13,
+                          vertical: 9,
+                        ),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF7F7F8),
+                          borderRadius: BorderRadius.circular(9),
+                        ),
+                        child: Text(
+                          isAttractions
+                              ? '$totalCount check-ins in this ranking'
+                              : '$totalCount units in this ranking',
+                          style: const TextStyle(
+                            color: Color(0xFF59616C),
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 18),
+                  if (rows.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 32),
+                      child: Text(
+                        'No records in this period.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: adminMuted),
+                      ),
+                    )
+                  else
+                    LayoutBuilder(
+                      builder: (context, size) {
+                        final columns = size.maxWidth >= 940 ? 2 : 1;
+                        final cardWidth = columns == 2
+                            ? (size.maxWidth - 14) / 2
+                            : size.maxWidth;
+                        return Wrap(
+                          spacing: 14,
+                          runSpacing: 13,
+                          children: [
+                            for (var i = 0; i < rows.length; i++)
+                              SizedBox(
+                                width: cardWidth,
+                                child: Container(
+                                  padding: const EdgeInsets.all(16),
+                                  decoration: BoxDecoration(
+                                    color: i == 0
+                                        ? const Color(0xFFFFF7F6)
+                                        : Colors.white,
+                                    borderRadius: BorderRadius.circular(14),
+                                    border: Border.all(
+                                      color: i == 0
+                                          ? const Color(0xFFEAC6C4)
+                                          : const Color(0xFFF0E5E4),
+                                    ),
+                                  ),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.stretch,
+                                    children: [
+                                      Row(
+                                        children: [
+                                          Container(
+                                            width: 36,
+                                            height: 36,
+                                            alignment: Alignment.center,
+                                            decoration: BoxDecoration(
+                                              color: i < 3
+                                                  ? const Color(0xFFF2DCDD)
+                                                  : const Color(0xFFF3F1F1),
+                                              borderRadius:
+                                                  BorderRadius.circular(10),
+                                            ),
+                                            child: Text(
+                                              '${i + 1}',
+                                              style: TextStyle(
+                                                color: i < 3
+                                                    ? const Color(0xFF9F505C)
+                                                    : const Color(0xFF727780),
+                                                fontSize: 15,
+                                                fontWeight: FontWeight.w800,
+                                              ),
+                                            ),
+                                          ),
+                                          const SizedBox(width: 12),
+                                          Expanded(
+                                            child: Column(
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.start,
+                                              children: [
+                                                Text(
+                                                  '${rows[i][0]}',
+                                                  maxLines: 2,
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
+                                                  style: const TextStyle(
+                                                    fontSize: 14,
+                                                    fontWeight:
+                                                        FontWeight.w700,
+                                                  ),
+                                                ),
+                                                const SizedBox(height: 4),
+                                                Text(
+                                                  isAttractions
+                                                      ? 'Completed check-ins'
+                                                      : '${rows[i].length > 1 ? rows[i][1] : 0} units sold',
+                                                  style: const TextStyle(
+                                                    color: adminMuted,
+                                                    fontSize: 11,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                          const SizedBox(width: 10),
+                                          Text(
+                                            isAttractions
+                                                ? '${rows[i].length > 1 ? rows[i][1] : 0}'
+                                                : '${rows[i].length > 2 ? rows[i][2] : 'RM 0.00'}',
+                                            textAlign: TextAlign.right,
+                                            style: const TextStyle(
+                                              fontSize: 15,
+                                              fontWeight: FontWeight.w800,
+                                              color: Color(0xFF9F505C),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 13),
+                                      ClipRRect(
+                                        borderRadius:
+                                            BorderRadius.circular(8),
+                                        child: LinearProgressIndicator(
+                                          value: (score(rows[i]) / maxScore)
+                                              .clamp(0.0, 1.0).toDouble(),
+                                          minHeight: 6,
+                                          backgroundColor:
+                                              const Color(0xFFF3E9E8),
+                                          valueColor:
+                                              const AlwaysStoppedAnimation<Color>(
+                                            Color(0xFFC9828A),
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                          ],
+                        );
+                      },
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class SalesChart extends CustomPainter {

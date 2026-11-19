@@ -7,9 +7,11 @@ const http = require('node:http');
 const {initializeApp, getApps, applicationDefault} = require('firebase-admin/app');
 const {getAuth} = require('firebase-admin/auth');
 const {getFirestore, FieldValue} = require('firebase-admin/firestore');
-const {createStripeGateway} = require('./src/stripe_ticket_gateway');
+const {createStripeGateway,verifyStripeEvent} = require('./src/stripe_ticket_gateway');
+const {createCommerceStripeGateway} = require('./src/stripe_commerce_gateway');
+const {createPhotoHandlers} = require('./src/photos');
 
-const port = Number(process.env.LOCAL_STRIPE_PORT || 8787);
+const port = Number(process.env.LOCAL_STRIPE_PORT || 8788);
 const host = '127.0.0.1';
 const projectId = process.env.FIREBASE_PROJECT_ID || 'themeparksmartmanagement';
 if (!process.env.STRIPE_SECRET_KEY?.startsWith('sk_test_')) {
@@ -30,7 +32,16 @@ const gateway = createStripeGateway({
   getStripeKey:()=>process.env.STRIPE_SECRET_KEY,
   getWebhookSecret:()=>process.env.STRIPE_WEBHOOK_SECRET,
 });
+const commerce=createCommerceStripeGateway({db:getFirestore(),FieldValue,projectId,
+  photos:createPhotoHandlers({db:getFirestore(),FieldValue,
+    ai:{call:async()=>{throw new Error('Photo rendering uses the main Node server.');}},
+    mailReady:()=>true}),
+  getStripeKey:()=>process.env.STRIPE_SECRET_KEY,
+});
 const handlers = {
+  '/stripeSouvenirQuote':commerce.quote,
+  '/stripeCommerceCheckout':commerce.start,
+  '/stripeCommerceStatus':commerce.status,
   '/stripeTicketQuote':gateway.quote,
   '/stripeTicketCheckout':gateway.start,
   '/stripeTicketStatus':gateway.status,
@@ -78,6 +89,17 @@ http.createServer(async(req,res)=>{
   try {
     if(route==='/stripeTicketWebhook') {
       const raw=await readBuffer(req);
+      // Signature verification MUST occur before any payment/order mutation.
+      const event=verifyStripeEvent(raw,req.headers['stripe-signature'],process.env.STRIPE_WEBHOOK_SECRET);
+      const session=event.data?.object;
+      if(['souvenir','photo'].includes(session?.metadata?.checkoutType)) {
+        if(['checkout.session.completed','checkout.session.async_payment_succeeded'].includes(event.type) && session.payment_status==='paid') {
+          await commerce.fulfill(session);
+        } else if(event.type==='checkout.session.expired') {
+          await commerce.expired(session);
+        }
+        reply(res,200,{received:true});return;
+      }
       const webhookReq={method:req.method,headers:req.headers,rawBody:raw};
       // The original handler expects an Express-like response.
       const webhookRes={

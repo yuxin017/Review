@@ -1659,7 +1659,7 @@ service cloud.firestore {
     // must reprice bundles against current ticket package records.
     function validParkMenuItem(d) {
       return d.keys().hasOnly(['storeId','name','description','category',
-        'priceMinor','currency','active','imageUrl','createdAt','updatedAt'])
+        'priceMinor','currency','active','imageUrl','stockQuantity','createdAt','updatedAt'])
         && d.keys().hasAll(['storeId','name','description','category',
         'priceMinor','currency','active','imageUrl','createdAt','updatedAt'])
         && d.storeId is string && d.storeId.size() > 0 && d.storeId.size() <= 128
@@ -1668,12 +1668,39 @@ service cloud.firestore {
         && d.category in ['Dessert','Meals','Snacks','Beverages','Other',
           'Souvenirs','Apparel','Toys','Accessories','Collectibles','Gifts']
         && d.priceMinor is int && d.priceMinor >= 1 && d.priceMinor <= 10000000
+        && (d.get('stockQuantity', null) == null ||
+          (d.stockQuantity is int && d.stockQuantity >= 0 && d.stockQuantity <= 1000000))
         && d.currency == 'MYR' && d.active is bool
         && d.imageUrl is string && d.imageUrl.size() <= 2048
         && d.createdAt is timestamp && d.updatedAt == request.time;
     }
+    // SHOP_COMMERCE_V1: backend-only orders/payments, owner read access.
+    match /souvenirOrders/{orderId} {
+      allow get, list: if isAdmin() ||
+        (signedIn() && resource.data.ownerUid == request.auth.uid);
+      allow create, update, delete: if false;
+    
+      // SOUVENIR_ADMIN_FULFILL11: Admin may confirm collected PAID orders only.
+      // No edits to order amount, items, payment status or purchaser.
+      allow update: if isAdmin()
+        && resource.data.status == 'paid'
+        && resource.data.currency == 'MYR'
+        && resource.data.fulfillmentStatus == 'awaiting_collection'
+        && request.resource.data.fulfillmentStatus == 'collected'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'fulfillmentStatus', 'collectedAt', 'collectedByUid'])
+        && request.resource.data.diff(resource.data).affectedKeys().hasAll([
+          'fulfillmentStatus', 'collectedAt', 'collectedByUid'])
+        && request.resource.data.collectedAt == request.time
+        && request.resource.data.collectedByUid == request.auth.uid;
+    }
+    match /parkCommercePayments/{paymentId} {
+      allow get, list: if isAdmin() ||
+        (signedIn() && resource.data.ownerUid == request.auth.uid);
+      allow create, update, delete: if false;
+    }
     match /parkMenuItems/{itemId} {
-      allow get, list: if isAdmin();
+      allow get, list: if signedIn(); // Public product catalogue only; no owner data.
       allow create: if isAdmin() && validParkMenuItem(request.resource.data)
         && request.resource.data.createdAt == request.time;
       allow update: if isAdmin() && validParkMenuItem(request.resource.data)

@@ -21,6 +21,7 @@ try {
     npm ci --omit=dev
     if ($LASTEXITCODE -ne 0) {throw 'npm ci failed.'}
   }
+  $env:LOCAL_STRIPE_PORT = '8788'
   node .\local_stripe_server.cjs
 } finally {
   Pop-Location

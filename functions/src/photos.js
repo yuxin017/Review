@@ -123,13 +123,14 @@ function createPhotoHandlers({db,FieldValue,ai,mailReady=()=>false,clock=()=>new
   }
   function quoteFields(value){return{subtotalMinor:value.subtotalMinor,discountMinor:value.discountMinor,pointsUsed:value.pointsUsed,totalMinor:value.totalMinor,maxPoints:value.maxPoints,currency:value.currency,pointsEarned:value.pointsEarned};}
   async function quote(request){caller(request);const items=cart(request.data);return db.runTransaction(async tx=>quoteFields(await price(tx,request,items)));}
-  async function checkout(request){
+  async function checkout(request, verifiedStripe=false){
     const uid=caller(request),items=cart(request.data),requestId=id(request.data.requestId);if(requestId.length<16)fail('invalid-argument','A unique purchase reference is required.');
     const deliveryEmail=request.data.deliveryEmail??request.auth.token.email;
     const orderId=hash(uid+'\0photos\0'+requestId),ref=db.doc('photoOrders/'+orderId),fingerprint=JSON.stringify({items,pointsUsed:request.data.pointsUsed??0,promoCode:request.data.promoCode??'',deliveryEmail}),kioskCode=crypto.randomBytes(16).toString('hex');
     return db.runTransaction(async tx=>{
       await access(tx,uid,request.auth.token);const old=await tx.get(ref);if(old.exists){if(old.data().fingerprint!==fingerprint)fail('already-exists','This purchase reference belongs to a different order.');return{orderId,kioskCode:old.data().kioskCode??null};}
       const value=await price(tx,request,items);
+      if(value.totalMinor>0&&!verifiedStripe)fail('failed-precondition','Complete secure Stripe payment before receiving purchased photos.');
       if(value.totalMinor!==request.data.expectedTotalMinor)fail('failed-precondition','Photo prices or discounts changed. Review the order again.');
       const printable=value.items.filter(i=>i.format!=='digital'),digital=value.items.filter(i=>i.format!=='print');
       const summaries=value.items.map(({previewBase64,...item})=>item);
@@ -177,6 +178,6 @@ function createPhotoHandlers({db,FieldValue,ai,mailReady=()=>false,clock=()=>new
       break;
     }
   }
-  return{staffUpload:request=>upload(request,true),staffKioskRetrieve:request=>kioskRetrieve(request,true),staffKioskStatus:request=>kioskStatus(request,true),staffKioskEditSource:request=>kioskEditSource(request,true),staffKioskSaveEdits:request=>kioskSaveEdits(request,true),enroll,disable,upload,recheck,archive,hide,favorite,claim,quote,checkout,purchaseState,download,adminOriginal,kioskRetrieve,kioskStatus,kioskEditSource,kioskSaveEdits,resolveReview,refreshMatches,resendEmail,runMatchingJobs};
+  return{staffUpload:request=>upload(request,true),staffKioskRetrieve:request=>kioskRetrieve(request,true),staffKioskStatus:request=>kioskStatus(request,true),staffKioskEditSource:request=>kioskEditSource(request,true),staffKioskSaveEdits:request=>kioskSaveEdits(request,true),enroll,disable,upload,recheck,archive,hide,favorite,claim,quote,checkout,checkoutPaid:request=>checkout(request,true),purchaseState,download,adminOriginal,kioskRetrieve,kioskStatus,kioskEditSource,kioskSaveEdits,resolveReview,refreshMatches,resendEmail,runMatchingJobs};
 }
 module.exports={createPhotoHandlers,photoEdits};

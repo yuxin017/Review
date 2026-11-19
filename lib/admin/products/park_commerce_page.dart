@@ -6,11 +6,11 @@ import '../package_management.dart';
 import '../ticket_management.dart';
 import '../operations/park_admin_repository.dart';
 import '../operations/reports_page.dart';
-import '../operations/park_management_page.dart';
 import '../../visitor/models/tickets.dart';
 import 'park_menu_management_page.dart';
 import 'ticket_bundle_management_page.dart';
 import 'photo_product_catalogue_page.dart';
+import 'souvenir_admin_page.dart';
 
 /// Business navigation: sales first; all admission products live together.
 /// The report is backed by the existing verified admin reporting endpoint.
@@ -64,10 +64,17 @@ class _ParkCommercePageState extends State<ParkCommercePage> {
           ? const AdminCard(child: Text('Admin sign-in required.'))
           : ParkMenuManagementPage(db: widget.db!),
       if (selected == 4) ...[
+        // SOUVENIR_ADMIN_V11: paid orders and one-way collection.
+        if (widget.db != null) ...[
+          SouvenirOrdersAdminPage(
+            db: widget.db!, adminUid: widget.store.repository.userId,
+            visitors: widget.store.visitors),
+          const SizedBox(height: 22),
+        ],
         if (widget.reportsRepository == null)
           const AdminCard(child: Text('Reporting requires administrator access.'))
         else
-          ParkReportsPage(repository: widget.reportsRepository!, embedded: true),
+          ParkReportsPage(repository: widget.reportsRepository!, embedded: true, souvenirDb: widget.db),
         const SizedBox(height: 18),
         TicketManagement(store: widget.store,
           onValidate: widget.onValidate, embedded: true),

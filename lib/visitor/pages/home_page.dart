@@ -10,6 +10,7 @@ import '../../photos/photo_repository.dart';
 import '../../park/assistant_page.dart';
 import '../../park/intelligence_repository.dart';
 import '../../park/offers_page.dart';
+import 'souvenir_shop_page.dart';
 
 class HomePage extends StatelessWidget {
   const HomePage({super.key});
@@ -91,6 +92,10 @@ class HomePage extends StatelessWidget {
         _HomeShortcut(Icons.map_outlined, 'Park Map',
           'Find your way',
           () => VisitorMainPage.goTo(context, 2)),
+        _HomeShortcut(Icons.shopping_bag_outlined, 'Souvenir Shop',
+          'Browse park merchandise',
+          () => Navigator.push(context, MaterialPageRoute(
+            builder: (_) => const SouvenirShopPage()))),
         _HomeShortcut(Icons.local_offer_outlined, 'Park Offers',
           'Discover rewards',
           () => Navigator.push(context, MaterialPageRoute(

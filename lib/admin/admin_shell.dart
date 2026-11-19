@@ -449,7 +449,7 @@ class _AdminShellState extends State<AdminShell> {
               : page == 'landmarks'
               ? LandmarkManagementPage(repository: park!)
               : page == 'reports'
-              ? ParkReportsPage(repository: park!)
+              ? ParkReportsPage(repository: park!, souvenirDb: repository.staffRecordsRepository?.db)
               : page == 'crowd'
               ? CrowdMonitoringPage(
                   repository: park!,

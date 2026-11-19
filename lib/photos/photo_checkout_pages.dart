@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/application_api.dart';
 import 'photo_repository.dart';
+import '../commerce/stripe_commerce_client.dart';
 import 'photo_widgets.dart';
 import 'photo_order_pages.dart';
 export 'photo_order_pages.dart';
@@ -954,8 +955,13 @@ class _PhotoPaymentPageState extends State<PhotoPaymentPage> {
   Map<String, dynamic>? quote;
   bool busy = false, loading = true, accepted = false, usePoints = false;
   int points = 0, generation = 0;
-  String method = 'card';
+  StripeCommerceClient get _commerce => StripeCommerceClient(
+    auth: widget.repository is FirebasePhotoRepository
+      ? (widget.repository as FirebasePhotoRepository).auth : null);
+  String? _pendingCommerceId;
+  String? _pendingPhotoRequestId;
   String? error;
+  String get _stripePhotoKey => 'photo_stripe_pending_${widget.repository.uid}';
   Map<String, dynamic> get body => {
     'items': widget.repository.cart.items.map((i) => i.payload).toList(),
     'pointsUsed': points,
@@ -968,6 +974,39 @@ class _PhotoPaymentPageState extends State<PhotoPaymentPage> {
   void initState() {
     super.initState();
     refresh();
+    _loadStripePending();
+  }
+
+  Future<void> _loadStripePending() async {
+    final prefs=await SharedPreferences.getInstance();
+    final id=prefs.getString(_stripePhotoKey);
+    if(mounted && id!=null && id.isNotEmpty) setState(()=>_pendingCommerceId=id);
+  }
+
+  Future<void> _finishPhoto(String orderId) async {
+    final prefs=await SharedPreferences.getInstance();
+    await prefs.remove(_stripePhotoKey);
+    await widget.repository.cart.clear();
+    if(!mounted)return;
+    Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) =>
+      PhotoPaymentSuccessPage(repository:widget.repository,orderId:orderId)));
+  }
+
+  Future<void> _checkStripePhoto() async {
+    final id=_pendingCommerceId;
+    if(id==null || busy)return;
+    setState(() {busy=true;error=null;});
+    try {
+      final result=await _commerce.status(id);
+      if(result['status']=='paid' && result['photoOrderId'] is String) {
+        await _finishPhoto(result['photoOrderId'] as String);
+      } else if(mounted) {
+        setState(() => error=result['status']=='manual_review'
+          ? 'Payment received. Photo fulfillment needs staff review. Do not pay again.'
+          : 'Payment not yet confirmed. Complete checkout, then check again.');
+      }
+    }catch(e){if(mounted)setState(()=>error=e.toString());}
+    finally{if(mounted)setState(()=>busy=false);}
   }
 
   Future<void> refresh() async {
@@ -995,21 +1034,30 @@ class _PhotoPaymentPageState extends State<PhotoPaymentPage> {
       error = null;
     });
     try {
-      final result = await confirmPhotoPurchase(widget.repository, {
-        ...body,
-        'expectedTotalMinor': quote!['totalMinor'],
-        'paymentMethod': method,
-      });
-      if (mounted) {
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(
-            builder: (_) => PhotoPaymentSuccessPage(
-              repository: widget.repository,
-              orderId: result['orderId'] as String,
-            ),
-          ),
-        );
+      final total=(quote!['totalMinor'] as num).toInt();
+      if(total==0) {
+        // A fully points-funded photo order requires no bank charge.
+        final result=await confirmPhotoPurchase(widget.repository, {
+          ...body,'expectedTotalMinor':0,'paymentMethod':'points',
+        });
+        await _finishPhoto(result['orderId'] as String);
+      } else {
+        final requestId=_pendingPhotoRequestId ?? widget.repository.newRequestId();
+        _pendingPhotoRequestId=requestId;
+        final response=await _commerce.checkout('photo',requestId,body);
+        final id=response['orderId'] as String?;
+        if(id!=null){
+          _pendingCommerceId=id;
+          await (await SharedPreferences.getInstance()).setString(_stripePhotoKey,id);
+        }
+        if(response['status']=='paid' && response['photoOrderId'] is String) {
+          await _finishPhoto(response['photoOrderId'] as String);
+        } else if(response['url'] is String) {
+          await _commerce.openCheckout(response['url'] as String);
+          if(mounted)setState(()=>error='Return here and use Check Payment Status after payment.');
+        } else {
+          throw StateError('Payment is pending. Use Check Payment Status.');
+        }
       }
     } catch (e) {
       if (mounted) setState(() => error = e.toString());
@@ -1047,32 +1095,11 @@ class _PhotoPaymentPageState extends State<PhotoPaymentPage> {
           padding: EdgeInsets.zero,
           child: Column(
             children: [
-              for (final option in [
-                ('card', 'Credit / Debit Card', 'VISA · Mastercard'),
-                ('fpx', 'FPX Online Banking', 'FPX'),
-                ('tng', 'Touch ’n Go eWallet', 'TNG'),
-                ('boost', 'Boost eWallet', 'Boost'),
-                ('apple', 'Apple Pay', 'Apple Pay'),
-              ])
-                ListTile(
-                  onTap: busy ? null : () => setState(() => method = option.$1),
-                  leading: Icon(
-                    method == option.$1
-                        ? Icons.check_circle
-                        : Icons.radio_button_unchecked,
-                    color: photoRose,
-                    size: 22,
-                  ),
-                  title: Text(option.$2, style: const TextStyle(fontSize: 12)),
-                  trailing: Text(
-                    option.$3,
-                    style: const TextStyle(
-                      fontSize: 10,
-                      color: photoRose,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ),
+              const ListTile(
+                leading: Icon(Icons.lock_outline,color:photoRose),
+                title: Text('Stripe Secure Checkout'),
+                subtitle: Text('Available card, FPX and wallet methods depend on your Stripe account.'),
+              ),
             ],
           ),
         ),
@@ -1194,9 +1221,13 @@ class _PhotoPaymentPageState extends State<PhotoPaymentPage> {
           quote == null
               ? 'Pay & Confirm'
               : 'Pay ${photoMoney(quote!['totalMinor'] as num)}',
-          onPressed: !accepted || loading || quote == null ? null : pay,
+          onPressed: !accepted || loading || quote == null || _pendingCommerceId != null ? null : pay,
           busy: busy,
         ),
+        if (_pendingCommerceId != null) ...[
+          const SizedBox(height: 10),
+          PhotoButton('Check Payment Status', onPressed:_checkStripePhoto, busy:busy),
+        ],
         const SizedBox(height: 15),
         const Row(
           mainAxisAlignment: MainAxisAlignment.center,

@@ -3,6 +3,7 @@ import '../models/tickets.dart';
 import '../services/ticket_journey.dart';
 import '../widgets/ticket_widgets.dart';
 import 'tickets_page.dart';
+import '../widgets/live_souvenirs_section.dart';
 
 class TicketHub extends StatelessWidget {
   final TicketJourney journey;
@@ -99,19 +100,7 @@ class TicketHub extends StatelessWidget {
             ],
           ),
         const SizedBox(height: 18),
-        _section('Shop Souvenirs', () => _souvenirInfo(context)),
-        const SizedBox(height: 8),
-        SizedBox(
-          height: 115,
-          child: ListView(
-            scrollDirection: Axis.horizontal,
-            children: [
-              _souvenir(context, 'Mickey Ears Headband', 5900, 'headband.png'),
-              _souvenir(context, 'Castle Snow Globe', 8900, 'snow-globe.png'),
-              _souvenir(context, 'Duffy Plush Toy', 12900, 'plush.png'),
-            ],
-          ),
-        ),
+        const LiveSouvenirsSection(),
         const SizedBox(height: 12),
         InkWell(
           onTap: onTickets,
@@ -252,97 +241,7 @@ class TicketHub extends StatelessWidget {
       ],
     ),
   );
-  Widget _souvenir(
-    BuildContext context,
-    String name,
-    int price,
-    String image,
-  ) => SizedBox(
-    width: 119,
-    child: Padding(
-      padding: const EdgeInsets.only(right: 12),
-      child: InkWell(
-        onTap: () =>
-            _souvenirInfo(context, name: name, price: price, image: image),
-        child: TicketSurface(
-          padding: EdgeInsets.zero,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              ClipRRect(
-                borderRadius: const BorderRadius.vertical(
-                  top: Radius.circular(11),
-                ),
-                child: Image.asset(
-                  'assets/images/ticketing/$image',
-                  height: 76,
-                  width: 110,
-                  fit: BoxFit.cover,
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(8, 3, 4, 0),
-                child: Text(
-                  name,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 9),
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.only(left: 8),
-                child: Text(
-                  ticketDisplayPrice(context, price),
-                  style: const TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    ),
-  );
-  void _souvenirInfo(
-    BuildContext context, {
-    String? name,
-    int? price,
-    String? image,
-  }) => showModalBottomSheet<void>(
-    context: context,
-    showDragHandle: true,
-    builder: (context) => Padding(
-      padding: const EdgeInsets.all(24),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (image != null)
-            Image.asset('assets/images/ticketing/$image', height: 150),
-          Text(
-            name ?? 'Shop Souvenirs',
-            style: const TextStyle(fontSize: 23, fontWeight: FontWeight.w700),
-          ),
-          if (price != null)
-            Text(
-              ticketDisplayPrice(context, price),
-              style: const TextStyle(color: ticketRose, fontSize: 21),
-            ),
-          const SizedBox(height: 12),
-          const Text(
-            'Discover these souvenirs at the park gift shop. Ask our shop team for availability during your visit.',
-            textAlign: TextAlign.center,
-          ),
-          const SizedBox(height: 20),
-          TicketButton(
-            'Continue exploring',
-            onPressed: () => Navigator.pop(context),
-          ),
-        ],
-      ),
-    ),
-  );
+
 }
 
 class PassCatalog extends StatelessWidget {
