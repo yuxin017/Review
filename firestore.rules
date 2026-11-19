@@ -148,6 +148,17 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/staffProfiles/$(staffUid)).data.status == 'active';
     }
 
+    match /staffAvailabilityReminders/{weekId} {
+      allow get: if workforceSuperAdmin() ||
+        (signedIn() && activeWorkforceMember(request.auth.uid));
+      allow create, update: if workforceSuperAdmin()
+        && weekId.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && request.resource.data.keys().hasOnly(['weekStart', 'sentAt'])
+        && request.resource.data.weekStart == weekId
+        && request.resource.data.sentAt == request.time;
+      allow list, delete: if false;
+    }
+
     match /staffAvailability/{recordId} {
       allow get: if workforceSuperAdmin() ||
         (signedIn() && recordId.matches('^' + request.auth.uid + '_[0-9]{4}-[0-9]{2}-[0-9]{2}$'));

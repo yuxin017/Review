@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'staff_records.dart';
+import 'staff_access.dart';
 import 'staff_schedule_utils.dart';
 
 /// Employee self-service on the separate Staff Firebase session.
@@ -15,7 +16,7 @@ class StaffMyWorkPage extends StatefulWidget {
 
 class _StaffMyWorkPageState extends State<StaffMyWorkPage> {
   int selected = 0;
-  DateTime monday = StaffWeek.start(DateTime.now());
+  DateTime monday = StaffWeek.start(StaffWeek.parkCalendar(DateTime.now()));
   bool busy = false;
   String? feedback;
   String get weekKey => StaffWeek.key(monday);
@@ -119,11 +120,68 @@ class _StaffMyWorkPageState extends State<StaffMyWorkPage> {
       if (feedback != null) Padding(padding: const EdgeInsets.symmetric(vertical: 10),
         child: Text(feedback!)),
       const SizedBox(height: 12),
+      _availabilityReminders(),
       if (selected == 0) _schedule(),
       if (selected == 1) _availability(),
       if (selected == 2) _leave(),
     ],
   );
+
+  Stream<QuerySnapshot<Map<String, dynamic>>> _ownLeave() => widget.db
+      .collection('staffLeaveRequests')
+      .where('staffUid', isEqualTo: widget.profile.uid).snapshots();
+
+  Widget _availabilityReminders() {
+    final current = StaffWeek.start(StaffWeek.parkCalendar(DateTime.now()));
+    return Column(children: [
+      for (final week in {StaffWeek.key(current): current,
+        StaffWeek.key(StaffWeek.day(current, 7)): StaffWeek.day(current, 7),
+        weekKey: monday}.values)
+        if (!week.isBefore(current))
+          StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+            stream: widget.db.collection('staffAvailabilityReminders')
+                .doc(StaffWeek.key(week)).snapshots(),
+            builder: (context, reminder) {
+              if (reminder.data?.exists != true) return const SizedBox.shrink();
+              return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+                stream: widget.db.collection('staffAvailability')
+                    .doc(StaffWeek.id(widget.profile.uid, week)).snapshots(),
+                builder: (context, availability) {
+                  if (!availability.hasData) return const SizedBox.shrink();
+                  final days = availability.data?.data()?['availableDays'] as List?;
+                  return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                    stream: _ownLeave(),
+                    builder: (context, leave) {
+                      if (!leave.hasData) return const SizedBox.shrink();
+                      final leaveDays = staffLeaveDays(
+                        week, leave.data!.docs.map((doc) => doc.data()),
+                      );
+                      final weekDays = {
+                        for (var index = 0; index < 7; index++)
+                          StaffWeek.key(StaffWeek.day(week, index)),
+                      };
+                      final available = (days ?? []).whereType<String>().toSet()
+                          .intersection(weekDays).difference(leaveDays);
+                      if (available.length >= staffAvailabilityMinimum(leaveDays)) {
+                        return const SizedBox.shrink();
+                      }
+                      return Card(child: ListTile(
+                        leading: const Icon(Icons.notifications_outlined),
+                        title: const Text('Submit your availability'),
+                        subtitle: Text('Week of ${StaffWeek.key(week)}'),
+                        trailing: TextButton(
+                          onPressed: () => setState(() { monday = week; selected = 1; }),
+                          child: const Text('Fill Availability'),
+                        ),
+                      ));
+                    },
+                  );
+                },
+              );
+            },
+          ),
+    ]);
+  }
 
   Widget _weekPicker() => OutlinedButton.icon(icon: const Icon(Icons.calendar_month),
     label: Text('Week of $weekKey'),
@@ -135,6 +193,13 @@ class _StaffMyWorkPageState extends State<StaffMyWorkPage> {
 
   Widget _schedule() => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
     _weekPicker(), const SizedBox(height: 12),
+    if (widget.profile.eligibleRoles.any(fixedDutyRoles.contains))
+      const Card(child: ListTile(
+        leading: Icon(Icons.event_repeat_outlined),
+        title: Text('Regular duty'),
+        subtitle: Text('Every day · 09:00–17:00, except approved leave'),
+      ))
+    else
     StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
       stream: widget.db.collection('staffPublishedShifts')
         .where('staffUid', isEqualTo: widget.profile.uid).snapshots(),
@@ -165,9 +230,27 @@ class _StaffMyWorkPageState extends State<StaffMyWorkPage> {
       builder: (context, snapshot) {
         if (snapshot.hasError) return const Text('Could not load availability. Check permissions.');
         if (!snapshot.hasData) return const LinearProgressIndicator();
-        final existing = (snapshot.data!.data()?['availableDays'] as List?)?.whereType<String>().toSet() ?? <String>{};
-        return _AvailabilityForm(key: ValueKey(availabilityId + existing.join(',')),
-          monday: monday, initial: existing, busy: busy, onSave: _saveAvailability);
+        final weekDays = {
+          for (var index = 0; index < 7; index++)
+            StaffWeek.key(StaffWeek.day(monday, index)),
+        };
+        final existing = (snapshot.data!.data()?['availableDays'] as List?)
+            ?.whereType<String>().toSet().intersection(weekDays) ?? <String>{};
+        return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+          stream: _ownLeave(),
+          builder: (context, leave) {
+            if (leave.hasError) return const Text('Could not load approved leave.');
+            if (!leave.hasData) return const LinearProgressIndicator();
+            final leaveDays = staffLeaveDays(
+              monday, leave.data!.docs.map((doc) => doc.data()),
+            );
+            return _AvailabilityForm(
+              key: ValueKey(availabilityId + existing.join(',') + leaveDays.join(',')),
+              monday: monday, initial: existing, busy: busy, onSave: _saveAvailability,
+              leaveDays: leaveDays,
+            );
+          },
+        );
       },
     ),
   ]);
@@ -195,31 +278,42 @@ class _StaffMyWorkPageState extends State<StaffMyWorkPage> {
 
 class _AvailabilityForm extends StatefulWidget {
   const _AvailabilityForm({super.key, required this.monday, required this.initial,
-    required this.busy, required this.onSave});
+    required this.busy, required this.onSave, required this.leaveDays});
   final DateTime monday;
   final Set<String> initial;
+  final Set<String> leaveDays;
   final bool busy;
   final Future<void> Function(Set<String>) onSave;
   @override
   State<_AvailabilityForm> createState() => _AvailabilityFormState();
 }
 class _AvailabilityFormState extends State<_AvailabilityForm> {
-  late final Set<String> checked = {...widget.initial};
+  late final Set<String> checked = widget.initial.difference(widget.leaveDays);
   @override
   Widget build(BuildContext context) => Card(child: Padding(
     padding: const EdgeInsets.all(15), child: Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const Text('Select the days you can work', style: TextStyle(fontWeight: FontWeight.bold)),
+        Text(
+          'Choose at least ${staffAvailabilityMinimum(widget.leaveDays)} days you can work',
+          style: const TextStyle(fontWeight: FontWeight.bold),
+        ),
+        Text('${checked.length} selected'),
         for (var i=0;i<7;i++) CheckboxListTile(
           title: Text(StaffWeek.key(StaffWeek.day(widget.monday,i))),
           value: checked.contains(StaffWeek.key(StaffWeek.day(widget.monday,i))),
-          onChanged: widget.busy ? null : (v) => setState(() {
+          subtitle: widget.leaveDays.contains(StaffWeek.key(StaffWeek.day(widget.monday,i)))
+              ? const Text('Approved leave') : null,
+          onChanged: widget.busy ||
+              widget.leaveDays.contains(StaffWeek.key(StaffWeek.day(widget.monday,i)))
+              ? null : (v) => setState(() {
             final key = StaffWeek.key(StaffWeek.day(widget.monday,i));
             if (v == true) { checked.add(key); } else { checked.remove(key); }
           }),
         ),
-        FilledButton(onPressed: widget.busy ? null : () => widget.onSave(checked),
+        FilledButton(onPressed: widget.busy ||
+            checked.length < staffAvailabilityMinimum(widget.leaveDays)
+            ? null : () => widget.onSave(checked),
           child: const Text('Save Availability')),
       ],
     ),

@@ -66,3 +66,14 @@ test('ends, conflicts, approved leave, and revoked qualifications fail closed', 
   f.qualifications[0].status = 'revoked';
   assert.equal(await currentStaffShift(onDuty), null);
 });
+
+test('regular duty has Malaysia working hours without a published shift', async () => {
+  const f = fixture();
+  f.profile.eligibleRoles = ['operations_manager'];
+  f.shifts.length = 0;
+  const onDuty = {...f, now: start('2026-11-19')};
+  assert.equal((await currentStaffShift(onDuty)).role, 'operations_manager');
+  assert.equal(await currentStaffShift({...f, now: end('2026-11-19')}), null);
+  f.leave.push({status: 'approved', startOn: '2026-11-19', endOn: '2026-11-19'});
+  assert.equal(await currentStaffShift(onDuty), null);
+});

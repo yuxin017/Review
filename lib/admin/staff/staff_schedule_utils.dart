@@ -9,6 +9,9 @@ class StaffWeek {
   }
   static DateTime day(DateTime monday, int offset) =>
       DateTime(monday.year, monday.month, monday.day + offset);
+  static DateTime parkCalendar(DateTime instant) =>
+      instant.toUtc().add(const Duration(hours: 8));
+
   static DateTime parkTime(DateTime date, int hour) =>
       DateTime.utc(date.year, date.month, date.day, hour - 8);
 
@@ -54,3 +57,16 @@ bool staffLeaveIncludes(Map<String, dynamic> leave, String day) =>
     leave['startOn'] is String && leave['endOn'] is String &&
     (leave['startOn'] as String).compareTo(day) <= 0 &&
     (leave['endOn'] as String).compareTo(day) >= 0;
+
+const staffMinimumAvailability = 5;
+
+Set<String> staffLeaveDays(DateTime monday, Iterable<Map<String, dynamic>> leave) => {
+  for (var offset = 0; offset < 7; offset++)
+    if (leave.any((record) => staffLeaveIncludes(
+      record, StaffWeek.key(StaffWeek.day(monday, offset)),
+    )))
+      StaffWeek.key(StaffWeek.day(monday, offset)),
+};
+
+int staffAvailabilityMinimum(Set<String> leaveDays) =>
+    (7 - leaveDays.length).clamp(0, staffMinimumAvailability).toInt();

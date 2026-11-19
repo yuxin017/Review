@@ -23,15 +23,25 @@ async function currentStaffShift({db, reader, request, now}) {
     deny('Your staff account is not available.');
   }
 
-  const shifts = await read(db.collection('staffPublishedShifts').where('staffUid', '==', uid));
-  const active = shifts.docs.map(doc => doc.data()).filter(shift =>
-    shift.published === true && dateValid(shift.startsAt) && dateValid(shift.endsAt) &&
-    time(shift.startsAt) <= now && now < time(shift.endsAt));
-  if (active.length !== 1) return null;
-  const shift = active[0];
-  if (!Array.isArray(profile.eligibleRoles) || !profile.eligibleRoles.includes(shift.roleCode)) return null;
-
+  const roles = Array.isArray(profile.eligibleRoles) ? profile.eligibleRoles : [];
+  const fixed = ['operations_manager', 'marketing_staff'].filter(role => roles.includes(role));
+  if (fixed.length > 1) return null;
   const day = parkDay(now);
+  let shift;
+  if (fixed.length === 1) {
+    // Fixed duties use the same 09:00–17:00 Malaysia working window.
+    const startsAt = new Date(day + 'T01:00:00Z');
+    const endsAt = new Date(day + 'T09:00:00Z');
+    if (now < startsAt || now >= endsAt) return null;
+    shift = {roleCode: fixed[0], endsAt};
+  } else {
+    const shifts = await read(db.collection('staffPublishedShifts').where('staffUid', '==', uid));
+    const active = shifts.docs.map(doc => doc.data()).filter(item =>
+      item.published === true && dateValid(item.startsAt) && dateValid(item.endsAt) &&
+      time(item.startsAt) <= now && now < time(item.endsAt));
+    if (active.length !== 1 || !roles.includes(active[0].roleCode)) return null;
+    shift = active[0];
+  }
   const leaves = await read(db.collection('staffLeaveRequests').where('staffUid', '==', uid));
   if (leaves.docs.some(doc => {
     const leave = doc.data();

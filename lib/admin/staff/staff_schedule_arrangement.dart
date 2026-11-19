@@ -14,11 +14,18 @@ ScheduleDraft arrangeStaffWeek({
   required Iterable<Map<String, dynamic>> leaves,
   required List<StaffQualification> qualifications,
 }) {
-  final people = directory.where((person) => person.isActive).toList()
-    ..sort((a, b) {
-      final name = a.fullName.compareTo(b.fullName);
-      return name == 0 ? a.uid.compareTo(b.uid) : name;
-    });
+  final people =
+      directory
+          .where(
+            (person) =>
+                person.isActive &&
+                !person.eligibleRoles.any(fixedDutyRoles.contains),
+          )
+          .toList()
+        ..sort((a, b) {
+          final name = a.fullName.compareTo(b.fullName);
+          return name == 0 ? a.uid.compareTo(b.uid) : name;
+        });
   final graph = <List<_Edge>>[[], []];
   int node() {
     graph.add([]);
@@ -59,7 +66,10 @@ ScheduleDraft arrangeStaffWeek({
       connect(entry.value, staffNodes[entry.key]!, 1);
     }
     for (final role in StaffRole.values) {
-      if (role == StaffRole.superAdmin || !roles.contains(role)) continue;
+      if (role == StaffRole.superAdmin ||
+          fixedDutyRoles.contains(role) ||
+          !roles.contains(role))
+        continue;
       final slotNode = node();
       connect(0, slotNode, 1);
       final options = <(_Edge, StaffShiftPlan)>[];

@@ -17,17 +17,17 @@ class StaffScheduleReviewPage extends StatefulWidget {
 }
 
 class _StaffScheduleReviewPageState extends State<StaffScheduleReviewPage> {
-  DateTime monday = StaffWeek.start(DateTime.now());
+  DateTime monday = StaffWeek.start(StaffWeek.parkCalendar(DateTime.now()));
   List<StaffShiftPlan> draft = const [];
   List<String> gaps = const [];
   String? message;
   bool busy = false;
   bool showPublished = true;
+  bool draftGenerated = false;
   final selectedRoles = <StaffRole>{
-    StaffRole.operationsManager, StaffRole.attractionOperator,
+    StaffRole.attractionOperator,
     StaffRole.admissionStaff, StaffRole.photographer,
     StaffRole.photoCounterStaff, StaffRole.customerSupport,
-    StaffRole.marketingStaff,
   };
 
   String get weekKey => StaffWeek.key(monday);
@@ -67,11 +67,11 @@ class _StaffScheduleReviewPageState extends State<StaffScheduleReviewPage> {
 
   Future<void> _generate() async {
     if (busy) return;
-    setState(() { busy = true; message = null; draft = []; gaps = []; });
+    setState(() { busy = true; message = null; draft = []; gaps = []; draftGenerated = false; });
     try {
       final result = await _arrange();
       if (mounted) setState(() {
-        draft = result.assignments; gaps = result.gaps;
+        draft = result.assignments; gaps = result.gaps; draftGenerated = true;
         message = draft.isEmpty ? 'No eligible shifts. Ask staff to submit availability.'
             : 'Draft ready. Review coverage before approving.';
       });
@@ -141,7 +141,10 @@ class _StaffScheduleReviewPageState extends State<StaffScheduleReviewPage> {
       final batch = db.batch();
       final replacementIds = draft.map((s) => s.docId).toSet();
       for (final doc in old.docs) {
-        if (!replacementIds.contains(doc.id)) batch.delete(doc.reference);
+        final role = StaffRole.fromCode(doc.data()['roleCode']?.toString() ?? '');
+        if (!fixedDutyRoles.contains(role) && !replacementIds.contains(doc.id)) {
+          batch.delete(doc.reference);
+        }
       }
       for (final shift in draft) {
         batch.set(db.collection('staffPublishedShifts').doc(shift.docId),
@@ -163,11 +166,11 @@ class _StaffScheduleReviewPageState extends State<StaffScheduleReviewPage> {
     return '${days[value.weekday - 1]} · ${StaffWeek.key(value)}';
   }
 
-  bool get pastWeek => monday.isBefore(StaffWeek.start(DateTime.now()));
+  bool get pastWeek => monday.isBefore(StaffWeek.start(StaffWeek.parkCalendar(DateTime.now())));
 
   void _changeWeek(int amount) => setState(() {
     monday = monday.add(Duration(days: amount * 7));
-    draft = []; gaps = []; message = null;
+    draft = []; gaps = []; draftGenerated = false; message = null;
     showPublished = true;
   });
 
@@ -175,99 +178,102 @@ class _StaffScheduleReviewPageState extends State<StaffScheduleReviewPage> {
     final chosen = await showDatePicker(context: context,
       initialDate: monday, firstDate: DateTime(2025), lastDate: DateTime(2035));
     if (chosen != null && mounted) setState(() {
-      monday = StaffWeek.start(chosen); draft = []; gaps = [];
+      monday = StaffWeek.start(chosen); draft = []; gaps = []; draftGenerated = false;
       showPublished = true; message = null;
     });
   }
 
-  Widget _previewDraft() {
-    if (draft.isEmpty) return const Card(child: Padding(
-      padding: EdgeInsets.all(20), child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text('No draft generated', style: TextStyle(fontWeight: FontWeight.w700)),
-          SizedBox(height: 7),
-          Text('1. Confirm staff availability and leave requests.\n'
-            '2. Choose the week and roles.\n'
-            '3. Select Generate Draft to propose assignments.'),
-        ])));
-    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-      for (var offset = 0; offset < 7; offset++)
-        Builder(builder: (context) {
-          final date = StaffWeek.day(monday, offset);
-          final assignments = draft.where((s) =>
-            StaffWeek.key(s.date) == StaffWeek.key(date)).toList();
-          return Card(child: ExpansionTile(
-            initiallyExpanded: offset < 2,
-            title: Text(_dayLabel(date), style: const TextStyle(
-              fontWeight: FontWeight.w700, fontSize: 14)),
-            subtitle: Text('${assignments.length} planned assignments'),
-            children: assignments.isEmpty
-              ? [const ListTile(title: Text('No available staff assigned'))]
-              : [for (final assignment in assignments)
-                  ListTile(dense: true,
-                    leading: const Icon(Icons.badge_outlined),
-                    title: Text(assignment.staffName),
-                    subtitle: Text('${assignment.roleCode.replaceAll('_',' ')}'
-                      ' · 09:00–17:00${assignment.attractionId == null ? '' : ' · Assigned ride'}'))],
-          ));
-        }),
-      if (gaps.isNotEmpty) Card(color: const Color(0xFFFFF2EA),
-        child: Padding(padding: const EdgeInsets.all(16),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start,
-            children: [Text('${gaps.length} shifts cannot be filled',
-              style: const TextStyle(fontWeight: FontWeight.bold)),
-              const SizedBox(height: 8),
-              for (final issue in gaps.take(8))
-                Padding(padding: const EdgeInsets.only(bottom: 5), child: Text(issue)),
-              if (gaps.length > 8) Text('+ ${gaps.length - 8} more'),
-            ]))),
-    ]);
+  Future<void> _sendReminder() async {
+    if (busy || pastWeek) return;
+    setState(() { busy = true; message = null; });
+    try {
+      await db.collection('staffAvailabilityReminders').doc(weekKey).set({
+        'weekStart': weekKey,
+        'sentAt': FieldValue.serverTimestamp(),
+      });
+      if (mounted) setState(() => message =
+          'Reminder posted in My Work for staff who still need to fill availability.');
+    } catch (_) {
+      if (mounted) setState(() => message =
+          'Could not post the reminder. Check your connection and try again.');
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
   }
 
-  Widget _publishedHistory() => StreamBuilder<QuerySnapshot<Map<String,dynamic>>>(
+  Widget _timetable(Map<(StaffRole, String), String> assigned, {
+    Set<StaffRole> scheduledRoles = const {},
+    bool isDraft = false,
+  }) {
+    final days = [for (var i = 0; i < 7; i++) StaffWeek.day(monday, i)];
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: DataTable(
+          columnSpacing: 18,
+          headingRowColor: WidgetStatePropertyAll(
+            Theme.of(context).colorScheme.surfaceContainerHighest,
+          ),
+          dataRowMinHeight: 60,
+          dataRowMaxHeight: 76,
+          columns: [
+            const DataColumn(label: Text('Role')),
+            for (final date in days)
+              DataColumn(label: Text(_dayLabel(date).replaceFirst(' · ', '\n'))),
+          ],
+          rows: [
+            for (final role in StaffRole.values)
+              if (fixedDutyRoles.contains(role) || scheduledRoles.contains(role))
+                DataRow(cells: [
+                  DataCell(Text(role.label,
+                    style: const TextStyle(fontWeight: FontWeight.w700))),
+                  for (final date in days)
+                    DataCell(SizedBox(
+                      width: 114,
+                      child: Text(
+                        fixedDutyRoles.contains(role)
+                            ? 'Regular duty'
+                            : assigned[(role, StaffWeek.key(date))] ??
+                                (isDraft ? 'Unfilled' : '—'),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: isDraft && !fixedDutyRoles.contains(role) &&
+                              !assigned.containsKey((role, StaffWeek.key(date)))
+                              ? Theme.of(context).colorScheme.error : null,
+                        ),
+                      ),
+                    )),
+                ]),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _previewDraft() => _timetable({
+    for (final shift in draft)
+      (StaffRole.fromCode(shift.roleCode)!, StaffWeek.key(shift.date)):
+        shift.staffName,
+  }, scheduledRoles: draftGenerated ? selectedRoles : const {}, isDraft: true);
+
+  Widget _publishedHistory() => StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
     stream: db.collection('staffPublishedShifts')
-      .where('weekStart', isEqualTo: weekKey).snapshots(),
+        .where('weekStart', isEqualTo: weekKey).snapshots(),
     builder: (context, snapshot) {
-      if (snapshot.hasError) return const Card(child: Padding(
-        padding: EdgeInsets.all(18), child: Text(
-          'Unable to load published shifts. Check workforce Firestore rules.')));
+      if (snapshot.hasError) return const Text('Could not load the published schedule.');
       if (!snapshot.hasData) return const LinearProgressIndicator();
-      final records = snapshot.data!.docs.toList()..sort((a,b) {
-        final startA = StaffWeek.fromTimestamp(a.data()['startsAt']);
-        final startB = StaffWeek.fromTimestamp(b.data()['startsAt']);
-        return (startA ?? DateTime(1970)).compareTo(startB ?? DateTime(1970));
-      });
-      if (records.isEmpty) return const Card(child: Padding(
-        padding: EdgeInsets.all(20), child: Text(
-          'No approved schedule for this week. Choose another week to view earlier schedules.')));
-      return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-        Padding(padding: const EdgeInsets.symmetric(vertical: 10),
-          child: Text('${records.length} approved shifts',
-            style: const TextStyle(fontWeight: FontWeight.w700))),
-        for (var offset = 0; offset < 7; offset++)
-          Builder(builder: (context) {
-            final date = StaffWeek.day(monday, offset);
-            final assignments = records.where((d) {
-              final start = StaffWeek.fromTimestamp(d.data()['startsAt']);
-              return start != null && StaffWeek.key(start.toLocal()) == StaffWeek.key(date);
-            }).toList();
-            return Card(child: ExpansionTile(
-              initiallyExpanded: offset < 2,
-              title: Text(_dayLabel(date), style: const TextStyle(
-                fontWeight: FontWeight.w700)),
-              subtitle: Text('${assignments.length} approved assignments'),
-              children: assignments.isEmpty
-                ? [const ListTile(title: Text('No scheduled shifts'))]
-                : [for (final shift in assignments) ListTile(
-                    leading: const Icon(Icons.verified_outlined,
-                      color: Color(0xFF628A71)),
-                    title: Text(shift.data()['staffName']?.toString() ?? 'Staff'),
-                    subtitle: Text('${shift.data()['roleCode']?.toString().replaceAll('_',' ') ?? 'Role'}'
-                      ' · 09:00–17:00'),
-                  )],
-            ));
-          }),
-      ]);
+      final assigned = <(StaffRole, String), String>{};
+      for (final doc in snapshot.data!.docs) {
+        final data = doc.data();
+        final role = StaffRole.fromCode(data['roleCode']?.toString() ?? '');
+        final start = StaffWeek.fromTimestamp(data['startsAt']);
+        if (role == null || start == null) continue;
+        assigned[(role, StaffWeek.key(StaffWeek.parkCalendar(start)))] =
+            data['staffName']?.toString() ?? 'Staff';
+      }
+      return _timetable(assigned, scheduledRoles: assigned.keys.map((key) => key.$1).toSet());
     },
   );
 
@@ -284,26 +290,21 @@ class _StaffScheduleReviewPageState extends State<StaffScheduleReviewPage> {
       Card(child: Padding(padding: const EdgeInsets.all(16),
         child: Wrap(spacing: 13, runSpacing: 12,
           crossAxisAlignment: WrapCrossAlignment.center, children: [
-            OutlinedButton.icon(onPressed: () => _changeWeek(-1),
+            OutlinedButton.icon(onPressed: busy ? null : () => _changeWeek(-1),
               icon: const Icon(Icons.chevron_left), label: const Text('Previous week')),
-            OutlinedButton.icon(onPressed: _selectWeek,
+            OutlinedButton.icon(onPressed: busy ? null : _selectWeek,
               icon: const Icon(Icons.calendar_month_outlined),
               label: Text('${StaffWeek.key(monday)} to '
                 '${StaffWeek.key(StaffWeek.day(monday, 6))}')),
-            OutlinedButton.icon(onPressed: () => _changeWeek(1),
+            OutlinedButton.icon(onPressed: busy ? null : () => _changeWeek(1),
               icon: const Icon(Icons.chevron_right), label: const Text('Next week')),
           ]))),
       const SizedBox(height: 14),
-      Card(color: const Color(0xFFF7EEEA),
-        child: Padding(padding: const EdgeInsets.all(14),
-          child: Wrap(spacing: 16, runSpacing: 8, children: [
-            for (final instruction in const [
-              '1  Check availability', '2  Generate draft',
-              '3  Review unfilled shifts', '4  Approve & publish',
-            ]) Text(instruction, style: const TextStyle(
-              color: Color(0xFF594849), fontSize: 12,
-              fontWeight: FontWeight.w600)),
-          ]))),
+      OutlinedButton.icon(
+        onPressed: busy || pastWeek ? null : _sendReminder,
+        icon: const Icon(Icons.notifications_outlined),
+        label: const Text('Remind Staff to Fill Availability'),
+      ),
       const SizedBox(height: 14),
       Wrap(spacing: 9, runSpacing: 9, children: [
         ChoiceChip(label: const Text('Approved Schedule / History'),
@@ -322,13 +323,13 @@ class _StaffScheduleReviewPageState extends State<StaffScheduleReviewPage> {
             const SizedBox(height: 7),
             Wrap(spacing: 7, runSpacing: 6, children: [
               for (final role in StaffRole.values)
-                if (role != StaffRole.superAdmin)
+                if (role != StaffRole.superAdmin && !fixedDutyRoles.contains(role))
                   FilterChip(label: Text(role.label),
                     selected: selectedRoles.contains(role),
                     onSelected: busy ? null : (v) => setState(() {
                       if (v) { selectedRoles.add(role); }
                       else { selectedRoles.remove(role); }
-                      draft = []; gaps = [];
+                      draft = []; gaps = []; draftGenerated = false;
                     })),
             ]),
           ]))),

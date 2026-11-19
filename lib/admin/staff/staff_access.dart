@@ -29,6 +29,8 @@ enum StaffRole {
   }
 }
 
+const fixedDutyRoles = {StaffRole.operationsManager, StaffRole.marketingStaff};
+
 enum StaffPermission {
   manageStaff,
   manageQualifications,

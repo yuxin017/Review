@@ -12,4 +12,13 @@ void main() {
     expect(staffLeaveIncludes(leave, '2026-11-18'), isTrue);
     expect(staffLeaveIncludes({...leave, 'status':'pending'}, '2026-11-18'), isFalse);
   });
+
+  test('minimum availability allows for a week with more than two approved leave days', () {
+    final days = staffLeaveDays(DateTime(2026, 11, 16), [
+      {'status': 'approved', 'startOn': '2026-11-16', 'endOn': '2026-11-19'},
+    ]);
+    expect(staffAvailabilityMinimum({}), 5);
+    expect(staffAvailabilityMinimum(days), 3);
+  });
+
 }

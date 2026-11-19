@@ -99,4 +99,25 @@ void main() {
     expect(result.assignments, hasLength(5));
     expect(result.gaps, hasLength(2));
   });
+
+  test('regular-duty staff stay out of rotating shift coverage', () {
+    const manager = StaffRole.operationsManager;
+    const marketing = StaffRole.marketingStaff;
+    final result = arrangeStaffWeek(
+      monday: monday,
+      roles: {operator, manager, marketing},
+      directory: [
+        staff('A', {manager, operator}),
+        staff('B', {marketing}),
+      ],
+      availability: {
+        'A': {'2026-11-16'},
+        'B': {'2026-11-16'},
+      },
+      leaves: [],
+      qualifications: [qualification('A', operator)],
+    );
+    expect(result.assignments, isEmpty);
+    expect(result.gaps, hasLength(7));
+  });
 }
