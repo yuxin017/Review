@@ -532,7 +532,7 @@ class DataPrivacyPage extends StatelessWidget {
                         'Tickets and bookings':
                             'Check visit dates, guest information and the order summary before confirming. Ticket validity and admission use are shown with each pass.',
                         'Payments':
-                            'Booking confirmation saves your selected payment method and order. No bank or card charge is made by the current checkout.',
+                            'Ticket purchases use secure Stripe Checkout. A ticket is issued only after payment is verified by the payment provider.',
                         'Using rewards':
                             'Review voucher terms before confirming use. Used vouchers cannot be redeemed again.',
                         'Support':

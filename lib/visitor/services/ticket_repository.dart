@@ -1,6 +1,9 @@
 import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_functions/cloud_functions.dart';
+import 'package:http/http.dart' as http;
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/tickets.dart';
 import 'rewards_repository.dart';
@@ -12,6 +15,10 @@ abstract class TicketRepository {
   Stream<List<ParkTicket>> tickets();
   Stream<List<TicketOrder>> orders();
   Future<void> checkout(TicketCheckout request);
+  Future<String> startHostedPayment(TicketCheckout request) =>
+      throw UnsupportedError('Hosted payment is unavailable.');
+  Future<String> hostedPaymentStatus(String orderId) =>
+      throw UnsupportedError('Hosted payment verification is unavailable.');
   Future<Map<String, dynamic>> promotionQuote(
     TicketCheckout request, {
     String paymentCurrency = 'MYR',
@@ -26,14 +33,92 @@ class FirebaseTicketRepository implements TicketRepository {
   final FirebaseFirestore _db = FirebaseFirestore.instance;
   @override
   String? get userId => FirebaseAuth.instance.currentUser?.uid;
+  FirebaseFunctions get _functions =>
+      FirebaseFunctions.instanceFor(region: 'us-central1');
+
+  // Enable only for LOCAL Stripe Sandbox demos (no Firebase Blaze required):
+  // flutter run -d chrome --dart-define=LOCAL_STRIPE_API=http://127.0.0.1:8788
+  static const _configuredLocalStripeApi = String.fromEnvironment('LOCAL_STRIPE_API');
+
+  static String get _localStripeApi =>
+      _configuredLocalStripeApi.isNotEmpty
+          ? _configuredLocalStripeApi
+          : (kIsWeb &&
+                  (Uri.base.host == 'localhost' ||
+                      Uri.base.host == '127.0.0.1')
+              ? 'http://127.0.0.1:8788'
+              : '');
+
+  Future<Map<String, dynamic>> _callPayment(
+    String functionName,
+    Map<String, dynamic> data,
+  ) async {
+    if (_localStripeApi.isEmpty) {
+      final result = await _functions.httpsCallable(functionName).call(data);
+      return Map<String, dynamic>.from(result.data as Map);
+    }
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) throw StateError('Please sign in before checkout.');
+    final token = await user.getIdToken();
+    if (token == null || token.isEmpty) {
+      throw StateError('Your session has expired. Please sign in again.');
+    }
+    final response = await http.post(
+      Uri.parse('$_localStripeApi/$functionName'),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $token',
+      },
+      body: jsonEncode(data),
+    ).timeout(const Duration(seconds: 35));
+    final decoded = jsonDecode(response.body);
+    if (decoded is! Map) {
+      throw StateError('Payment service returned an invalid response.');
+    }
+    final result = Map<String, dynamic>.from(decoded);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw StateError(
+        result['error'] as String? ??
+            'Unable to connect to payment service. Please try again.',
+      );
+    }
+    return result;
+  }
   @override
   Future<Map<String, dynamic>> promotionQuote(
     TicketCheckout request, {
     String paymentCurrency = 'MYR',
-  }) => ApplicationApi().post('/v1/tickets/quote', {
-    ...request.toMap(),
-    'paymentCurrency': paymentCurrency,
-  });
+  }) async {
+    if (paymentCurrency != 'MYR') {
+      throw StateError('Online payment currently supports MYR only.');
+    }
+    return _callPayment('stripeTicketQuote', {
+      ...request.toMap(),
+      'paymentCurrency': 'MYR',
+    });
+  }
+  @override
+  Future<String> startHostedPayment(TicketCheckout request) async {
+    const mobileReturn = String.fromEnvironment('PAYMENT_RETURN_URL');
+    final returnUrl = kIsWeb ? Uri.base.origin : mobileReturn;
+    if (returnUrl.isEmpty) {
+      throw StateError('Set PAYMENT_RETURN_URL to your Firebase Hosting website.');
+    }
+    final data = await _callPayment('stripeTicketCheckout', {
+      ...request.toMap(),
+      'clientFingerprint': request.fingerprint,
+      'expectedTotalMinor': request.total,
+      'paymentCurrency': 'MYR',
+      'returnUrl': returnUrl,
+    });
+    if (data['status'] == 'paid') return 'paid';
+    return data['url'] as String? ?? '';
+  }
+  @override
+  Future<String> hostedPaymentStatus(String orderId) async {
+    final data = await _callPayment('stripeTicketStatus', {'orderId': orderId});
+    return data['status'] as String? ?? 'pending';
+  }
   @override
   Future<bool> orderExists(String id) async =>
       (await _db
@@ -134,117 +219,7 @@ class FirebaseTicketRepository implements TicketRepository {
       });
   @override
   Future<void> checkout(TicketCheckout request) async {
-    if (request.isJourney) {
-      if (request.promoCode.isNotEmpty || request.currencyQuote != null) {
-        await ApplicationApi().post('/v1/tickets/checkout', {
-          ...request.toMap(),
-          'expectedTotalMinor': request.total,
-          'clientFingerprint': request.fingerprint,
-        });
-      } else {
-        await _checkoutJourney(request);
-      }
-      try {
-        await FirebaseRewardsRepository().collectOrder(request.requestId);
-      } catch (_) {
-        // The booking is already committed. Uncollected purchase points remain
-        // available in Points & History without repeating the booking.
-      }
-      return;
-    }
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) {
-      _fail('unauthenticated', 'Please sign in before checkout.');
-    }
-    if (!user.emailVerified) {
-      _fail('permission-denied', 'Verify your email before checkout.');
-    }
-    if (!RegExp(r'^[a-f0-9]{48}$').hasMatch(request.requestId) ||
-        !RegExp(r'^[\w-]{1,100}$').hasMatch(request.packageId) ||
-        request.quantity < 1 ||
-        request.quantity > 10) {
-      _fail('invalid-argument', 'Choose a package and 1–10 tickets.');
-    }
-    final orderRef = _db.collection('orders').doc(request.requestId);
-    await _db.runTransaction((transaction) async {
-      final previous = await transaction.get(orderRef);
-      if (previous.exists) {
-        final order = previous.data()!;
-        if (order['ownerUid'] != user.uid ||
-            order['packageId'] != request.packageId ||
-            order['quantity'] != request.quantity ||
-            order['visitDate'] != request.visitDate) {
-          _fail(
-            'already-exists',
-            'This checkout reference belongs to another booking.',
-          );
-        }
-        return;
-      }
-      final date = DateTime.tryParse(request.visitDate);
-      final today = parkToday();
-      if (date == null ||
-          visitDateString(date) != request.visitDate ||
-          date.isBefore(today) ||
-          date.isAfter(today.add(const Duration(days: 365)))) {
-        _fail(
-          'invalid-argument',
-          'Choose a valid visit date within the next year.',
-        );
-      }
-      final package = await transaction.get(
-        _db.collection('ticketPackages').doc(request.packageId),
-      );
-      final pack = package.data();
-      if (pack == null ||
-          pack['active'] != true ||
-          pack['currency'] != 'MYR' ||
-          pack['priceMinor'] is! int ||
-          (pack['priceMinor'] as int) < 1 ||
-          (pack['priceMinor'] as int) > 10000000 ||
-          pack['name'] is! String) {
-        _fail('failed-precondition', 'This ticket package is unavailable.');
-      }
-      final unitPrice = pack['priceMinor'] as int;
-      if (request.expectedUnitPriceMinor != null &&
-          request.expectedUnitPriceMinor != unitPrice) {
-        _fail(
-          'failed-precondition',
-          'The ticket price has changed. Start another checkout to review the updated total.',
-        );
-      }
-      final ticketIds = List.generate(
-        request.quantity,
-        (index) => '${orderRef.id}_${index + 1}',
-      );
-      transaction.set(orderRef, {
-        'requestId': request.requestId,
-        'packageId': request.packageId,
-        'visitDate': request.visitDate,
-        'quantity': request.quantity,
-        'ownerUid': user.uid,
-        'packageName': pack['name'],
-        'unitPriceMinor': unitPrice,
-        'totalMinor': unitPrice * request.quantity,
-        'currency': 'MYR',
-        'status': 'completed',
-        'ticketIds': ticketIds,
-        'createdAt': FieldValue.serverTimestamp(),
-      });
-      for (final id in ticketIds) {
-        transaction.set(_db.collection('tickets').doc(id), {
-          'ownerUid': user.uid,
-          'orderId': orderRef.id,
-          'packageId': request.packageId,
-          'packageName': pack['name'],
-          'visitDate': request.visitDate,
-          'status': 'valid',
-          'unitPriceMinor': unitPrice,
-          'currency': 'MYR',
-          'createdAt': FieldValue.serverTimestamp(),
-        });
-      }
-    });
+    throw StateError('Use the secure Stripe payment page to purchase tickets.');
   }
 
   Future<void> _checkoutJourney(TicketCheckout request) async {

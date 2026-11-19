@@ -10,14 +10,20 @@ import '../../photos/photo_widgets.dart';
 import '../admin_widgets.dart';
 import '../admin_models.dart';
 import 'photo_admin_repository.dart';
+import '../operations/park_admin_repository.dart';
+import '../operations/park_management_page.dart';
 
 class PhotoManagement extends StatefulWidget {
   final PhotoAdminRepository repository;
   final List<AdminVisitor> visitors;
+  final bool staffMode;
+  final ParkAdminRepository? parkSettingsRepository;
   const PhotoManagement({
     super.key,
     required this.repository,
     required this.visitors,
+    this.staffMode = false,
+    this.parkSettingsRepository,
   });
   @override
   State<PhotoManagement> createState() => _PhotoManagementState();
@@ -28,10 +34,25 @@ class _PhotoManagementState extends State<PhotoManagement> {
       orders = widget.repository.records('photoOrders'),
       matches = widget.repository.records('photoMatches'),
       reviews = widget.repository.records('photoMatchReviews');
+  late final uploaderNames = widget.staffMode
+      ? Stream<Map<String, String>>.value(const {})
+      : widget.repository is FirebasePhotoAdminRepository
+          ? (widget.repository as FirebasePhotoAdminRepository)
+              .db.collection('staffProfiles').snapshots().map((snapshot) => {
+                for (final doc in snapshot.docs)
+                  doc.id: (doc.data()['fullName'] as String? ?? '').trim(),
+              })
+          : Stream<Map<String, String>>.value(const {});
   String tab = 'Photos', query = '';
   int page = 0;
   final busy = <String>{};
   String? error;
+  String uploaderLabel(ParkPhoto photo, Map<String, String> names) {
+    final uid = photo.data['photographerUid'] as String? ?? '';
+    final found = names[uid] ?? '';
+    if (found.isNotEmpty) return found;
+    return uid.isEmpty ? 'Unknown' : 'Staff ID ${uid.substring(0, uid.length < 8 ? uid.length : 8)}';
+  }
   String name(String uid) =>
       widget.visitors.where((v) => v.id == uid).firstOrNull?.name ??
       (uid.length > 12 ? '${uid.substring(0, 12)}…' : uid);
@@ -74,6 +95,7 @@ class _PhotoManagementState extends State<PhotoManagement> {
         await showDialog<void>(
           context: context,
           builder: (context) => Dialog(
+        backgroundColor: const Color(0xFFF4E8E7),
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 850, maxHeight: 760),
               child: Padding(
@@ -125,6 +147,7 @@ class _PhotoManagementState extends State<PhotoManagement> {
     await showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFFF4E8E7),
         title: const Text('Photographer Photo Code'),
         content: SizedBox(
           width: 300,
@@ -164,6 +187,7 @@ class _PhotoManagementState extends State<PhotoManagement> {
   void orderDetails(ParkPhoto order) => showDialog<void>(
     context: context,
     builder: (context) => AlertDialog(
+      backgroundColor: const Color(0xFFF4E8E7),
       title: Text(photoOrderReference(order.id)),
       content: SizedBox(
         width: 540,
@@ -221,7 +245,7 @@ class _PhotoManagementState extends State<PhotoManagement> {
             spacing: 20,
             runSpacing: 14,
             children: [
-              const Column(
+              Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
@@ -234,13 +258,13 @@ class _PhotoManagementState extends State<PhotoManagement> {
                   ),
                   SizedBox(height: 6),
                   Text(
-                    'Manage park photography, photo matches and purchases.',
+                    widget.staffMode ? 'Manage your park photographs.' : 'Manage park photography, photo matches and purchases.',
                     style: TextStyle(color: adminMuted),
                   ),
                 ],
               ),
               AdminButton(
-                'Upload Park Photo',
+                'Bulk Upload Photos',
                 icon: Icons.add_photo_alternate_outlined,
                 onPressed: () async {
                   await showDialog<void>(
@@ -252,6 +276,7 @@ class _PhotoManagementState extends State<PhotoManagement> {
               ),
             ],
           ),
+          const SizedBox(height: 18),
           const SizedBox(height: 24),
           if (p.hasError || o.hasError)
             const AdminCard(
@@ -259,38 +284,35 @@ class _PhotoManagementState extends State<PhotoManagement> {
                 'Unable to load photo records. Please refresh the portal.',
               ),
             ),
-          Wrap(
-            spacing: 16,
-            runSpacing: 16,
-            children: [
-              _stat(
-                'Park Photos',
-                '${p.data?.length ?? 0}',
-                Icons.photo_library_outlined,
-              ),
-              _stat(
-                'Active Photos',
-                '${p.data?.where((v) => v.data['status'] == 'active').length ?? 0}',
-                Icons.camera_alt_outlined,
-              ),
-              _stat(
-                'Photo Orders',
-                '${o.data?.length ?? 0}',
-                Icons.receipt_long_outlined,
-              ),
-              _stat(
-                'Confirmed Sales',
-                photoMoney(
-                  o.data?.fold<int>(
-                        0,
-                        (total, v) =>
-                            total + (v.data['totalMinor'] as int? ?? 0),
-                      ) ??
-                      0,
-                ),
-                Icons.payments_outlined,
-              ),
-            ],
+          StreamBuilder<List<ParkPhoto>>(
+            stream: reviews,
+            builder: (context, r) {
+              final photoRows = p.data ?? <ParkPhoto>[];
+              final ordersRows = o.data ?? <ParkPhoto>[];
+              final pendingReviews = (r.data ?? <ParkPhoto>[])
+                  .where((x) => x.data['status'] == 'open').length;
+              final withoutMatch = photoRows.where((x) =>
+                x.data['status'] == 'active' &&
+                (x.data['matchedVisitorCount'] as num? ?? 0) == 0).length;
+              final emailPending = ordersRows.where((x) =>
+                x.data['status'] == 'confirmed' &&
+                x.data['emailStatus'] != 'sent').length;
+              final weekAgo = DateTime.now().subtract(const Duration(days: 7));
+              final weeklyRevenue = ordersRows.where((x) =>
+                x.data['status'] == 'confirmed' &&
+                (adminDate(x.data['createdAt'])?.isAfter(weekAgo) ?? false))
+                  .fold<int>(0, (v, x) => v +
+                    (x.data['totalMinor'] as num? ?? 0).toInt());
+              return Wrap(spacing: 16, runSpacing: 16, children: [
+                _stat('Unmatched Photos', '$withoutMatch', Icons.image_search_outlined),
+                if (!widget.staffMode) _stat('Open Match Reviews', '$pendingReviews',
+                  Icons.report_outlined),
+                if (!widget.staffMode) _stat('Pending Email Delivery', '$emailPending',
+                  Icons.mark_email_unread_outlined),
+                if (!widget.staffMode) _stat('Photo Sales · 7 Days',
+                  photoMoney(weeklyRevenue), Icons.payments_outlined),
+              ]);
+            },
           ),
           const SizedBox(height: 25),
           AdminCard(
@@ -299,12 +321,9 @@ class _PhotoManagementState extends State<PhotoManagement> {
               runSpacing: 15,
               crossAxisAlignment: WrapCrossAlignment.center,
               children: [
-                for (final value in [
-                  'Photos',
-                  'Matches',
-                  'Review Requests',
-                  'Orders',
-                ])
+                for (final value in widget.staffMode
+                    ? const ['Photos']
+                    : const ['Photos', 'Matches', 'Review Requests', 'Orders'])
                   ChoiceChip(
                     label: Text(value),
                     selected: tab == value,
@@ -336,7 +355,10 @@ class _PhotoManagementState extends State<PhotoManagement> {
               child: Text(error!, style: const TextStyle(color: Colors.red)),
             ),
           if (tab == 'Photos')
-            _catalogue(p.data ?? [])
+            StreamBuilder<Map<String, String>>(
+              stream: uploaderNames,
+              builder: (context, n) => _catalogue(p.data ?? [], n.data ?? const {}),
+            )
           else if (tab == 'Orders')
             _orderTable(o.data ?? [])
           else
@@ -383,7 +405,7 @@ class _PhotoManagementState extends State<PhotoManagement> {
       ),
     ),
   );
-  Widget _catalogue(List<ParkPhoto> all) {
+  Widget _catalogue(List<ParkPhoto> all, Map<String, String> names) {
     final records =
         all
             .where(
@@ -440,7 +462,7 @@ class _PhotoManagementState extends State<PhotoManagement> {
                       children: [
                         Expanded(
                           child: InkWell(
-                            onTap: () => original(photo),
+                            onTap: widget.staffMode ? null : () => original(photo),
                             child: PhotoImage(
                               photo.preview,
                               width: double.infinity,
@@ -454,6 +476,10 @@ class _PhotoManagementState extends State<PhotoManagement> {
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(fontWeight: FontWeight.w700),
                         ),
+                        const SizedBox(height: 5),
+                        Text('Uploaded by ${uploaderLabel(photo, names)}',
+                          maxLines: 1, overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 11, color: adminMuted)),
                         const SizedBox(height: 7),
                         Text(
                           '${photo.data['faceCount'] ?? 0} faces • ${photo.data['matchedVisitorCount'] ?? 0} matches',
@@ -492,15 +518,15 @@ class _PhotoManagementState extends State<PhotoManagement> {
                                   value: 'code',
                                   child: Text('Show Photo Code'),
                                 ),
-                                const PopupMenuItem(
+                                if (!widget.staffMode) const PopupMenuItem(
                                   value: 'original',
                                   child: Text('View Original'),
                                 ),
-                                const PopupMenuItem(
+                                if (!widget.staffMode) const PopupMenuItem(
                                   value: 'recheck',
                                   child: Text('Recheck Matches'),
                                 ),
-                                PopupMenuItem(
+                                if (!widget.staffMode) PopupMenuItem(
                                   value: 'archive',
                                   child: Text(
                                     archived
@@ -716,239 +742,193 @@ class PhotoUploadDialog extends StatefulWidget {
 }
 
 class _PhotoUploadDialogState extends State<PhotoUploadDialog> {
-  final title = TextEditingController();
+  List<PlatformFile> selected = [];
+  final uploaded = <int>{};
+  final failed = <int, String>{};
+  final references = <int, String>{};
   late final places = widget.repository.places();
-  late String requestId = widget.repository.newRequestId();
   String? attractionId, error;
-  DateTime takenAt = DateTime.now();
-  Uint8List? bytes;
-  bool busy = false;
-  @override
-  void dispose() {
-    title.dispose();
-    super.dispose();
-  }
+  bool busy = false, stopped = false;
+  int completed = 0;
 
   Future<void> choose() async {
+    if (busy) return;
     try {
-      final result = await FilePicker.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: ['jpg', 'jpeg', 'png'],
-      );
-      final file = result.firstOrNull;
-      if (file == null) return;
-      if (await file.length() > 12000000) {
-        throw StateError('Choose a photo smaller than 12 MB.');
+      // file_picker v12: pickFiles() selects multiple, without allowMultiple.
+      final files = await FilePicker.pickFiles(
+        type: FileType.custom, allowedExtensions: ['jpg', 'jpeg', 'png']);
+      if (files.isEmpty) return;
+      if (files.length > 300) {
+        throw StateError('Select up to 300 photos per batch.');
       }
-      final selectedBytes = await file.readAsBytes();
-      final decoded = img.decodeImage(selectedBytes);
-      if (decoded == null) {
-        throw StateError('Choose a readable JPEG or PNG photo.');
-      }
-      final source = img.bakeOrientation(decoded),
-          resized = img.copyResize(
-            source,
-            width: source.width > 2400 ? 2400 : source.width,
-          );
       if (!mounted) return;
       setState(() {
-        bytes = Uint8List.fromList(img.encodeJpg(resized, quality: 85));
-        requestId = widget.repository.newRequestId();
-        if (title.text.isEmpty) {
-          title.text = file.name.replaceFirst(RegExp(r'\.[^.]+$'), '');
-        }
-        error = null;
+        selected = files;
+        uploaded.clear(); failed.clear(); references.clear();
+        completed = 0; error = null; stopped = false;
       });
     } catch (e) {
-      if (mounted) {
-        setState(
-          () => error = e is StateError
-              ? e.message.toString()
-              : 'Unable to open the selected photo.',
-        );
-      }
-    }
-  }
-
-  Future<void> date() async {
-    final day = await showDatePicker(
-      context: context,
-      initialDate: takenAt,
-      firstDate: DateTime(2020),
-      lastDate: DateTime.now(),
-    );
-    if (day == null || !mounted) return;
-    final time = await showTimePicker(
-      context: context,
-      initialTime: TimeOfDay.fromDateTime(takenAt),
-    );
-    if (time != null && mounted) {
-      setState(
-        () => takenAt = DateTime(
-          day.year,
-          day.month,
-          day.day,
-          time.hour,
-          time.minute,
-        ),
-      );
+      if (mounted) setState(() => error = e is StateError
+        ? e.message.toString() : 'Could not select photos.');
     }
   }
 
   Future<void> upload() async {
-    if (bytes == null || title.text.trim().length < 2) {
-      setState(() => error = 'Choose a photo and enter its title.');
-      return;
-    }
-    setState(() {
-      busy = true;
-      error = null;
-    });
-    try {
-      final result = await widget.repository.request('upload', {
-        'requestId': requestId,
-        'title': title.text.trim(),
-        'takenAt': takenAt.toUtc().toIso8601String(),
-        'attractionId': attractionId ?? '',
-        'imageBase64': base64Encode(bytes!),
-      });
-      if (mounted) {
-        Navigator.pop(context);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              'Photo uploaded. ${result['matched'] ?? 0} visitors matched.',
-            ),
-          ),
-        );
+    if (busy || selected.isEmpty) return;
+    setState(() { busy = true; stopped = false; error = null; });
+    final now = DateTime.now();
+    for (var index = 0; index < selected.length; index++) {
+      if (stopped) break;
+      if (uploaded.contains(index)) continue;
+      final file = selected[index];
+      try {
+        if (await file.length() > 12000000) {
+          throw StateError('Larger than 12 MB');
+        }
+        final input = await file.readAsBytes();
+        final decoded = img.decodeImage(input);
+        if (decoded == null) throw StateError('Unreadable image');
+        final oriented = img.bakeOrientation(decoded);
+        final resized = img.copyResize(oriented,
+          width: oriented.width > 2400 ? 2400 : oriented.width);
+        final bytes = img.encodeJpg(resized, quality: 85);
+        // Backend currently requires a title; generate it instead of asking
+        // a photographer to type hundreds of individual names.
+        final autoTitle = 'Park Photo ${now.year}${now.month.toString().padLeft(2,'0')}'
+          '${now.day.toString().padLeft(2,'0')}-${index + 1}';
+        final requestId = references.putIfAbsent(index,
+          () => widget.repository.newRequestId());
+        await widget.repository.request('upload', {
+          'requestId': requestId,
+          'title': autoTitle,
+          'takenAt': now.toUtc().toIso8601String(),
+          'attractionId': attractionId ?? '',
+          'imageBase64': base64Encode(bytes),
+        });
+        uploaded.add(index);
+        failed.remove(index);
+      } catch (e) {
+        failed[index] = photoError(e);
       }
-    } catch (e) {
-      if (mounted) setState(() => error = photoError(e));
-    } finally {
-      if (mounted) setState(() => busy = false);
+      if (mounted) setState(() => completed = uploaded.length + failed.length);
     }
+    if (mounted) setState(() => busy = false);
   }
 
   @override
   Widget build(BuildContext context) => PopScope(
     canPop: !busy,
     child: Dialog(
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 660, maxHeight: 850),
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(28),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Text(
-                'Upload Park Photo',
-                style: TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.w700,
-                  color: adminDark,
-                ),
-              ),
-              const SizedBox(height: 20),
-              if (bytes == null)
-                Container(
-                  height: 190,
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFFBF1EF),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: const Icon(
-                    Icons.add_photo_alternate_outlined,
-                    size: 75,
-                    color: adminRose,
-                  ),
-                )
-              else
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(12),
-                  child: Image.memory(bytes!, height: 240, fit: BoxFit.contain),
-                ),
-              const SizedBox(height: 15),
-              AdminButton(
-                'Choose Photo',
-                outlined: true,
-                onPressed: busy ? null : choose,
-                icon: Icons.upload_file_outlined,
-              ),
-              const SizedBox(height: 23),
-              TextField(
-                controller: title,
-                enabled: !busy,
-                maxLength: 100,
-                decoration: const InputDecoration(labelText: 'Photo Title'),
-              ),
-              const SizedBox(height: 12),
-              StreamBuilder<List<Map<String, dynamic>>>(
-                stream: places,
-                builder: (context, s) => DropdownButtonFormField<String>(
-                  initialValue: attractionId,
-                  decoration: const InputDecoration(
-                    labelText: 'Attraction / Photo Spot',
-                  ),
-                  items: [
-                    const DropdownMenuItem(
-                      value: '',
-                      child: Text('Other park location'),
-                    ),
-                    for (final place in s.data ?? [])
-                      DropdownMenuItem(
-                        value: place['id'] as String,
-                        child: Text(place['name'] as String),
-                      ),
-                  ],
-                  onChanged: busy
-                      ? null
-                      : (v) => setState(() => attractionId = v),
-                ),
-              ),
-              const SizedBox(height: 15),
-              ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading: const Icon(
-                  Icons.calendar_month_outlined,
-                  color: adminRose,
-                ),
-                title: const Text('Photo Capture Time'),
-                subtitle: Text(takenAt.toString().substring(0, 16)),
-                trailing: const Icon(Icons.edit_outlined, size: 19),
-                onTap: busy ? null : date,
-              ),
-              if (error != null)
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 15),
-                  child: Text(
-                    error!,
-                    style: const TextStyle(color: Colors.red),
-                  ),
-                ),
-              const SizedBox(height: 20),
-              Row(
-                children: [
-                  Expanded(
-                    child: AdminButton(
-                      'Cancel',
-                      outlined: true,
-                      onPressed: busy ? null : () => Navigator.pop(context),
-                    ),
-                  ),
-                  const SizedBox(width: 15),
-                  Expanded(
-                    child: AdminButton(
-                      busy ? 'Uploading & Matching…' : 'Upload & Match',
-                      onPressed: busy ? null : upload,
-                    ),
-                  ),
+      backgroundColor: const Color(0xFFF4E8E7),
+      elevation: 16,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(26)),
+      insetPadding: const EdgeInsets.all(18),
+      child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 820,
+        maxHeight: 790), child: Column(mainAxisSize: MainAxisSize.min, children: [
+        Padding(padding: const EdgeInsets.fromLTRB(25, 22, 18, 20),
+          child: Row(children: [
+            const Icon(Icons.photo_library_outlined, color: adminRose, size: 32),
+            const SizedBox(width: 13),
+            const Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+              children: [Text('Bulk Upload Photos', style: TextStyle(
+                fontSize: 25, fontWeight: FontWeight.w800)),
+                Text('Select photos once. No individual titles needed.',
+                  style: TextStyle(color: adminMuted, fontSize: 13))])),
+            IconButton(onPressed: busy ? null : () => Navigator.pop(context),
+              icon: const Icon(Icons.close)),
+          ])),
+        const Divider(height: 1),
+        Flexible(child: SingleChildScrollView(padding: const EdgeInsets.all(24),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            Container(padding: const EdgeInsets.all(23),
+              decoration: BoxDecoration(color: Colors.white,
+                borderRadius: BorderRadius.circular(19),
+                border: Border.all(color: const Color(0xFFE8D7D5))),
+              child: Column(children: [
+                const Icon(Icons.cloud_upload_outlined, size: 56, color: adminRose),
+                const SizedBox(height: 10),
+                Text(selected.isEmpty ? 'Choose JPG / PNG photos' :
+                  '${selected.length} photos selected',
+                  style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 18)),
+                const SizedBox(height: 12),
+                OutlinedButton.icon(onPressed: busy ? null : choose,
+                  icon: const Icon(Icons.add_photo_alternate_outlined),
+                  label: Text(selected.isEmpty ? 'Choose Photos' : 'Choose Different Photos')),
+                if (selected.isNotEmpty) ...[
+                  const SizedBox(height: 11),
+                  Text(selected.take(3).map((e) => e.name).join(' · '),
+                    maxLines: 2, overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: adminMuted, fontSize: 12)),
                 ],
-              ),
+              ])),
+            const SizedBox(height: 16),
+            Container(padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(color: Colors.white,
+                borderRadius: BorderRadius.circular(19),
+                border: Border.all(color: const Color(0xFFE8D7D5))),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Upload details', style: TextStyle(
+                    fontWeight: FontWeight.w800, fontSize: 17)),
+                  const SizedBox(height: 7),
+                  const Row(children: [Icon(Icons.verified_user_outlined,
+                    size: 17, color: adminRose), SizedBox(width: 8),
+                    Expanded(child: Text('Photographer: current signed-in account (recorded automatically)',
+                      style: TextStyle(fontSize: 12, color: adminMuted)))]),
+                  const SizedBox(height: 17),
+                  StreamBuilder<List<Map<String, dynamic>>>(
+                    stream: places,
+                    builder: (context, s) {
+                      final values = s.data ?? const <Map<String, dynamic>>[];
+                      // A location is useful for searching, but never required.
+                      return DropdownButtonFormField<String>(
+                        value: attractionId ?? '',
+                        isExpanded: true,
+                        decoration: const InputDecoration(labelText: 'Photo spot (optional)',
+                          border: OutlineInputBorder()),
+                        items: [const DropdownMenuItem(value: '',
+                          child: Text('Not specified')),
+                          for (final place in values)
+                            DropdownMenuItem(value: place['id'] as String,
+                              child: Text(place['name'] as String)),
+                        ],
+                        onChanged: busy ? null : (v) => setState(() => attractionId = v),
+                      );
+                    }),
+                ])),
+            if (selected.isNotEmpty) ...[
+              const SizedBox(height: 22),
+              LinearProgressIndicator(value: selected.isEmpty ? null :
+                completed / selected.length, color: adminRose),
+              const SizedBox(height: 10),
+              Text('Uploaded ${uploaded.length} / ${selected.length}  ·  Failed ${failed.length}',
+                style: const TextStyle(fontWeight: FontWeight.w700)),
+              if (failed.isNotEmpty) ...[
+                const SizedBox(height: 7),
+                for (final item in failed.entries.take(4))
+                  Text('${selected[item.key].name}: ${item.value}',
+                    style: const TextStyle(color: Colors.red, fontSize: 12)),
+              ],
             ],
-          ),
-        ),
-      ),
+            if (error != null) Padding(padding: const EdgeInsets.only(top: 15),
+              child: Text(error!, style: const TextStyle(color: Colors.red))),
+          ]))),
+        const Divider(height: 1),
+        Padding(padding: const EdgeInsets.all(19),
+          child: Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+            TextButton(onPressed: busy ? () => setState(() => stopped = true) :
+              () => Navigator.pop(context),
+              child: Text(busy ? 'Stop after current photo' : 'Close')),
+            const SizedBox(width: 11),
+            FilledButton.icon(onPressed: busy || selected.isEmpty ||
+              uploaded.length == selected.length ? null : upload,
+              style: FilledButton.styleFrom(backgroundColor: adminRose),
+              icon: const Icon(Icons.cloud_upload_outlined),
+              label: Text(busy ? 'Uploading…' :
+                failed.isNotEmpty ? 'Retry Remaining' : 'Upload All'),
+            ),
+          ])),
+      ])),
     ),
   );
 }

@@ -4,6 +4,12 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
 import 'data/admin_attraction_store.dart';
+import 'data/attraction_training_store.dart';
+import 'attraction_map_picker.dart';
+import 'attraction_editor_section.dart';
+import 'attraction_number_field.dart';
+import 'park_category_widgets.dart';
+import 'data/park_category_repository.dart';
 import '../../attractions/models/attraction.dart';
 import '../../attractions/widgets/attraction_widgets.dart';
 import '../portal/admin_theme.dart';
@@ -11,7 +17,6 @@ import 'attraction_admin_guard.dart';
 import '../../attractions/widgets/attraction_cover.dart';
 import 'cover_photo.dart';
 import '../../attractions/data/slot_reader.dart';
-import '../../attractions/widgets/attraction_queue_summary.dart';
 
 class AttractionEditorPage extends StatefulWidget {
   const AttractionEditorPage({
@@ -22,6 +27,7 @@ class AttractionEditorPage extends StatefulWidget {
     this.kind = ParkPlaceKind.attractions,
     this.pickCover,
     this.slotReader,
+    this.categoryRepository,
   });
   final AdminAttractionStore store;
   final ValueListenable<bool> adminAccess;
@@ -29,6 +35,7 @@ class AttractionEditorPage extends StatefulWidget {
   final ParkPlaceKind kind;
   final Future<Uint8List?> Function()? pickCover;
   final SlotReader? slotReader;
+  final ParkCategoryRepository? categoryRepository;
 
   @override
   State<AttractionEditorPage> createState() => _AttractionEditorPageState();
@@ -37,6 +44,10 @@ class AttractionEditorPage extends StatefulWidget {
 class _AttractionEditorPageState extends State<AttractionEditorPage> {
   final _form = GlobalKey<FormState>();
   final _name = TextEditingController();
+  final _trainingTitle = TextEditingController();
+  final _duration = TextEditingController();
+  final _riders = TextEditingController();
+  final _safetyNotes = TextEditingController();
   final _description = TextEditingController();
   final _standby = TextEditingController();
   final _photoField = GlobalKey<FormFieldState<String>>();
@@ -47,23 +58,17 @@ class _AttractionEditorPageState extends State<AttractionEditorPage> {
   late final String _id;
   Attraction? _original;
   String? _category;
+  String? _categoryId;
   AttractionStatus _status = AttractionStatus.closed;
   bool _saving = false;
   bool _reloading = false;
   String? _error;
-  bool _conflict = false;
   String? _cover;
   AttractionCrowd? _crowd;
   bool _pickingPhoto = false;
   ParkPlaceKind get _kind => _original?.placeKind ?? widget.kind;
   bool get _isRide => _kind == ParkPlaceKind.attractions;
   String get _itemName => _kind.itemName;
-  static const _categories = [
-    'Thrill rides',
-    'Family rides',
-    'Water rides',
-    'Shows',
-  ];
 
   @override
   void initState() {
@@ -77,6 +82,9 @@ class _AttractionEditorPageState extends State<AttractionEditorPage> {
     _name.text = attraction?.name ?? '';
     _description.text = attraction?.description ?? '';
     _standby.text = attraction?.standbyMinutes?.toString() ?? '';
+    _duration.text = attraction?.rideDurationMinutes?.toString() ?? '';
+    _riders.text = attraction?.ridersPerCycle?.toString() ?? '';
+    _safetyNotes.text = attraction?.safetyNotes ?? '';
     _cover = attraction?.coverImageBase64;
     _photoField.currentState?.didChange(_cover);
     _crowd = attraction?.crowdLevel;
@@ -87,13 +95,18 @@ class _AttractionEditorPageState extends State<AttractionEditorPage> {
             .toString();
     _mapX.text = attraction?.mapX.toString() ?? '';
     _mapY.text = attraction?.mapY.toString() ?? '';
-    _category = attraction?.category ?? (_isRide ? null : _kind.label);
+    _category = attraction?.category;
+    _categoryId = attraction?.categoryId;
     _status = attraction?.status ?? AttractionStatus.closed;
   }
 
   @override
   void dispose() {
     _name.dispose();
+    _trainingTitle.dispose();
+    _duration.dispose();
+    _riders.dispose();
+    _safetyNotes.dispose();
     _description.dispose();
     _standby.dispose();
     _height.dispose();
@@ -137,43 +150,64 @@ class _AttractionEditorPageState extends State<AttractionEditorPage> {
     }
   }
 
-  String? _coordinate(String? value) {
-    final number = double.tryParse(value?.trim() ?? '');
-    return number == null || !number.isFinite
-        ? 'Enter a valid number using a decimal point.'
-        : null;
-  }
-
   Future<void> _save() async {
-    if (_saving ||
-        _pickingPhoto ||
-        _reloading ||
-        !widget.adminAccess.value ||
-        !_form.currentState!.validate()) {
+    if (_saving || _pickingPhoto || _reloading || !widget.adminAccess.value) {
       return;
     }
-    final replacement = Attraction(
-      id: _id,
-      name: _name.text,
-      category: _category!,
-      status: _status,
-      minHeightCm: int.parse(_height.text.trim()),
-      reservationCapacity: int.parse(_capacity.text.trim()),
-      mapX: double.parse(_mapX.text.trim()),
-      mapY: double.parse(_mapY.text.trim()),
-      description: _description.text,
-      coverImageBase64: _cover,
-      crowdLevel: _crowd,
-      standbyMinutes: int.tryParse(_standby.text.trim()),
-    );
+    if (!_form.currentState!.validate()) {
+      setState(() => _error = 'Check the highlighted fields above.');
+      return;
+    }
+    if (_category == null || _category!.trim().isEmpty ||
+        (widget.categoryRepository != null &&
+            (_categoryId == null || _categoryId!.trim().isEmpty))) {
+      setState(() => _error = 'Choose a category.');
+      return;
+    }
     setState(() {
       _saving = true;
       _error = null;
-      _conflict = false;
     });
     try {
+      final replacement = Attraction(
+        id: _id,
+        name: _name.text,
+        category: _category!,
+        categoryId: _categoryId,
+        placeKind: _kind,
+        status: _status,
+        minHeightCm: int.parse(_height.text.trim()),
+        reservationCapacity: int.parse(_capacity.text.trim()),
+        rideDurationMinutes: _isRide && _duration.text.trim().isNotEmpty
+            ? int.parse(_duration.text.trim()) : null,
+        ridersPerCycle: _isRide && _riders.text.trim().isNotEmpty
+            ? int.parse(_riders.text.trim()) : null,
+        safetyNotes: _isRide && _safetyNotes.text.trim().isNotEmpty
+            ? _safetyNotes.text.trim() : null,
+        mapX: double.parse(_mapX.text.trim()),
+        mapY: double.parse(_mapY.text.trim()),
+        description: _description.text,
+        coverImageBase64: _cover,
+        crowdLevel: _crowd,
+        standbyMinutes: int.tryParse(_standby.text.trim()),
+      );
       if (_original == null) {
-        await widget.store.createAttraction(replacement);
+        if (_isRide) {
+          final store = widget.store;
+          if (store is! AttractionTrainingStore) {
+            throw StateError('Training is unavailable.');
+          }
+          final selectedTitle = _trainingTitle.text.trim();
+          final courseTitle = selectedTitle.isEmpty
+              ? AttractionTrainingPolicy.defaultTitle(_name.text)
+              : selectedTitle;
+          await (store as AttractionTrainingStore).createAttractionWithTraining(
+            replacement,
+            courseTitle: courseTitle,
+          );
+        } else {
+          await widget.store.createAttraction(replacement);
+        }
       } else {
         await widget.store.updateAttraction(
           original: _original!,
@@ -192,10 +226,15 @@ class _AttractionEditorPageState extends State<AttractionEditorPage> {
       if (mounted) {
         setState(() {
           _error = error.message;
-          _conflict = _original != null;
         });
       }
+    } on FormatException catch (_) {
+      if (mounted) setState(() => _error = 'Check the entered numbers and location.');
+    } on ArgumentError catch (error) {
+      if (mounted) setState(() => _error = error.message?.toString() ?? 'Check your details.');
     } on FirebaseException catch (error, stackTrace) {
+      // Console diagnostics for admins; no technical codes in the form.
+      debugPrint('Park Facilities save: ${error.plugin}/${error.code}');
       if (kDebugMode) {
         debugPrint('Attraction save failed: ${error.plugin}/${error.code}');
         debugPrintStack(stackTrace: stackTrace);
@@ -204,13 +243,13 @@ class _AttractionEditorPageState extends State<AttractionEditorPage> {
         setState(
           () => _error = switch (error.code) {
             'permission-denied' =>
-              'Firebase denied this save (permission-denied). Your admin access or database rules need to be checked. Your entered details have been kept.',
+              'Save blocked. Check your admin access.',
             'unauthenticated' =>
-              'Please sign in again before saving. Your entered details have been kept.',
+              'Please sign in again.',
             'unavailable' || 'deadline-exceeded' =>
-              'The save could not be confirmed. Check your connection and retry; your entered details have been kept.',
+              'Connection failed. Try again.',
             _ =>
-              'Unable to save the $_itemName (${error.code}). Your entered details have been kept. Please try again.',
+              "Couldn't save changes. Try again.",
           },
         );
       }
@@ -224,7 +263,7 @@ class _AttractionEditorPageState extends State<AttractionEditorPage> {
       if (mounted) {
         setState(
           () => _error =
-              'Unable to save the $_itemName. Your entered details have been kept. Please try again.',
+              "Couldn't save changes. Try again.",
         );
       }
     } finally {
@@ -232,43 +271,37 @@ class _AttractionEditorPageState extends State<AttractionEditorPage> {
     }
   }
 
-  Future<void> _reloadLatest() async {
-    if (_saving || _reloading || !widget.adminAccess.value) return;
+  Future<void> _createCourseForExistingRide() async {
+    if (_saving || _original == null || !widget.adminAccess.value ||
+        widget.store is! AttractionTrainingStore) {
+      return;
+    }
     setState(() {
-      _reloading = true;
+      _saving = true;
       _error = null;
     });
     try {
-      final latest = await widget.store.watchAttraction(_id).first;
-      if (!mounted) return;
-      if (latest == null) {
-        setState(
-          () =>
-              _error = 'This $_itemName no longer exists. Return to the list.',
-        );
-      } else {
-        setState(() {
-          _original = latest;
-          _fill(latest);
-          _conflict = false;
-        });
-      }
+      await (widget.store as AttractionTrainingStore)
+          .addRequiredTrainingToExistingRide(
+        _id,
+        courseTitle: AttractionTrainingPolicy.defaultTitle(_original!.name),
+      );
+    } on AttractionConflict catch (error) {
+      if (mounted) setState(() => _error = error.message);
+    } on ArgumentError catch (error) {
+      if (mounted) setState(() => _error = error.message?.toString() ?? 'Check the course name.');
     } catch (_) {
       if (mounted) {
-        setState(
-          () => _error =
-              'Unable to load the latest information. Please try again.',
-        );
+        setState(() => _error = "Couldn't add training. Try again.");
       }
     } finally {
-      if (mounted) setState(() => _reloading = false);
+      if (mounted) setState(() => _saving = false);
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final busy = _saving || _reloading || _pickingPhoto;
-    final categories = {..._categories, ?_category}.toList();
     final itemHeading =
         '${_itemName[0].toUpperCase()}${_itemName.substring(1)}';
     return AttractionAdminGuard(
@@ -286,176 +319,321 @@ class _AttractionEditorPageState extends State<AttractionEditorPage> {
           body: Align(
             alignment: Alignment.topCenter,
             child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 860),
+              constraints: const BoxConstraints(maxWidth: 920),
               child: Form(
                 key: _form,
                 child: ListView(
-                  padding: const EdgeInsets.all(20),
+                  padding: const EdgeInsets.fromLTRB(20, 14, 20, 24),
                   children: [
-                    Text(
-                      '$itemHeading information',
-                      style: const TextStyle(
-                        fontSize: 22,
-                        fontWeight: FontWeight.w700,
+                    const SizedBox(height: 2),
+                    AttractionEditorSection(
+                      title: _isRide ? 'Attraction details' : '${facilityTypeLabel(_kind)} details',
+                      description: 'The details visitors see on the park map.',
+                      icon: Icons.local_activity_outlined,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          LayoutBuilder(
+                            builder: (context, layout) {
+                              final wide = layout.maxWidth >= 630;
+                              final info = Column(
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  TextFormField(
+                                    controller: _name,
+                                    enabled: !busy,
+                                    maxLength: 80,
+                                    autovalidateMode: AutovalidateMode.onUserInteraction,
+                                    decoration: InputDecoration(
+                                      labelText: '$itemHeading name *',
+                                      hintText: _isRide ? 'e.g. Ferris Wheel' : 'e.g. Pasta Corner',
+                                    ),
+                                    validator: (value) {
+                                      final text = value?.trim() ?? '';
+                                      if (text.isEmpty) return 'Enter a name.';
+                                      if (text.length < 2 ||
+                                          !RegExp(r'[A-Za-z\u00C0-\u024F\u4E00-\u9FFF]').hasMatch(text)) {
+                                        return 'Enter a valid name.';
+                                      }
+                                      return null;
+                                    },
+                                  ),
+                                  const SizedBox(height: 10),
+                                  ParkCategoryPicker(
+                                    kind: _kind,
+                                    repository: widget.categoryRepository,
+                                    selectedId: _categoryId,
+                                    selectedName: _category,
+                                    enabled: !busy,
+                                    onSelected: (category) => setState(() {
+                                      _categoryId = category.id;
+                                      _category = category.name;
+                                    }),
+                                  ),
+                                ],
+                              );
+                              final cover = FormField<String>(
+                                key: _photoField,
+                                initialValue: _cover,
+                                validator: (value) =>
+                                    _isRide && _original == null && (value == null || value.isEmpty)
+                                        ? 'Add a cover photo.' : null,
+                                builder: (field) => Container(
+                                  padding: const EdgeInsets.all(10),
+                                  decoration: BoxDecoration(
+                                    color: Colors.white,
+                                    borderRadius: BorderRadius.circular(9),
+                                    border: Border.all(color: field.hasError
+                                        ? Theme.of(context).colorScheme.error : AdminTheme.border),
+                                  ),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Row(children: [
+                                        AttractionCover(encoded: _cover, width: 94, height: 94),
+                                        const SizedBox(width: 10),
+                                        Expanded(child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            const Text('Cover photo',
+                                              style: TextStyle(fontWeight: FontWeight.w600)),
+                                            const SizedBox(height: 7),
+                                            OutlinedButton.icon(
+                                              onPressed: busy ? null : _pickPhoto,
+                                              icon: const Icon(Icons.photo_outlined, size: 17),
+                                              label: Text(_pickingPhoto
+                                                  ? 'Uploading...' : _cover == null ? 'Add photo' : 'Change'),
+                                            ),
+                                          ],
+                                        )),
+                                      ]),
+                                      if (field.hasError) Padding(
+                                        padding: const EdgeInsets.only(top: 8),
+                                        child: Text(field.errorText!,
+                                          style: TextStyle(color: Theme.of(context).colorScheme.error,
+                                              fontSize: 12)),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              );
+                              return Column(children: [
+                                if (wide)
+                                  Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                    Expanded(child: info),
+                                    const SizedBox(width: 12),
+                                    Expanded(child: cover),
+                                  ])
+                                else ...[
+                                  info,
+                                  const SizedBox(height: 10),
+                                  cover,
+                                ],
+                                const SizedBox(height: 12),
+                                TextFormField(
+                                  controller: _description,
+                                  enabled: !busy,
+                                  minLines: 2,
+                                  maxLines: 3,
+                                  maxLength: 1200,
+                                  autovalidateMode: AutovalidateMode.onUserInteraction,
+                                  decoration: const InputDecoration(
+                                    labelText: 'Description *',
+                                    hintText: 'What can guests expect?',
+                                    alignLabelWithHint: true,
+                                  ),
+                                  validator: (value) {
+                                    final text = value?.trim() ?? '';
+                                    if (text.isEmpty) return 'Enter a description.';
+                                    if (text.length < 10) return 'Add at least 10 characters.';
+                                    return null;
+                                  },
+                                ),
+                              ]);
+                            },
+                          ),
+                        ],
                       ),
                     ),
-                    const SizedBox(height: 8),
-                    Text(
-                      _isRide
-                          ? 'Set the photo and details customers see in Virtual Queue. Changes are saved to the park database.'
-                          : 'Set the details customers see on the park map under ${_kind.label}.',
-                    ),
-                    const SizedBox(height: 22),
-                    FormField<String>(
-                      key: _photoField,
-                      initialValue: _cover,
-                      validator: (value) =>
-                          _isRide &&
-                              _original == null &&
-                              (value == null || value.isEmpty)
-                          ? 'Add a cover photo.'
-                          : null,
-                      builder: (field) => Container(
-                        padding: const EdgeInsets.all(18),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(10),
-                          border: Border.all(
-                            color: field.hasError
-                                ? Theme.of(context).colorScheme.error
-                                : AdminTheme.border,
-                          ),
-                        ),
-                        child: Wrap(
-                          spacing: 20,
-                          runSpacing: 12,
-                          crossAxisAlignment: WrapCrossAlignment.center,
+                    if (_isRide) ...[
+                      const SizedBox(height: 14),
+                      AttractionEditorSection(
+                        title: 'Ride operations & safety',
+                        description: 'Required operating limits and booking capacity.',
+                        icon: Icons.tune_outlined,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
-                            AttractionCover(
-                              encoded: _cover,
-                              width: 150,
-                              height: 150,
+                            LayoutBuilder(builder: (context, constraints) {
+                              final fieldWidth = constraints.maxWidth >= 560
+                                  ? (constraints.maxWidth - 12) / 2
+                                  : constraints.maxWidth;
+                              return Wrap(spacing: 12, runSpacing: 12, children: [
+                                SizedBox(width: fieldWidth, child: AttractionNumberField(
+                                  controller: _height, label: 'Minimum height (cm)',
+                                  min: 0, max: 250, enabled: !busy,
+                                )),
+                                SizedBox(width: fieldWidth, child: AttractionNumberField(
+                                  controller: _duration, label: 'Ride duration (min)',
+                                  min: 1, max: 120,
+                                  optional: _original != null, enabled: !busy,
+                                )),
+                                SizedBox(width: fieldWidth, child: AttractionNumberField(
+                                  controller: _riders, label: 'Riders per cycle',
+                                  min: 1, max: 1000,
+                                  optional: _original != null, enabled: !busy,
+                                )),
+                                SizedBox(width: fieldWidth, child: AttractionNumberField(
+                                  controller: _capacity, label: 'Bookings per 15 min',
+                                  min: 1, max: 1000, enabled: !busy,
+                                )),
+                              ]);
+                            }),
+                            const SizedBox(height: 12),
+                            TextFormField(
+                              controller: _safetyNotes,
+                              enabled: !busy,
+                              minLines: 2,
+                              maxLines: 3,
+                              maxLength: 500,
+                              autovalidateMode: AutovalidateMode.onUserInteraction,
+                              decoration: const InputDecoration(
+                                labelText: 'Guest safety instructions *',
+                                hintText: 'e.g. Remain seated until the ride stops.',
+                                alignLabelWithHint: true,
+                              ),
+                              validator: (value) {
+                                final text = value?.trim() ?? '';
+                                if (_original == null && text.isEmpty) {
+                                  return 'Enter safety instructions.';
+                                }
+                                if (text.isNotEmpty && text.length < 10) {
+                                  return 'Add at least 10 characters.';
+                                }
+                                return null;
+                              },
                             ),
-                            Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Text(
-                                  _isRide
-                                      ? 'Customer cover photo'
-                                      : 'Cover photo (optional)',
-                                  style: const TextStyle(
-                                    fontSize: 17,
-                                    fontWeight: FontWeight.w600,
-                                  ),
+                          ],
+                        ),
+                      ),
+                    ],
+                    if (_isRide) ...[
+                      const SizedBox(height: 14),
+                      AttractionEditorSection(
+                        title: 'Operator training',
+                        description: 'Required for staff assigned to this ride.',
+                        icon: Icons.school_outlined,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            if (_original == null) ...[
+                              TextFormField(
+                                controller: _trainingTitle,
+                                enabled: !busy,
+                                maxLength: 120,
+                                autovalidateMode: AutovalidateMode.onUserInteraction,
+                                decoration: const InputDecoration(
+                                  labelText: 'Training course name (optional)',
+                                  hintText: 'Leave blank to use the attraction name',
                                 ),
-                                const SizedBox(height: 6),
-                                const Text(
-                                  'JPG, PNG or WebP · up to 8 MB',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: AdminTheme.muted,
-                                  ),
-                                ),
-                                const SizedBox(height: 12),
-                                OutlinedButton.icon(
-                                  onPressed: busy ? null : _pickPhoto,
-                                  icon: const Icon(
-                                    Icons.add_photo_alternate_outlined,
-                                  ),
-                                  label: Text(
-                                    _pickingPhoto
-                                        ? 'Processing photo…'
-                                        : _cover == null
-                                        ? 'Choose cover photo'
-                                        : 'Replace cover photo',
-                                  ),
-                                ),
-                                if (field.hasError)
-                                  Padding(
-                                    padding: const EdgeInsets.only(top: 8),
-                                    child: Text(
-                                      field.errorText!,
-                                      style: TextStyle(
-                                        color: Theme.of(
-                                          context,
-                                        ).colorScheme.error,
+                                validator: (value) => (value ?? '').trim().isEmpty
+                                    ? null
+                                    : AttractionTrainingPolicy.validateTitle(value),
+                              ),
+                              const Text(
+                                'A matching operator course is created when you save.',
+                                style: TextStyle(fontSize: 12, color: AdminTheme.muted),
+                              ),
+                            ] else if (widget.store is AttractionTrainingStore)
+                              StreamBuilder<List<String>>(
+                                stream: (widget.store as AttractionTrainingStore)
+                                    .watchRequiredTraining(_id),
+                                builder: (context, snapshot) {
+                                  if (snapshot.hasError) {
+                                    return const Text('Could not load training courses.');
+                                  }
+                                  if (!snapshot.hasData) {
+                                    return const LinearProgressIndicator();
+                                  }
+                                  final titles = snapshot.data!;
+                                  if (titles.isEmpty) {
+                                    return Align(
+                                      alignment: Alignment.centerLeft,
+                                      child: OutlinedButton.icon(
+                                        onPressed: busy ? null : _createCourseForExistingRide,
+                                        icon: const Icon(Icons.add),
+                                        label: const Text('Create required training'),
                                       ),
-                                    ),
-                                  ),
-                              ],
+                                    );
+                                  }
+                                  return Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      for (final title in titles)
+                                        Padding(
+                                          padding: const EdgeInsets.symmetric(vertical: 4),
+                                          child: Row(children: [
+                                            const Icon(Icons.check_circle_outline,
+                                                color: Color(0xFF27734F), size: 18),
+                                            const SizedBox(width: 9),
+                                            Expanded(child: Text(title)),
+                                          ]),
+                                        ),
+                                    ],
+                                  );
+                                },
+                              ),
+                          ],
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 14),
+                    AttractionEditorSection(
+                      title: 'Park location',
+                      description: 'Tap the campus map to position this place.',
+                      icon: Icons.location_on_outlined,
+                      child: FormField<Offset>(
+                        initialValue: _mapX.text.isNotEmpty && _mapY.text.isNotEmpty &&
+                                (double.tryParse(_mapX.text) ?? -1) >= 0 &&
+                                (double.tryParse(_mapX.text) ?? 2) <= 1 &&
+                                (double.tryParse(_mapY.text) ?? -1) >= 0 &&
+                                (double.tryParse(_mapY.text) ?? 2) <= 1
+                            ? Offset(double.parse(_mapX.text), double.parse(_mapY.text))
+                            : null,
+                        validator: (value) => value == null
+                            ? 'Choose a location on the map.' : null,
+                        builder: (field) => Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            StreamBuilder<List<Attraction>>(
+                              stream: widget.store.watchAttractions(),
+                              builder: (context, snapshot) => AttractionMapPicker(
+                                position: field.value,
+                                places: snapshot.data ?? const [],
+                                excludeId: _id,
+                                onChanged: busy ? null : (point) {
+                                  field.didChange(point);
+                                  _mapX.text = point.dx.toStringAsFixed(6);
+                                  _mapY.text = point.dy.toStringAsFixed(6);
+                                },
+                              ),
+                            ),
+                            if (field.hasError) Padding(
+                              padding: const EdgeInsets.only(top: 9),
+                              child: Text(field.errorText!,
+                                style: const TextStyle(color: Color(0xFFB42318), fontSize: 12)),
                             ),
                           ],
                         ),
                       ),
                     ),
-                    const SizedBox(height: 22),
-                    TextFormField(
-                      controller: _name,
-                      enabled: !busy,
-                      maxLength: 80,
-                      decoration: InputDecoration(
-                        labelText: '$itemHeading name',
-                        border: const OutlineInputBorder(),
-                      ),
-                      validator: (value) =>
-                          value == null || value.trim().isEmpty
-                          ? (_isRide
-                                ? 'Enter an attraction name.'
-                                : 'Enter a name.')
-                          : null,
-                    ),
-                    const SizedBox(height: 14),
-                    TextFormField(
-                      controller: _description,
-                      enabled: !busy,
-                      minLines: 3,
-                      maxLines: 5,
-                      maxLength: 1200,
-                      decoration: InputDecoration(
-                        labelText: '$itemHeading description',
-                        hintText: _isRide
-                            ? 'Describe the experience, safety guidance and what visitors should know.'
-                            : 'Tell visitors what they can find here.',
-                      ),
-                      validator: (value) =>
-                          value == null || value.trim().isEmpty
-                          ? (_isRide
-                                ? 'Enter an attraction description.'
-                                : 'Enter a description.')
-                          : null,
-                    ),
-                    const SizedBox(height: 14),
-                    if (_isRide)
-                      DropdownButtonFormField<String>(
-                        isExpanded: true,
-                        key: ValueKey('editor-category-$_category'),
-                        initialValue: _category,
-                        decoration: const InputDecoration(
-                          labelText: 'Category',
-                          border: OutlineInputBorder(),
-                        ),
-                        items: [
-                          for (final category in categories)
-                            DropdownMenuItem(
-                              value: category,
-                              child: Text(category),
-                            ),
-                        ],
-                        onChanged: busy
-                            ? null
-                            : (value) => setState(() => _category = value),
-                        validator: (value) =>
-                            value == null ? 'Choose a category.' : null,
-                      )
-                    else
-                      InputDecorator(
-                        decoration: const InputDecoration(
-                          labelText: 'Facility type',
-                        ),
-                        child: Text(_kind.label),
-                      ),
-                    const SizedBox(height: 20),
+                    if (_original != null) ...[
+                      const SizedBox(height: 22),
+                      AttractionEditorSection(
+                        title: 'Availability',
+                        description: 'Change status to control visitor visibility.',
+                        icon: Icons.toggle_on_outlined,
+                        child:
                     DropdownButtonFormField<AttractionStatus>(
                       isExpanded: true,
                       key: ValueKey('editor-status-${_status.name}'),
@@ -475,169 +653,49 @@ class _AttractionEditorPageState extends State<AttractionEditorPage> {
                           ? null
                           : (value) => setState(() => _status = value!),
                     ),
-                    if (_isRide) ...[
-                      const SizedBox(height: 20),
-                      TextFormField(
-                        controller: _height,
-                        enabled: !busy,
-                        keyboardType: TextInputType.number,
-                        decoration: const InputDecoration(
-                          labelText: 'Minimum height (cm)',
-                          helperText:
-                              'Use 0 when no minimum height is specified.',
-                          border: OutlineInputBorder(),
-                        ),
-                        validator: (value) {
-                          final height = int.tryParse(value?.trim() ?? '');
-                          return height == null || height < 0 || height > 250
-                              ? 'Enter a whole number from 0 to 250 cm.'
-                              : null;
-                        },
-                      ),
-                      const SizedBox(height: 20),
-                      TextFormField(
-                        controller: _capacity,
-                        enabled: !busy,
-                        keyboardType: TextInputType.number,
-                        decoration: const InputDecoration(
-                          labelText: 'Capacity per entry window',
-                          helperText:
-                              'Used for new automatic 15-minute windows.',
-                          border: OutlineInputBorder(),
-                        ),
-                        validator: (value) {
-                          final capacity = int.tryParse(value?.trim() ?? '');
-                          return capacity == null ||
-                                  capacity < 1 ||
-                                  capacity > 1000
-                              ? 'Enter a whole number from 1 to 1000.'
-                              : null;
-                        },
-                      ),
-                      const SizedBox(height: 24),
-                      const Text(
-                        'Current queue information',
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      const Text(
-                        'Crowd updates automatically from confirmed bookings. Staff can report the standby wait.',
-                        style: TextStyle(color: AdminTheme.muted, fontSize: 12),
-                      ),
-                      const SizedBox(height: 14),
-                      AttractionQueueSummary(
-                        attractionId: _id,
-                        reader: widget.slotReader,
-                      ),
-                      const SizedBox(height: 18),
-                      TextFormField(
-                        controller: _standby,
-                        enabled: !busy,
-                        keyboardType: TextInputType.number,
-                        decoration: const InputDecoration(
-                          labelText: 'Standby wait (minutes)',
-                          helperText:
-                              'Leave blank if the wait has not been reported.',
-                        ),
-                        validator: (value) {
-                          if (value == null || value.trim().isEmpty) {
-                            return null;
-                          }
-                          final minutes = int.tryParse(value.trim());
-                          return minutes == null || minutes < 0 || minutes > 600
-                              ? 'Enter a whole number from 0 to 600 minutes.'
-                              : null;
-                        },
                       ),
                     ],
-                    const SizedBox(height: 24),
-                    const Text(
-                      'Map position',
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    const Text(
-                      'Use the park map’s coordinate system. Editing a name does not change its map position.',
-                    ),
                     const SizedBox(height: 14),
-                    TextFormField(
-                      controller: _mapX,
-                      enabled: !busy,
-                      keyboardType: const TextInputType.numberWithOptions(
-                        decimal: true,
-                        signed: true,
-                      ),
-                      decoration: const InputDecoration(
-                        labelText: 'Map X',
-                        border: OutlineInputBorder(),
-                      ),
-                      validator: _coordinate,
-                    ),
-                    const SizedBox(height: 16),
-                    TextFormField(
-                      controller: _mapY,
-                      enabled: !busy,
-                      keyboardType: const TextInputType.numberWithOptions(
-                        decimal: true,
-                        signed: true,
-                      ),
-                      decoration: const InputDecoration(
-                        labelText: 'Map Y',
-                        border: OutlineInputBorder(),
-                      ),
-                      validator: _coordinate,
-                    ),
                     if (_error != null) ...[
-                      const SizedBox(height: 20),
-                      Semantics(
-                        liveRegion: true,
-                        child: Text(
-                          _error!,
-                          style: TextStyle(
-                            color: Theme.of(context).colorScheme.error,
-                          ),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFFF3F1),
+                          border: Border.all(color: const Color(0xFFEDC5C0)),
+                          borderRadius: BorderRadius.circular(10),
                         ),
+                        child: Row(children: [
+                          const Icon(Icons.error_outline, color: Color(0xFFAD474A), size: 20),
+                          const SizedBox(width: 10),
+                          Expanded(child: Text(_error!, style: const TextStyle(
+                            color: Color(0xFF90393C), fontSize: 13))),
+                        ]),
                       ),
-                      if (_conflict)
-                        TextButton(
-                          onPressed: busy ? null : _reloadLatest,
-                          child: const Text('Load latest (discard my edits)'),
-                        ),
+                      const SizedBox(height: 12),
                     ],
-                    const SizedBox(height: 24),
-                    FilledButton.icon(
-                      onPressed: busy ? null : _save,
-                      style: FilledButton.styleFrom(
-                        backgroundColor: AdminTheme.rose,
-                        minimumSize: const Size.fromHeight(50),
-                      ),
-                      icon: busy
-                          ? const SizedBox(
-                              width: 18,
-                              height: 18,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Icon(Icons.save_outlined),
-                      label: Text(
-                        _saving
-                            ? 'Saving...'
-                            : _reloading
-                            ? 'Loading...'
-                            : 'Save $_itemName',
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    TextButton(
-                      onPressed: busy
-                          ? null
-                          : () => Navigator.of(context).pop(false),
-                      child: const Text('Cancel'),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        OutlinedButton(
+                          onPressed: busy ? null : () => Navigator.of(context).pop(false),
+                          child: const Text('Cancel'),
+                        ),
+                        const SizedBox(width: 12),
+                        FilledButton.icon(
+                          onPressed: busy ? null : _save,
+                          style: FilledButton.styleFrom(
+                            backgroundColor: AdminTheme.rose,
+                            minimumSize: const Size(170, 46),
+                          ),
+                          icon: busy
+                              ? const SizedBox(width: 17, height: 17,
+                                  child: CircularProgressIndicator(strokeWidth: 2))
+                              : const Icon(Icons.save_outlined),
+                          label: Text(_saving ? 'Saving...' : _reloading
+                              ? 'Loading...' : 'Save $_itemName'),
+                        ),
+                      ],
                     ),
                   ],
                 ),

@@ -108,19 +108,21 @@ class AdminStat extends StatelessWidget {
     this.color = adminRose,
   });
   @override
-  Widget build(BuildContext context) => AdminCard(
+  Widget build(BuildContext context) => SizedBox(
+    height: 164,
+    child: AdminCard(
     child: Row(
       children: [
         Container(
-          width: 56,
-          height: 56,
+          width: 48,
+          height: 48,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
             color: color.withValues(alpha: .09),
           ),
-          child: Icon(icon, color: color, size: 29),
+          child: Icon(icon, color: color, size: 25),
         ),
-        const SizedBox(width: 18),
+        const SizedBox(width: 14),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -130,22 +132,31 @@ class AdminStat extends StatelessWidget {
                 style: const TextStyle(color: adminMuted, fontSize: 12),
               ),
               const SizedBox(height: 6),
-              Text(
-                value,
-                style: const TextStyle(
-                  fontSize: 29,
-                  fontWeight: FontWeight.w700,
+              SizedBox(
+                height: 38,
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    alignment: Alignment.centerLeft,
+                    child: Text(value, style: const TextStyle(
+                      fontSize: 28, fontWeight: FontWeight.w700,
+                    )),
+                  ),
                 ),
               ),
               const SizedBox(height: 6),
               Text(
                 caption,
-                style: const TextStyle(fontSize: 11, color: adminMuted),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 11, color: adminMuted, height: 1.35),
               ),
             ],
           ),
         ),
       ],
+    ),
     ),
   );
 }

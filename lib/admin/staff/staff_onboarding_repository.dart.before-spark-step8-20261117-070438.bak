@@ -1,0 +1,58 @@
+import 'package:cloud_functions/cloud_functions.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
+
+import 'staff_access.dart';
+
+class StaffAccountCreated {
+  const StaffAccountCreated({
+    required this.uid,
+    required this.staffId,
+    required this.email,
+  });
+  final String uid;
+  final String staffId;
+  final String email;
+}
+
+/// Uses the same *named* Firebase app as AdminPortal. This does not sign in a
+/// newly created staff member or replace the current Super Admin session.
+class StaffOnboardingRepository {
+  StaffOnboardingRepository()
+      : _functions = FirebaseFunctions.instanceFor(
+          app: Firebase.app('ThemeParkAdmin'),
+          region: 'us-central1',
+        ),
+        _auth = FirebaseAuth.instanceFor(app: Firebase.app('ThemeParkAdmin'));
+
+  final FirebaseFunctions _functions;
+  final FirebaseAuth _auth;
+
+  Future<StaffAccountCreated> createStaff({
+    required String fullName,
+    required String email,
+    required Set<StaffRole> eligibleRoles,
+  }) async {
+    if (eligibleRoles.isEmpty || eligibleRoles.contains(StaffRole.superAdmin)) {
+      throw ArgumentError('Choose one or more regular staff roles.');
+    }
+    final result = await _functions.httpsCallable('createStaffAccount').call({
+      'fullName': fullName.trim(),
+      'email': email.trim().toLowerCase(),
+      'eligibleRoles': eligibleRoles.map((role) => role.code).toList()..sort(),
+    });
+    final payload = Map<String, dynamic>.from(result.data as Map);
+    return StaffAccountCreated(
+      uid: payload['uid'] as String,
+      staffId: payload['staffId'] as String,
+      email: payload['email'] as String,
+    );
+  }
+
+  /// Firebase sends to an existing, real mailbox. A reset email is used as
+  /// a first-time password setup link; no employee password goes to the admin.
+  /// This request can succeed even if actual delivery is delayed by the mail
+  /// provider. Keep resend available and do not guarantee receipt.
+  Future<void> sendPasswordSetupEmail(String email) =>
+      _auth.sendPasswordResetEmail(email: email.trim().toLowerCase());
+}

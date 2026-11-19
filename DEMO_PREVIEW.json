@@ -1,0 +1,66 @@
+{
+  "dataset": "FYP_DEMO_2026_JUN_NOV_V1",
+  "source": "SYNTHETIC_FYP_DEMO_NOT_REAL_PAYMENT",
+  "summary": [
+    {
+      "month": "2026-06",
+      "registeredVisitors": 12,
+      "orders": 20,
+      "photoOrders": 3,
+      "orderValueRM": 6810,
+      "tickets": 47
+    },
+    {
+      "month": "2026-07",
+      "registeredVisitors": 17,
+      "orders": 31,
+      "photoOrders": 5,
+      "orderValueRM": 14070,
+      "tickets": 91
+    },
+    {
+      "month": "2026-08",
+      "registeredVisitors": 19,
+      "orders": 47,
+      "photoOrders": 7,
+      "orderValueRM": 18930,
+      "tickets": 126
+    },
+    {
+      "month": "2026-09",
+      "registeredVisitors": 21,
+      "orders": 63,
+      "photoOrders": 9,
+      "orderValueRM": 24050,
+      "tickets": 157
+    },
+    {
+      "month": "2026-10",
+      "registeredVisitors": 27,
+      "orders": 88,
+      "photoOrders": 12,
+      "orderValueRM": 33035,
+      "tickets": 227
+    },
+    {
+      "month": "2026-11",
+      "registeredVisitors": 24,
+      "orders": 72,
+      "photoOrders": 10,
+      "orderValueRM": 27085,
+      "tickets": 179
+    }
+  ],
+  "totals": {
+    "visitors": 120,
+    "orders": 321,
+    "tickets": 827,
+    "admissions": 589,
+    "rideAdmissions": 433,
+    "reservations": 140,
+    "photoOrders": 45,
+    "vouchers": 65,
+    "loyaltyEvents": 321,
+    "documents": 2981
+  }
+}

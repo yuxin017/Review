@@ -2,6 +2,8 @@ import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_core/firebase_core.dart';
 
 import '../../attractions/models/attraction.dart';
 import '../../attractions/data/slot_reader.dart';
@@ -10,6 +12,9 @@ import '../portal/admin_panel.dart';
 import '../portal/admin_theme.dart';
 import 'attraction_admin_guard.dart';
 import 'attraction_editor_page.dart';
+import 'park_category_widgets.dart';
+import 'data/park_category_repository.dart';
+import '../../attractions/widgets/attraction_cover.dart';
 import 'data/admin_attraction_store.dart';
 
 class AttractionsAdminPage extends StatefulWidget {
@@ -32,6 +37,9 @@ class _AttractionsAdminPageState extends State<AttractionsAdminPage> {
   final _search = TextEditingController();
   AttractionStatus? _status;
   String? _category;
+  ParkPlaceKind? _kindFilter;
+  bool _categoriesTab = false;
+  ParkCategoryRepository? _categoryRepository;
   int _page = 0;
   static const _pageSize = 10;
   final _deleting = <String>{};
@@ -41,6 +49,13 @@ class _AttractionsAdminPageState extends State<AttractionsAdminPage> {
   void initState() {
     super.initState();
     _subscribe();
+    try {
+      _categoryRepository = ParkCategoryRepository(
+        FirebaseFirestore.instanceFor(app: Firebase.app('ThemeParkAdmin')),
+      );
+    } catch (_) {
+      // UI tests can inject a store without Firebase initialization.
+    }
     widget.adminAccess.addListener(_accessChanged);
   }
 
@@ -90,11 +105,7 @@ class _AttractionsAdminPageState extends State<AttractionsAdminPage> {
                 children: [
                   Icon(parkPlaceIcon(item), color: AdminTheme.rose, size: 20),
                   const SizedBox(width: 12),
-                  Text(
-                    item == ParkPlaceKind.attractions
-                        ? 'Attraction'
-                        : item.label,
-                  ),
+                  Text(facilityTypeLabel(item)),
                 ],
               ),
             ),
@@ -121,6 +132,7 @@ class _AttractionsAdminPageState extends State<AttractionsAdminPage> {
           attraction: attraction,
           kind: kind,
           slotReader: widget.slotReader,
+          categoryRepository: _categoryRepository,
         ),
       ),
     );
@@ -236,11 +248,10 @@ class _AttractionsAdminPageState extends State<AttractionsAdminPage> {
     );
   }
 
-  String _catalogueCategory(Attraction item) =>
-      item.isRide ? item.category : item.placeKind.label;
+  String _catalogueCategory(Attraction item) => item.category;
 
   Widget _filters(List<Attraction> all) {
-    final categories = all.map(_catalogueCategory).toSet().toList()..sort();
+    final categories = all.where((item) => _kindFilter == null || item.placeKind == _kindFilter).map(_catalogueCategory).toSet().toList()..sort();
     final category = categories.contains(_category) ? _category : null;
     return Padding(
       padding: const EdgeInsets.all(16),
@@ -254,7 +265,7 @@ class _AttractionsAdminPageState extends State<AttractionsAdminPage> {
             child: TextField(
               controller: _search,
               decoration: const InputDecoration(
-                hintText: 'Search park places or document ID',
+                hintText: 'Search places by name',
                 prefixIcon: Icon(Icons.search, size: 20),
               ),
               onChanged: (_) => setState(() => _page = 0),
@@ -314,12 +325,13 @@ class _AttractionsAdminPageState extends State<AttractionsAdminPage> {
             onPressed: () => setState(_subscribe),
             icon: const Icon(Icons.refresh, color: AdminTheme.muted),
           ),
-          if (_search.text.isNotEmpty || _status != null || category != null)
+          if (_search.text.isNotEmpty || _status != null || category != null || _kindFilter != null)
             TextButton(
               onPressed: () => setState(() {
                 _search.clear();
                 _status = null;
                 _category = null;
+                _kindFilter = null;
                 _page = 0;
               }),
               child: const Text('Clear filters'),
@@ -339,6 +351,7 @@ class _AttractionsAdminPageState extends State<AttractionsAdminPage> {
           (item) =>
               (item.name.toLowerCase().contains(query) ||
                   item.id.toLowerCase().contains(query)) &&
+              (_kindFilter == null || item.placeKind == _kindFilter) &&
               (_status == null || item.status == _status) &&
               (category == null || _catalogueCategory(item) == category),
         )
@@ -350,6 +363,22 @@ class _AttractionsAdminPageState extends State<AttractionsAdminPage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
+          child: Wrap(spacing: 8, runSpacing: 8, children: [
+            ChoiceChip(
+              label: const Text('All places'),
+              selected: _kindFilter == null,
+              onSelected: (_) => setState(() { _kindFilter = null; _category = null; _page = 0; }),
+            ),
+            for (final kind in ParkPlaceKind.values)
+              ChoiceChip(
+                label: Text(facilityTypeLabel(kind)),
+                selected: _kindFilter == kind,
+                onSelected: (_) => setState(() { _kindFilter = kind; _category = null; _page = 0; }),
+              ),
+          ]),
+        ),
         _filters(all),
         const Divider(),
         if (all.isEmpty)
@@ -395,11 +424,11 @@ class _AttractionsAdminPageState extends State<AttractionsAdminPage> {
                     color: AdminTheme.ink,
                   ),
                   columns: const [
-                    DataColumn(label: Text('Park place')),
+                    DataColumn(label: Text('Place')),
+                    DataColumn(label: Text('Type')),
                     DataColumn(label: Text('Category')),
                     DataColumn(label: Text('Status')),
-                    DataColumn(label: Text('Minimum height')),
-                    DataColumn(label: Text('Map position')),
+                    DataColumn(label: Text('Ride capacity / duration')),
                     DataColumn(label: Text('Actions')),
                   ],
                   rows: [
@@ -409,27 +438,31 @@ class _AttractionsAdminPageState extends State<AttractionsAdminPage> {
                         cells: [
                           DataCell(
                             SizedBox(
-                              width: 205,
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                crossAxisAlignment: CrossAxisAlignment.start,
+                              width: 220,
+                              child: Row(
                                 children: [
-                                  Text(
-                                    item.name,
-                                    maxLines: 2,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      fontWeight: FontWeight.w600,
+                                  ClipRRect(
+                                    borderRadius: BorderRadius.circular(8),
+                                    child: AttractionCover(
+                                      encoded: item.coverImageBase64,
+                                      width: 48,
+                                      height: 48,
                                     ),
                                   ),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    item.id,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      fontSize: 10,
-                                      color: AdminTheme.muted,
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    child: Column(
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(item.name, maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(fontWeight: FontWeight.w600)),
+                                        const SizedBox(height: 3),
+                                        Text(item.isRide ? 'Ride attraction' : facilityTypeLabel(item.placeKind),
+                                          maxLines: 1, overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(fontSize: 11, color: AdminTheme.muted)),
+                                      ],
                                     ),
                                   ),
                                 ],
@@ -437,18 +470,12 @@ class _AttractionsAdminPageState extends State<AttractionsAdminPage> {
                             ),
                             onTap: () => _edit(attraction: item),
                           ),
-                          DataCell(Text(_catalogueCategory(item))),
+                          DataCell(Text(facilityTypeLabel(item.placeKind))),
+                          DataCell(Text(item.category)),
                           DataCell(AttractionStatusBadge(status: item.status)),
-                          DataCell(
-                            Text(
-                              !item.isRide
-                                  ? '—'
-                                  : item.minHeightCm == 0
-                                  ? 'No minimum'
-                                  : '${item.minHeightCm} cm',
-                            ),
-                          ),
-                          DataCell(Text('${item.mapX}, ${item.mapY}')),
+                          DataCell(Text(item.isRide
+                              ? '${item.ridersPerCycle ?? '—'} riders • ${item.rideDurationMinutes ?? '—'} min'
+                              : 'Not applicable')),
                           DataCell(
                             Row(
                               mainAxisSize: MainAxisSize.min,
@@ -568,7 +595,7 @@ class _AttractionsAdminPageState extends State<AttractionsAdminPage> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        'Facility Management',
+                        'Park Facilities',
                         style: TextStyle(
                           fontSize: 27,
                           fontWeight: FontWeight.w700,
@@ -576,22 +603,36 @@ class _AttractionsAdminPageState extends State<AttractionsAdminPage> {
                       ),
                       SizedBox(height: 6),
                       Text(
-                        'Manage attractions, dining, facilities and shops on the park map',
+                        'Manage rides, food, services and shops in one place.',
                         style: TextStyle(color: AdminTheme.muted, fontSize: 13),
                       ),
                     ],
                   ),
-                  FilledButton.icon(
+                  if (!_categoriesTab) FilledButton.icon(
                     onPressed: _addPlace,
                     icon: const Icon(Icons.add, size: 18),
-                    label: const Text('Add Facility'),
+                    label: const Text('Add Place'),
                   ),
                 ],
               ),
-              const SizedBox(height: 24),
-              _stats(records),
-              const SizedBox(height: 24),
-              AdminPanel(
+              const SizedBox(height: 20),
+              Wrap(spacing: 10, runSpacing: 10, children: [
+                ChoiceChip(
+                  label: const Text('Places'),
+                  selected: !_categoriesTab,
+                  onSelected: (_) => setState(() => _categoriesTab = false),
+                ),
+                ChoiceChip(
+                  label: const Text('Manage Categories'),
+                  selected: _categoriesTab,
+                  onSelected: (_) => setState(() => _categoriesTab = true),
+                ),
+              ]),
+              const SizedBox(height: 18),
+              if (!_categoriesTab) ...[
+                _stats(records),
+                const SizedBox(height: 20),
+                AdminPanel(
                 child: snapshot.hasError
                     ? Padding(
                         padding: const EdgeInsets.all(24),
@@ -609,21 +650,14 @@ class _AttractionsAdminPageState extends State<AttractionsAdminPage> {
                         child: Center(child: CircularProgressIndicator()),
                       )
                     : _table(records),
-              ),
-              const SizedBox(height: 20),
-              const Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Icon(Icons.info_outline, color: AdminTheme.muted, size: 20),
-                  SizedBox(width: 12),
-                  Expanded(
-                    child: Text(
-                      'Saved changes appear on the park map. Deleting a place removes its map pin and preserves its record and any linked booking history.',
-                      style: TextStyle(fontSize: 12, color: AdminTheme.muted),
-                    ),
-                  ),
-                ],
-              ),
+                ),
+              ] else if (_categoryRepository != null)
+                ParkCategoryManagementTab(repository: _categoryRepository!)
+              else
+                const Padding(
+                  padding: EdgeInsets.all(24),
+                  child: Text('Categories unavailable. Reopen the admin portal.'),
+                ),
             ],
           );
         },

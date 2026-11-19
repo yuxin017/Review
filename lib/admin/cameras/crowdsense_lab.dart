@@ -1,0 +1,507 @@
+﻿import 'package:flutter/foundation.dart';
+import 'dart:async';
+import 'dart:math' as math;
+
+import 'package:flutter/material.dart';
+
+import '../../attractions/models/attraction.dart';
+import 'crowdsense_engine.dart';
+
+/// CrowdSense FYP demonstration: actual on-device camera counts are consumed
+/// from Live Cameras while that video viewer is open. Other places use clearly
+/// labelled test scenario inputs. This deliberately does not write fake data
+/// into the production Firestore collections.
+class CrowdSenseLab extends StatefulWidget {
+  const CrowdSenseLab({
+    super.key,
+    required this.attractions,
+    required this.readings,
+  });
+
+  final List<Attraction> attractions;
+  final ValueListenable<Map<String, CrowdSensorReading>> readings;
+
+  @override
+  State<CrowdSenseLab> createState() => _CrowdSenseLabState();
+}
+
+class _CrowdSenseLabState extends State<CrowdSenseLab> {
+  static const _rose = Color(0xFFAD7472);
+  static const _ink = Color(0xFF312D37);
+  static const _base = <int>[0, 1, 1, 0];
+  final Map<String, int> _simulatedCounts = {};
+  final Map<String, List<CrowdSensorReading>> _history = {};
+  final Map<String, DateTime> _lastSeen = {};
+  Timer? _clock;
+  bool _whatIf = false;
+  int _capacity = 3;
+  String _closed = '';
+
+  @override
+  void initState() {
+    super.initState();
+    widget.readings.addListener(_collect);
+    _clock = Timer.periodic(const Duration(seconds: 2), (_) {
+      if (mounted) setState(() {}); // expire stale camera samples
+    });
+    _collect();
+  }
+
+  @override
+  void didUpdateWidget(covariant CrowdSenseLab oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.readings != widget.readings) {
+      oldWidget.readings.removeListener(_collect);
+      widget.readings.addListener(_collect);
+      _collect();
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.readings.removeListener(_collect);
+    _clock?.cancel();
+    super.dispose();
+  }
+
+  void _collect() {
+    for (final entry in widget.readings.value.entries) {
+      if (_lastSeen[entry.key] == entry.value.receivedAt) continue;
+      _lastSeen[entry.key] = entry.value.receivedAt;
+      final list = _history.putIfAbsent(entry.key, () => []);
+      list.add(entry.value);
+      list.removeWhere((item) =>
+          entry.value.receivedAt.difference(item.receivedAt).inSeconds > 60);
+      if (list.length > 60) list.removeRange(0, list.length - 60);
+    }
+    if (mounted) setState(() {});
+  }
+
+  List<CrowdSenseZone> _zones() {
+    // The assigned cameras are passed first, so an observed camera is in the
+    // four-node demonstration graph even in a large attraction catalogue.
+    final existing = widget.attractions.take(4).toList();
+    final zones = <CrowdSenseZone>[];
+    for (final a in existing) {
+      zones.add(CrowdSenseZone(
+        id: a.id,
+        name: a.name,
+        mapX: a.mapX,
+        mapY: a.mapY,
+        isDemo: false,
+      ));
+    }
+    for (var i = zones.length; i < 4; i++) {
+      zones.add(CrowdSenseZone(
+        id: 'crowdsense_demo_$i',
+        name: 'Demo Attraction ${String.fromCharCode(65 + i)}',
+        mapX: CrowdSenseRouter.positions[i].x,
+        mapY: CrowdSenseRouter.positions[i].y,
+        isDemo: true,
+      ));
+    }
+    return zones;
+  }
+
+  int _countFor(CrowdSenseZone zone, int index, DateTime now,
+      {required bool scenario}) {
+    final camera = widget.readings.value[zone.id];
+    if (!scenario && camera != null && camera.isRecent(now)) {
+      return camera.count;
+    }
+    if (!scenario && _whatIf) return _base[index];
+    return _simulatedCounts[zone.id] ?? _base[index];
+  }
+
+  List<CrowdSenseMetric> _metrics(List<CrowdSenseZone> zones, DateTime now,
+      {required bool scenario}) {
+    return [
+      for (var i = 0; i < zones.length; i++)
+        CrowdSenseMetric(
+          zone: zones[i],
+          count: _countFor(zones[i], i, now, scenario: scenario),
+          capacity: _capacity,
+          isLive: !scenario &&
+              (widget.readings.value[zones[i].id]?.isRecent(now) ?? false),
+          closed: scenario && zones[i].id == _closed,
+          next30Seconds: !scenario &&
+                  (widget.readings.value[zones[i].id]?.isRecent(now) ?? false)
+              ? CrowdSenseRouter.predict30Seconds(
+                  _history[zones[i].id] ?? const [], _capacity)
+              : null,
+          rapidIncrease: !scenario &&
+              (widget.readings.value[zones[i].id]?.isRecent(now) ?? false) &&
+              CrowdSenseRouter.rapidlyIncreasing(
+                  _history[zones[i].id] ?? const []),
+        ),
+    ];
+  }
+
+  void _reset() {
+    setState(() {
+      _simulatedCounts.clear();
+      _closed = '';
+      _capacity = 3;
+      _whatIf = false;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final zones = _zones();
+    final now = DateTime.now();
+    final actual = _metrics(zones, now, scenario: false);
+    final evaluated = _whatIf ? _metrics(zones, now, scenario: true) : actual;
+    final route = CrowdSenseRouter.compute(evaluated);
+    final baselineRoute = CrowdSenseRouter.compute(actual);
+    final live = actual.where((m) => m.isLive).length;
+    final high = evaluated.where((m) => !m.closed && m.risk == CrowdSenseRisk.high).length;
+    final routeNames = route == null
+        ? 'No valid route. Reopen an attraction.'
+        : route.nodeIds.map((i) => i == 4
+              ? 'Entrance'
+              : i == 5
+                  ? 'Exit'
+                  : zones[i].name).join('  â†’  ');
+    return Card(
+      margin: const EdgeInsets.symmetric(vertical: 8),
+      color: const Color(0xFFFFFAF7),
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(18),
+        side: BorderSide(color: _rose.withValues(alpha: .3)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Wrap(
+              crossAxisAlignment: WrapCrossAlignment.center,
+              alignment: WrapAlignment.spaceBetween,
+              spacing: 12,
+              runSpacing: 8,
+              children: [
+                const Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('CrowdSense AI | Live Decision Lab',
+                        style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800,
+                            color: _ink)),
+                    SizedBox(height: 4),
+                    Text('Camera data â†’ congestion risk â†’ route recalculation â†’ what-if',
+                        style: TextStyle(color: Colors.black54, fontSize: 12)),
+                  ],
+                ),
+                OutlinedButton.icon(
+                  icon: const Icon(Icons.restart_alt, size: 18),
+                  label: const Text('Reset demo'),
+                  onPressed: _reset,
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Wrap(spacing: 8, runSpacing: 8, children: [
+              _tag('$live live camera${live == 1 ? '' : 's'}',
+                  live > 0 ? Colors.green.shade800 : Colors.blueGrey),
+              _tag('$high high-load zone${high == 1 ? '' : 's'}',
+                  high > 0 ? Colors.deepOrange : Colors.teal),
+              _tag(_whatIf ? 'WHAT-IF SCENARIO' : 'LIVE + DEMO INPUTS', _rose),
+            ]),
+            const SizedBox(height: 10),
+            const Text(
+              'Open View Camera below to connect actual Android detections to this lab. '
+              'Unobserved zones use clearly marked simulated values. '
+              'No simulated readings are saved to Firebase.',
+              style: TextStyle(fontSize: 12, color: Colors.black87),
+            ),
+            if (widget.attractions.length < 4) ...[
+              const SizedBox(height: 8),
+              Text(
+                'Only ${widget.attractions.length} real attraction(s) loaded. '
+                'Remaining nodes are in-memory demo attractions. Add ride locations '
+                'in Admin > Attraction Management to replace them.',
+                style: TextStyle(fontSize: 12, color: Colors.deepOrange.shade800),
+              ),
+            ],
+            const SizedBox(height: 14),
+            Wrap(spacing: 12, runSpacing: 12, children: [
+              for (var i = 0; i < evaluated.length; i++)
+                SizedBox(width: 205, child: _zoneCard(i, evaluated[i], actual[i])),
+            ]),
+            const SizedBox(height: 14),
+            SwitchListTile.adaptive(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              title: const Text('What-If Digital Twin mode',
+                  style: TextStyle(fontWeight: FontWeight.w700)),
+              subtitle: const Text('Simulate all four zones without modifying the real camera feed.'),
+              value: _whatIf,
+              activeTrackColor: _rose.withValues(alpha: .55),
+              onChanged: (value) => setState(() => _whatIf = value),
+            ),
+            Wrap(spacing: 12, runSpacing: 12, children: [
+              SizedBox(
+                width: 230,
+                child: DropdownButtonFormField<String>(
+                  key: ValueKey('closure-$_closed'),
+                  initialValue: zones.any((z) => z.id == _closed) ? _closed : '',
+                  isExpanded: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Simulated closure', border: OutlineInputBorder()),
+                  items: [
+                    const DropdownMenuItem(value: '', child: Text('None')),
+                    for (final z in zones)
+                      DropdownMenuItem(value: z.id, child: Text(z.name,
+                          overflow: TextOverflow.ellipsis)),
+                  ],
+                  onChanged: _whatIf ? (v) => setState(() => _closed = v ?? '') : null,
+                ),
+              ),
+              SizedBox(width: 245, child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Test-zone capacity: $_capacity people',
+                      style: const TextStyle(fontWeight: FontWeight.w600)),
+                  Slider(
+                    min: 2, max: 12, divisions: 10,
+                    value: _capacity.toDouble(),
+                    label: '$_capacity',
+                    onChanged: (value) =>
+                        setState(() => _capacity = value.round()),
+                  ),
+                ],
+              )),
+            ]),
+            const SizedBox(height: 12),
+            Container(
+              decoration: BoxDecoration(
+                color: const Color(0xFFF5EEED),
+                borderRadius: BorderRadius.circular(14),
+              ),
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Text('Crowd-weighted Dijkstra Route',
+                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
+                  const SizedBox(height: 4),
+                  const Text(
+                    'Schematic campus test graph, NOT surveyed walkable paths. '
+                    'Edge weight = illustrative walking cost + crowd penalty. '
+                    'A closure removes its node from the graph.',
+                    style: TextStyle(fontSize: 11, color: Colors.black54),
+                  ),
+                  const SizedBox(height: 8),
+                  SizedBox(
+                    height: 245,
+                    child: CustomPaint(
+                      painter: _CrowdGraphPainter(metrics: evaluated, route: route),
+                      child: const SizedBox.expand(),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(routeNames,
+                      style: const TextStyle(fontWeight: FontWeight.w700)),
+                  if (route != null)
+                    Text('Relative route cost: ${route.cost.toStringAsFixed(1)} units '
+                        '(not measured travel minutes)',
+                        style: const TextStyle(fontSize: 12, color: Colors.black54)),
+                  if (_whatIf && baselineRoute != null) ...[
+                    const SizedBox(height: 6),
+                    Text('Original (live/demo mix): '
+                        '${baselineRoute.nodeIds.map((i) => i == 4 ? 'Entrance' : i == 5 ? 'Exit' : zones[i].name).join(' â†’ ')}',
+                        style: const TextStyle(fontSize: 11, color: Colors.black54)),
+                  ],
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            _insight(evaluated),
+            const SizedBox(height: 8),
+            const Text(
+              'FYP validation note: capacity is a demo threshold, the 30-second '
+              'trend is an uncalibrated linear extrapolation, and this graph '
+              'is a decision-support simulationâ€”not certified crowd-safety '
+              'monitoring, an actual queue-time prediction, or indoor AR navigation.',
+              style: TextStyle(fontSize: 11, color: Colors.black54),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _zoneCard(int index, CrowdSenseMetric metric, CrowdSenseMetric actual) {
+    final color = metric.closed
+        ? Colors.blueGrey
+        : switch (metric.risk) {
+            CrowdSenseRisk.low => Colors.teal.shade700,
+            CrowdSenseRisk.medium => Colors.orange.shade800,
+            CrowdSenseRisk.high => Colors.deepOrange.shade800,
+          };
+    final value = _simulatedCounts[metric.zone.id] ?? _base[index];
+    final showSlider = _whatIf || !actual.isLive;
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withValues(alpha: .45)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('${String.fromCharCode(65 + index)} Â· ${metric.zone.name}',
+              maxLines: 2, overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
+          const SizedBox(height: 6),
+          Row(children: [
+            Text('${metric.count}', style: TextStyle(
+                fontWeight: FontWeight.w800, fontSize: 27, color: color)),
+            const Text(' people', style: TextStyle(fontSize: 12)),
+            const Spacer(),
+            Icon(metric.closed ? Icons.block : Icons.groups, color: color),
+          ]),
+          Text(metric.closed ? 'SIMULATED CLOSURE'
+              : metric.isLive ? 'LIVE ANDROID CAMERA'
+              : 'SIMULATED TEST COUNT',
+              style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800,
+                  color: metric.isLive ? Colors.green.shade800 : Colors.blueGrey)),
+          Text(metric.closed ? 'Closed' : metric.risk.name.toUpperCase(),
+              style: TextStyle(fontWeight: FontWeight.w700, fontSize: 12, color: color)),
+          if (metric.next30Seconds != null)
+            Text('Linear +30s: ~${metric.next30Seconds} (estimate)',
+                style: const TextStyle(fontSize: 11)),
+          if (metric.rapidIncrease)
+            const Text('Rapid increase detected',
+                style: TextStyle(fontSize: 11, color: Colors.deepOrange)),
+          if (_whatIf && actual.isLive)
+            Text('Actual live reading: ${actual.count}',
+                style: const TextStyle(fontSize: 11, color: Colors.black54)),
+          if (showSlider) ...[
+            Slider(
+              min: 0, max: 12, divisions: 12,
+              value: value.toDouble(),
+              label: '$value',
+              onChanged: (newValue) => setState(
+                () => _simulatedCounts[metric.zone.id] = newValue.round(),
+              ),
+            ),
+          ] else
+            const Padding(
+              padding: EdgeInsets.only(top: 10),
+              child: Text('Live: use phone camera to change count',
+                  style: TextStyle(fontSize: 10, color: Colors.black54)),
+            ),
+          if (!metric.zone.isDemo)
+            Text('Map (${metric.zone.mapX.toStringAsFixed(2)}, '
+                '${metric.zone.mapY.toStringAsFixed(2)})',
+                style: const TextStyle(fontSize: 10, color: Colors.black54)),
+        ],
+      ),
+    );
+  }
+
+  Widget _insight(List<CrowdSenseMetric> metrics) {
+    final rising = metrics.where((m) => m.isLive && m.rapidIncrease).toList();
+    final crowded = metrics.where((m) => !m.closed && m.risk == CrowdSenseRisk.high).toList();
+    final description = rising.isNotEmpty
+        ? 'Rapid camera count increase at ${rising.first.zone.name}. '
+          'The route has been recalculated using its new congestion penalty.'
+        : crowded.isNotEmpty
+            ? '${crowded.map((m) => m.zone.name).join(', ')} exceeded the '
+              'configured demo capacity. Check alternative branches.'
+            : 'No high-load zones under the current demo thresholds. '
+              'Change a simulated count or move people into a live camera view.';
+    return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Icon(crowded.isEmpty ? Icons.verified_outlined : Icons.warning_amber_rounded,
+          color: crowded.isEmpty ? Colors.teal : Colors.deepOrange),
+      const SizedBox(width: 8),
+      Expanded(child: Text(description, style: const TextStyle(fontSize: 12))),
+    ]);
+  }
+
+  Widget _tag(String label, Color color) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+    decoration: BoxDecoration(
+      color: color.withValues(alpha: .10),
+      borderRadius: BorderRadius.circular(20),
+      border: Border.all(color: color.withValues(alpha: .25)),
+    ),
+    child: Text(label, style: TextStyle(color: color,
+        fontSize: 11, fontWeight: FontWeight.w700)),
+  );
+}
+
+class _CrowdGraphPainter extends CustomPainter {
+  const _CrowdGraphPainter({required this.metrics, required this.route});
+  final List<CrowdSenseMetric> metrics;
+  final CrowdSenseRoute? route;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final area = Rect.fromLTWH(18, 16,
+        math.max(1.0, size.width - 36), math.max(1.0, size.height - 32));
+    Offset at(int i) {
+      final point = CrowdSenseRouter.positions[i];
+      return Offset(area.left + point.x * area.width,
+          area.top + point.y * area.height);
+    }
+    final background = Paint()..color = Colors.white;
+    canvas.drawRRect(
+        RRect.fromRectAndRadius(Rect.fromLTWH(0, 0, size.width, size.height),
+            const Radius.circular(10)), background);
+    final pale = Paint()
+      ..color = Colors.black12
+      ..strokeWidth = 2;
+    for (final (a, b) in CrowdSenseRouter.links) {
+      canvas.drawLine(at(a), at(b), pale);
+    }
+    if (route != null) {
+      final highlight = Paint()
+        ..color = const Color(0xFFAD7472)
+        ..strokeWidth = 5
+        ..strokeCap = StrokeCap.round;
+      final path = route!.nodeIds;
+      for (var i = 1; i < path.length; i++) {
+        canvas.drawLine(at(path[i - 1]), at(path[i]), highlight);
+      }
+    }
+    for (var i = 0; i < 6; i++) {
+      final isPlace = i < 4;
+      final metric = isPlace ? metrics[i] : null;
+      final color = !isPlace
+          ? const Color(0xFF4A7691)
+          : metric!.closed ? Colors.blueGrey
+          : switch (metric.risk) {
+              CrowdSenseRisk.low => const Color(0xFF278D78),
+              CrowdSenseRisk.medium => const Color(0xFFDF9B2D),
+              CrowdSenseRisk.high => const Color(0xFFD45A49),
+            };
+      canvas.drawCircle(at(i), isPlace ? 17 : 13, Paint()..color = color);
+      final label = isPlace ? String.fromCharCode(65 + i)
+          : i == 4 ? 'S' : 'E';
+      final painter = TextPainter(
+        text: TextSpan(text: label,
+            style: const TextStyle(color: Colors.white,
+                fontWeight: FontWeight.w800, fontSize: 13)),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      painter.paint(canvas, at(i) - Offset(painter.width / 2, painter.height / 2));
+      if (isPlace) {
+        final countText = TextPainter(
+          text: TextSpan(text: '${metric!.count}',
+              style: const TextStyle(fontSize: 10, color: Colors.black87)),
+          textDirection: TextDirection.ltr,
+        )..layout();
+        countText.paint(canvas, at(i) + Offset(-countText.width / 2, 19));
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _CrowdGraphPainter oldDelegate) =>
+      oldDelegate.metrics != metrics || oldDelegate.route != route;
+}
+

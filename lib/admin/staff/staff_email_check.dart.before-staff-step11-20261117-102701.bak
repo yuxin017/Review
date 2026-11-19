@@ -1,0 +1,14 @@
+/// Only directory emails can be checked before creating another Firebase Auth
+/// user on Spark. Firebase Auth deliberately does not expose arbitrary account
+/// existence to a client (email enumeration protection). A visitor's existing
+/// Auth email may therefore still be rejected at final account creation.
+class StaffEmailCheck {
+  static String? findDuplicate(String candidate, Iterable<String> knownEmails) {
+    final email = candidate.trim().toLowerCase();
+    if (email.isEmpty) return null;
+    if (knownEmails.any((item) => item.trim().toLowerCase() == email)) {
+      return 'This email already belongs to a staff account.';
+    }
+    return null;
+  }
+}

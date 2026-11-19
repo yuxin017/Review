@@ -1,9 +1,74 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import '../visitor/models/tickets.dart';
 import 'admin_models.dart';
 import 'admin_store.dart';
+import 'admin_repository.dart';
 import 'admin_widgets.dart';
 import 'visitor_profile.dart';
+import '../visitor/models/membership_policy.dart';
+import 'membership_rules_dialog.dart';
+import 'visitor_account_report.dart';
+import 'visitor_refund_review.dart';
+
+class _VisitorKpiCard extends StatelessWidget {
+  final String title, value, detail, helper;
+  final IconData icon;
+  final Color accent;
+  final VoidCallback onTap;
+  const _VisitorKpiCard({
+    required this.title,
+    required this.value,
+    required this.detail,
+    required this.helper,
+    required this.icon,
+    required this.accent,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) => InkWell(
+    onTap: onTap,
+    borderRadius: BorderRadius.circular(14),
+    child: Container(
+    padding: const EdgeInsets.all(17),
+    decoration: BoxDecoration(
+      color: const Color(0xFFFFFBF9),
+      borderRadius: BorderRadius.circular(14),
+      border: Border.all(color: const Color(0xFFE9E1DF)),
+    ),
+    child: SizedBox(height: 128, child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(children: [
+          Expanded(child: Text(title,
+            maxLines: 2, overflow: TextOverflow.ellipsis,
+            style: const TextStyle(color: Color(0xFF625450),
+              fontSize: 15, fontWeight: FontWeight.w700))),
+          const SizedBox(width: 7),
+          Container(width: 38, height: 38,
+            decoration: BoxDecoration(color: accent.withValues(alpha: .13),
+              borderRadius: BorderRadius.circular(11)),
+            child: Icon(icon, color: accent, size: 21)),
+        ]),
+        const SizedBox(height: 8),
+        FittedBox(fit: BoxFit.scaleDown, alignment: Alignment.centerLeft,
+          child: Text(value, maxLines: 1,
+            style: const TextStyle(fontSize: 32, fontWeight: FontWeight.w800,
+              color: Color(0xFF312B2D)))),
+        const Spacer(),
+        Text(detail, maxLines: 2, overflow: TextOverflow.ellipsis,
+          style: const TextStyle(color: Color(0xFF4A3738),
+            fontSize: 12, fontWeight: FontWeight.w600)),
+        if (helper.isNotEmpty) ...[
+          const SizedBox(height: 3),
+          Text(helper, maxLines: 1, overflow: TextOverflow.ellipsis,
+            style: const TextStyle(color: Color(0xFF7C6D6A), fontSize: 11)),
+        ],
+      ],
+    )),
+  ));
+}
 
 class VisitorManagement extends StatefulWidget {
   final AdminStore store;
@@ -22,35 +87,93 @@ class VisitorManagement extends StatefulWidget {
 class _VisitorManagementState extends State<VisitorManagement> {
   late final searchText = TextEditingController(text: widget.initialQuery);
   @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _scanRefunds());
+    refundTimer = Timer.periodic(const Duration(minutes: 15), (_) => _scanRefunds());
+  }
+
+  Future<void> _scanRefunds() async {
+    if (!mounted || isCheckingRefunds) return;
+    final repository = widget.store.repository;
+    if (repository is! FirebaseAdminRepository) return;
+    isCheckingRefunds = true;
+    try {
+      final count = await VisitorRefundReviewService(repository).scanAndFlag();
+      if (mounted) setState(() {
+        refundScanMessage = count > 0
+          ? '$count visitor account(s) added to the review queue for repeated confirmed refunds.'
+          : 'Refund pattern check completed. No new accounts need review.';
+      });
+    } catch (_) {
+      if (mounted) setState(() => refundScanMessage =
+        'Refund pattern check could not run. Review permissions or connection.');
+    } finally {
+      isCheckingRefunds = false;
+    }
+  }
+
+  @override
   void dispose() {
+    refundTimer?.cancel();
     searchText.dispose();
     super.dispose();
   }
 
   late String query = widget.initialQuery;
-  String status = 'all', membership = 'all', risk = 'all', joined = 'all';
+  String status = 'all', membership = 'all', section = 'all';
+  String overviewFilter = 'all';
+  final resultsAnchor = GlobalKey();
+  void showVisitors(String filter) {
+    _change(() {
+      overviewFilter = filter;
+      section = filter == 'review' ? 'review' : 'all';
+      status = 'all';
+      membership = 'all';
+      selected.clear();
+      searchText.clear();
+      query = '';
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final target = resultsAnchor.currentContext;
+      if (target != null && mounted) {
+        Scrollable.ensureVisible(target, duration: const Duration(milliseconds: 280),
+            curve: Curves.easeInOut, alignment: .08);
+      }
+    });
+  }
+  Timer? refundTimer;
+  bool isCheckingRefunds = false;
+  String refundScanMessage = 'Automated review checks confirmed refunds when this page is open.';
   int page = 0, perPage = 10;
   bool ascending = true;
   String sort = 'name';
   final Set<String> selected = {};
   List<AdminVisitor> get filtered {
-    final today = parkToday();
     final list = widget.store.visitors.where((v) {
-      if (status == 'all' && v.status == 'archived') return false;
-      if (status != 'all' && v.status != status) return false;
-      if (membership != 'all' && v.membership != membership) return false;
-      if (risk != 'all' &&
-          (risk == 'watchlisted' ? !v.watchlisted : v.risk != risk)) {
-        return false;
+      // The status dropdown and the Archived tab must agree. Previously
+      // 'All Visitors' excluded archived records even after selecting Archived
+      // in the status dropdown, producing an empty list.
+      final archivedOnly = section == 'archived' ||
+          (section == 'all' && status == 'archived');
+      if ((v.status == 'archived') != archivedOnly) return false;
+      if (section == 'review' && !(v.watchlisted || v.risk != 'normal')) return false;
+      if (overviewFilter == 'new') {
+        final joined = v.joined?.toUtc().add(const Duration(hours: 8));
+        final now = DateTime.now().toUtc().add(const Duration(hours: 8));
+        if (joined == null || joined.year != now.year || joined.month != now.month) return false;
       }
-      if (joined != 'all') {
-        final date = v.joined?.toUtc().add(const Duration(hours: 8));
-        if (date == null ||
-            date.isBefore(
-              today.subtract(Duration(days: joined == 'week' ? 7 : 30)),
-            )) {
-          return false;
-        }
+      if (overviewFilter == 'active') {
+        final from = DateTime.now().subtract(const Duration(days: 30));
+        final active = widget.store.sessions.any((s) {
+          final at = adminDate(s.data['lastSeenAt']) ?? s.at;
+          return s.ownerUid == v.id && at != null && !at.isBefore(from);
+        });
+        if (!active) return false;
+      }
+      if (status != 'all' && v.status != status) return false;
+      if (membership != 'all' && v.displayMembershipKey != membership) {
+        return false;
       }
       final text =
           '${v.name} ${v.email} ${v.phone} ${v.id} ${visitorReference(v.id)}'
@@ -58,13 +181,14 @@ class _VisitorManagementState extends State<VisitorManagement> {
       return text.contains(query.toLowerCase().trim());
     }).toList();
     list.sort((a, b) {
-      final result = sort == 'activity'
-          ? (widget.store.lastSeen(a.id) ?? DateTime(1970)).compareTo(
-              widget.store.lastSeen(b.id) ?? DateTime(1970),
-            )
-          : (sort == 'membership'
-                ? a.membership.compareTo(b.membership)
-                : a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+      final result = switch (sort) {
+        'joined' => (a.joined ?? DateTime(1970)).compareTo(
+            b.joined ?? DateTime(1970)),
+        'membership' => (a.lifetimeEarnedPoints ?? -1).compareTo(
+            b.lifetimeEarnedPoints ?? -1),
+        'spent' => _visitorSpend(a).compareTo(_visitorSpend(b)),
+        _ => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+      };
       return ascending ? result : -result;
     });
     return list;
@@ -74,6 +198,46 @@ class _VisitorManagementState extends State<VisitorManagement> {
     action();
     page = 0;
   });
+
+  List<TicketOrder> _completedOrders(AdminVisitor v) => widget.store.orders
+      .where((order) => order.status == 'completed' && order.ownerUid == v.id)
+      .toList();
+
+  int _visitorSpend(AdminVisitor v) => _completedOrders(v)
+      .fold<int>(0, (sum, order) => sum + order.totalMinor);
+
+  Future<void> _editMembershipRules() async {
+    var foodRewards = <Map<String, dynamic>>[];
+    try {
+      final repository = widget.store.repository.parkRepository;
+      if (repository != null) {
+        final rewards = await repository.records('rewardCatalogue').first.timeout(const Duration(seconds: 5));
+        foodRewards = rewards.where((r) =>
+            r['active'] == true && r['id'] is String).toList();
+      }
+    } catch (_) {
+      // Keep membership configuration available if the catalogue cannot load.
+    }
+    if (!mounted) return;
+    final policy = await showDialog<MembershipPolicy>(
+      context: context,
+      builder: (_) => MembershipRulesDialog(
+        current: widget.store.membershipPolicy, foodRewards: foodRewards),
+    );
+    if (policy == null || !mounted) return;
+    final success = await widget.store.perform(
+      () => widget.store.repository.saveMembershipPolicy(policy),
+    );
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(success
+          ? 'Membership settings saved. Visitor accounts will update automatically.'
+          : (widget.store.error?.toLowerCase().contains('permission') == true
+              ? 'Membership settings are blocked by Firestore security rules. Your role may be correct; the live membership rules must be updated.'
+              : widget.store.error ?? 'Could not save membership settings. Please try again.')),
+    ));
+  }
+
   Future<void> _status(List<String> ids, String next) async {
     final reason = TextEditingController();
     final result = await showDialog<bool>(
@@ -131,6 +295,11 @@ class _VisitorManagementState extends State<VisitorManagement> {
     final text = reason.text;
     reason.dispose();
     if (result != true || !mounted) return;
+    if (next != 'active' && text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Please enter a reason before restricting an account.')));
+      return;
+    }
     final success = await widget.store.perform(
       () => widget.store.repository.setVisitorStatus(ids, next, text),
     );
@@ -160,36 +329,100 @@ class _VisitorManagementState extends State<VisitorManagement> {
     }
   }
 
-  void _export() => exportAdminCsv(
-    context,
-    'visitors-${visitDateString(parkToday())}.csv',
-    [
-      'Visitor',
-      'Visitor ID',
-      'Email',
-      'Phone',
-      'Membership',
-      'Tickets',
-      'Last activity',
-      'Risk',
-      'Status',
-    ],
-    filtered
-        .map(
-          (v) => [
-            v.name,
-            visitorReference(v.id),
-            v.email,
-            v.phone,
-            v.membership,
-            widget.store.visitorTickets(v).length,
-            adminTimeLabel(widget.store.lastSeen(v.id)),
-            v.risk,
-            v.status,
-          ],
-        )
-        .toList(),
-  );
+  void _openAccountReport() {
+    final report = VisitorAccountReport.calculate(
+      widget.store.visitors, widget.store.sessions, DateTime.now(),
+    );
+    showDialog<void>(context: context,
+      builder: (_) => VisitorAccountReportDialog(report: report));
+  }
+
+  Widget _visitorOverview(VisitorAccountReport report) {
+    final cards = <Widget>[
+      _VisitorKpiCard(title: 'Total Visitors',
+        value: '${report.registered}', detail: 'Registered accounts',
+        helper: '', onTap: () => showVisitors('all'),
+        icon: Icons.groups_outlined, accent: const Color(0xFFAA7475)),
+      _VisitorKpiCard(title: 'New This Month',
+        value: '${report.joinedThisMonth}', detail: 'Joined this month',
+        helper: '', onTap: () => showVisitors('new'),
+        icon: Icons.person_add_alt_outlined, accent: const Color(0xFF6883A1)),
+      _VisitorKpiCard(title: 'Active in 30 Days',
+        value: report.hasActivityRecords ? '${report.active30Days}' : '—',
+        detail: 'App activity in the past 30 days',
+        helper: report.hasActivityRecords ? '' : 'Activity not recorded',
+        onTap: () => showVisitors('active'),
+        icon: Icons.devices_outlined, accent: const Color(0xFF608776)),
+      _VisitorKpiCard(title: 'Accounts to Review',
+        value: '${report.flagged}', detail: 'Waiting for account review',
+        helper: '', onTap: () => showVisitors('review'),
+        icon: Icons.shield_outlined, accent: const Color(0xFFA4814A)),
+    ];
+    return LayoutBuilder(builder: (context, box) {
+      final columns = box.maxWidth >= 1080 ? 4 : box.maxWidth >= 580 ? 2 : 1;
+      const gap = 12.0;
+      return Wrap(spacing: gap, runSpacing: gap, children: [
+        for (final card in cards) SizedBox(
+          width: (box.maxWidth - gap * (columns - 1)) / columns, child: card),
+      ]);
+    });
+  }
+
+  Widget _reviewSection() {
+    final review = widget.store.visitors.where((v) => v.watchlisted).toList();
+    return Container(
+      padding: const EdgeInsets.all(15),
+      decoration: BoxDecoration(color: const Color(0xFFF4EAE5),
+        border: Border.all(color: const Color(0xFFE6D8D2)),
+        borderRadius: BorderRadius.circular(14)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text('Review Queue (${review.length})', style: const TextStyle(
+          color: Color(0xFF3C3031), fontSize: 16, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 5),
+        const Text('A watchlist flag is not proof of wrongdoing. Review each account and its refund history before suspending it.',
+          style: TextStyle(fontSize: 12, color: Color(0xFF796966))),
+        const SizedBox(height: 8),
+        Row(children: [
+          Expanded(child: Text(refundScanMessage, style: const TextStyle(
+            fontSize: 11, color: Color(0xFF816D69)))),
+          TextButton.icon(onPressed: isCheckingRefunds ? null : _scanRefunds,
+            icon: const Icon(Icons.refresh, size: 15),
+            label: const Text('Check now')),
+        ]),
+        const SizedBox(height: 9),
+        for (final v in review.take(5)) Padding(
+          padding: const EdgeInsets.symmetric(vertical: 5),
+          child: Row(children: [
+            const Icon(Icons.flag_outlined, size: 17, color: Color(0xFFA76B4C)),
+            const SizedBox(width: 7),
+            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(v.name, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12)),
+                Text(v.note.isEmpty ? 'Manually added to watchlist — reason not recorded.' : v.note,
+                  maxLines: 2, overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 11, color: Color(0xFF796966))),
+              ])),
+            TextButton(onPressed: () => widget.onOpen(v), child: const Text('Review')),
+            if (v.status != 'suspended') TextButton(
+              onPressed: () => _status([v.id], 'suspended'),
+              child: const Text('Suspend')),
+          ]),
+        ),
+        if (review.isEmpty) const Text('No accounts are currently on the watchlist.',
+          style: TextStyle(fontSize: 12, color: Color(0xFF796966))),
+      ]),
+    );
+  }
+
+  Widget _sectionChoice(String label, String key, IconData icon) =>
+      ChoiceChip(label: Row(mainAxisSize: MainAxisSize.min,
+        children: [Icon(icon, size: 15), const SizedBox(width: 5), Text(label)]),
+        selected: section == key,
+        selectedColor: const Color(0xFFE7CBC7),
+        backgroundColor: const Color(0xFFF9F2EF),
+        side: const BorderSide(color: Color(0xFFE4D5D0)),
+        onSelected: (_) => _change(() { section = key; status = 'all'; overviewFilter = 'all'; }));
+
   @override
   Widget build(BuildContext context) {
     final store = widget.store, list = filtered;
@@ -201,112 +434,128 @@ class _VisitorManagementState extends State<VisitorManagement> {
       children: [
         const AdminHeading(
           'Visitor Accounts',
-          'View and manage registered visitors',
+          'Understand visitor growth, engagement and account health',
         ),
-        const SizedBox(height: 26),
-        AdminStats(
-          children: [
-            AdminStat(
-              'Total Visitors',
-              '${store.visitors.length}',
-              'All registered visitors',
-              Icons.people_outline,
-            ),
-            AdminStat(
-              'Active Today',
-              '${store.activeToday}',
-              'Visitors active today',
-              Icons.person_outline,
-              color: const Color(0xFF278D52),
-            ),
-            AdminStat(
-              'New This Month',
-              '${store.newThisMonth}',
-              'New visitor registrations',
-              Icons.person_add_alt_1_outlined,
-              color: const Color(0xFF3978D8),
-            ),
-            AdminStat(
-              'Flagged Accounts',
-              '${store.flagged}',
-              'Require attention',
-              Icons.flag_outlined,
-              color: Colors.orange,
-            ),
-          ],
-        ),
+        const SizedBox(height: 17),
+        Builder(builder: (context) {
+          final report = VisitorAccountReport.calculate(
+            store.visitors, store.sessions, DateTime.now());
+          return Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(color: const Color(0xFFFCF8F6),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: const Color(0xFFEAE1DE))),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              _visitorOverview(report),
+              const SizedBox(height: 12),
+              VisitorAccountTrendChart(report: report),
+              const SizedBox(height: 11),
+              Row(children: [
+                const Icon(Icons.lightbulb_outline, color: Color(0xFFA2646A), size: 20),
+                const SizedBox(width: 9),
+                Expanded(child: Text(report.nextAction, style: const TextStyle(
+                  fontSize: 12, color: Color(0xFF5C4748)))),
+              ]),
+            ]),
+          );
+        }),
+        const SizedBox(height: 16),
+        Row(children: [
+          _sectionChoice('All Visitors', 'all', Icons.people_outline),
+          const SizedBox(width: 8),
+          _sectionChoice('Review Queue', 'review', Icons.flag_outlined),
+          const SizedBox(width: 8),
+          _sectionChoice('Archived', 'archived', Icons.archive_outlined),
+        ]),
+        if (section == 'review') ...[
+          const SizedBox(height: 12),
+          _reviewSection(),
+        ],
         const SizedBox(height: 24),
-        AdminCard(
-          padding: const EdgeInsets.all(16),
-          child: Wrap(
-            spacing: 12,
-            runSpacing: 12,
-            crossAxisAlignment: WrapCrossAlignment.center,
-            children: [
-              SizedBox(
-                width: 320,
-                child: TextField(
-                  key: const Key('visitor-search'),
-                  controller: searchText,
-                  onChanged: (v) => _change(() => query = v),
-                  decoration: const InputDecoration(
-                    prefixIcon: Icon(Icons.search, size: 20),
-                    hintText: 'Search name, email, phone or visitor ID',
+        KeyedSubtree(
+          key: resultsAnchor,
+          child: AdminCard(
+          padding: const EdgeInsets.all(15),
+          child: LayoutBuilder(builder: (context, c) {
+            // Keep one neat toolbar row; smaller windows can scroll sideways.
+            final searchWidth = (c.maxWidth - 620).clamp(250.0, 450.0).toDouble();
+            return SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(children: [
+                SizedBox(
+                  width: searchWidth,
+                  child: TextField(
+                    key: const Key('visitor-search'),
+                    controller: searchText,
+                    onChanged: (v) => _change(() => query = v),
+                    decoration: const InputDecoration(
+                      prefixIcon: Icon(Icons.search, size: 20),
+                      hintText: 'Search visitor name, email or ID',
+                    ),
                   ),
                 ),
-              ),
-              AdminSelect(
-                value: status,
-                options: const {
-                  'all': 'All Status',
-                  'active': 'Active',
-                  'suspended': 'Suspended',
-                  'archived': 'Archived',
-                },
-                onChanged: (v) => _change(() => status = v),
-                width: 135,
-              ),
-              AdminSelect(
-                value: membership,
-                options: const {
-                  'all': 'All Memberships',
-                  'normal': 'Normal Member',
-                  'bronze': 'Bronze Member',
-                  'silver': 'Silver Member',
-                  'gold': 'Gold Member',
-                },
-                onChanged: (v) => _change(() => membership = v),
-                width: 157,
-              ),
-              AdminSelect(
-                value: risk,
-                options: const {
-                  'all': 'All Risk Levels',
-                  'normal': 'Normal',
-                  'review': 'Review',
-                  'high': 'High',
-                  'watchlisted': 'Watchlisted',
-                },
-                onChanged: (v) => _change(() => risk = v),
-                width: 145,
-              ),
-              AdminSelect(
-                value: joined,
-                options: const {
-                  'all': 'Date Joined',
-                  'week': 'Last 7 days',
-                  'month': 'Last 30 days',
-                },
-                onChanged: (v) => _change(() => joined = v),
-                width: 145,
-              ),
-              AdminButton(
-                'Export CSV',
-                icon: Icons.download_outlined,
-                onPressed: list.isEmpty ? null : _export,
-              ),
-            ],
-          ),
+                const SizedBox(width: 10),
+                AdminSelect(
+                  value: status,
+                  options: const {
+                    'all': 'All Status',
+                    'active': 'Active',
+                    'suspended': 'Suspended',
+                    'archived': 'Archived',
+                  },
+                  onChanged: (v) => _change(() {
+                    status = v;
+                    if (v == 'archived') {
+                      section = 'archived';
+                    } else if (section == 'archived') {
+                      section = 'all';
+                    }
+                    overviewFilter = 'all';
+                    selected.clear();
+                  }),
+                  width: 132,
+                ),
+                const SizedBox(width: 10),
+                AdminSelect(
+                  value: membership,
+                  options: {
+                    'all': 'All Memberships',
+                    for (final tier in store.membershipPolicy.levels)
+                      tier.key: '${tier.name} Member',
+                  },
+                  onChanged: (v) => _change(() => membership = v),
+                  width: 160,
+                ),
+
+                const SizedBox(width: 10),
+                AdminButton(
+                  'Manage Tiers',
+                  outlined: true,
+                  icon: Icons.workspace_premium_outlined,
+                  onPressed: store.busy ? null : _editMembershipRules,
+                ),
+                const SizedBox(width: 10),
+                Tooltip(
+                  message: 'See visitor growth, app engagement and membership trends. No visitor identities are exported.',
+                  child: AdminButton(
+                    'Visitor Report',
+                    icon: Icons.analytics_outlined,
+                    outlined: true,
+                    onPressed: _openAccountReport,
+                  ),
+                ),
+              ]),
+            );
+          }),
+        )),
+        if (overviewFilter != 'all') Padding(
+          padding: const EdgeInsets.only(top: 9),
+          child: Align(alignment: Alignment.centerLeft, child: InputChip(
+            label: Text(overviewFilter == 'new' ? 'Visitors who joined this month'
+              : overviewFilter == 'active' ? 'Visitors active in 30 days'
+              : 'Accounts requiring review'),
+            onDeleted: () => showVisitors('all'),
+          )),
         ),
         const SizedBox(height: 18),
         if (selected.isNotEmpty)
@@ -367,7 +616,13 @@ class _VisitorManagementState extends State<VisitorManagement> {
               ),
             ),
           ),
-        AdminCard(
+        Theme(
+          data: Theme.of(context).copyWith(
+            dataTableTheme: const DataTableThemeData(
+              headingRowColor: WidgetStatePropertyAll(Color(0xFFF7F3F1)),
+            ),
+          ),
+          child: AdminCard(
           padding: EdgeInsets.zero,
           child: list.isEmpty
               ? const AdminEmpty(
@@ -376,12 +631,14 @@ class _VisitorManagementState extends State<VisitorManagement> {
                   icon: Icons.people_outline,
                 )
               : AdminTable(
-                  minWidth: 1170,
-                  sortColumnIndex: sort == 'name'
-                      ? 1
-                      : sort == 'membership'
-                      ? 4
-                      : 6,
+                  minWidth: 1110,
+                  sortColumnIndex: sort == 'membership'
+                      ? 3
+                      : sort == 'spent'
+                      ? 5
+                      : sort == 'joined'
+                      ? 6
+                      : 1,
                   sortAscending: ascending,
                   columns: [
                     DataColumn(
@@ -406,7 +663,6 @@ class _VisitorManagementState extends State<VisitorManagement> {
                       }),
                     ),
                     const DataColumn(label: Text('Visitor ID')),
-                    const DataColumn(label: Text('Contact')),
                     DataColumn(
                       label: const Text('Membership'),
                       onSort: (_, value) => setState(() {
@@ -414,15 +670,21 @@ class _VisitorManagementState extends State<VisitorManagement> {
                         ascending = value;
                       }),
                     ),
-                    const DataColumn(label: Text('Tickets')),
+                    const DataColumn(label: Text('Orders')),
                     DataColumn(
-                      label: const Text('Last Activity'),
+                      label: const Text('Total Spent'),
                       onSort: (_, value) => setState(() {
-                        sort = 'activity';
+                        sort = 'spent';
                         ascending = value;
                       }),
                     ),
-                    const DataColumn(label: Text('Risk')),
+                    DataColumn(
+                      label: const Text('Date Joined'),
+                      onSort: (_, value) => setState(() {
+                        sort = 'joined';
+                        ascending = value;
+                      }),
+                    ),
                     const DataColumn(label: Text('Status')),
                     const DataColumn(label: Text('Actions')),
                   ],
@@ -452,13 +714,31 @@ class _VisitorManagementState extends State<VisitorManagement> {
                                   AdminAvatar(v.name, photo: v.photo),
                                   const SizedBox(width: 10),
                                   SizedBox(
-                                    width: 120,
-                                    child: Text(
-                                      v.name,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(
-                                        fontWeight: FontWeight.w600,
-                                      ),
+                                    width: 195,
+                                    child: Column(
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Row(children: [
+                                          Flexible(child: Text(
+                                            v.name,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: const TextStyle(fontWeight: FontWeight.w600),
+                                          )),
+                                          if (v.watchlisted || v.risk != 'normal') ...[
+                                            const SizedBox(width: 4),
+                                            const Icon(Icons.flag_outlined, color: Colors.orange, size: 14),
+                                          ],
+                                        ]),
+                                        const SizedBox(height: 4),
+                                        Text(
+                                          v.email,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(color: adminMuted, fontSize: 11),
+                                        ),
+                                      ],
                                     ),
                                   ),
                                 ],
@@ -474,48 +754,29 @@ class _VisitorManagementState extends State<VisitorManagement> {
                               ),
                             ),
                           ),
-                          DataCell(
-                            Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  v.email,
-                                  style: const TextStyle(fontSize: 11),
-                                ),
-                                const SizedBox(height: 4),
-                                Text(
-                                  v.phone.isEmpty ? 'Not provided' : v.phone,
-                                  style: const TextStyle(
-                                    fontSize: 11,
-                                    color: adminMuted,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          DataCell(
-                            AdminBadge(
-                              '${titleCase(v.membership)} Member',
-                              tone: v.membership,
-                            ),
-                          ),
-                          DataCell(Text('${store.visitorTickets(v).length}')),
-                          DataCell(
-                            Text(
-                              adminTimeLabel(store.lastSeen(v.id)),
-                              style: const TextStyle(
-                                color: adminMuted,
-                                fontSize: 11,
+                          DataCell(Builder(builder: (context) {
+                            final level = store.membershipPolicy.levels.firstWhere(
+                              (level) => level.key == v.displayMembershipKey,
+                              orElse: () => store.membershipPolicy.levels.first,
+                            );
+                            final color = membershipAccent(level.colorKey);
+                            return Container(
+                              decoration: BoxDecoration(
+                                color: color.withValues(alpha: .10),
+                                border: Border.all(color: color.withValues(alpha: .18)),
+                                borderRadius: BorderRadius.circular(5),
                               ),
-                            ),
-                          ),
-                          DataCell(
-                            AdminBadge(
-                              v.watchlisted ? 'Watchlisted' : titleCase(v.risk),
-                              tone: v.watchlisted ? 'watchlisted' : v.risk,
-                            ),
-                          ),
+                              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+                              child: Text(v.membershipLabel,
+                                style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.w600)),
+                            );
+                          })),
+                          DataCell(Text('${_completedOrders(v).length}')),
+                          DataCell(Text(money(_visitorSpend(v)))),
+                          DataCell(Text(
+                            adminDateLabel(v.joined),
+                            style: const TextStyle(fontSize: 11, color: adminMuted),
+                          )),
                           DataCell(AdminBadge(titleCase(v.status))),
                           DataCell(
                             PopupMenuButton<String>(
@@ -574,6 +835,7 @@ class _VisitorManagementState extends State<VisitorManagement> {
                       ),
                   ],
                 ),
+          ),
         ),
         const SizedBox(height: 16),
         AdminCard(

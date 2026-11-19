@@ -120,7 +120,7 @@ function createReservationHandlers({db, FieldValue, clock = () => new Date()}) {
       } : stored;
       if (!slot) fail("not-found", "slot-not-found", "This return time no longer exists.");
       const now = clock(), start = instant(slot.startsAt), end = instant(slot.endsAt);
-      if (!ride || ride.deletedAt || ride.status !== "open" || nonRideCategory.test(ride.category) || slot.retired) fail("failed-precondition", "ride-unavailable", "This attraction or return time is unavailable.");
+      if (!ride || ride.deletedAt || ride.status !== "open" || (ride.kind ? ride.kind !== 'attractions' : nonRideCategory.test(ride.category)) || slot.retired) fail("failed-precondition", "ride-unavailable", "This attraction or return time is unavailable.");
       if (slot.attractionId !== attractionId ||
           (stored && automatic && (stored.attractionId !== attractionId ||
             instant(stored.startsAt)?.getTime() !== instant(automatic.startsAt).getTime() ||

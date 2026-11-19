@@ -65,77 +65,52 @@ class _VisitorProfileState extends State<VisitorProfile> {
           style: TextStyle(fontSize: 25, fontWeight: FontWeight.w600),
         ),
         const SizedBox(height: 20),
-        AdminCard(
-          child: Wrap(
-            spacing: 24,
-            runSpacing: 18,
-            crossAxisAlignment: WrapCrossAlignment.center,
+        AdminCard(child: LayoutBuilder(builder: (context, bounds) {
+          final isWide = bounds.maxWidth >= 850;
+          final identity = Row(mainAxisSize: MainAxisSize.min, children: [
+            AdminAvatar(v.name, photo: v.photo, radius: 39),
+            const SizedBox(width: 17),
+            Flexible(child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(v.name, maxLines: 1, overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 25, fontWeight: FontWeight.w700)),
+                const SizedBox(height: 6),
+                _iconText(Icons.mail_outline, v.email),
+                const SizedBox(height: 5),
+                _iconText(Icons.phone_outlined,
+                    v.phone.isEmpty ? 'Not provided' : v.phone),
+              ])),
+          ]);
+          final badges = Wrap(spacing: 7, runSpacing: 8, children: [
+            AdminBadge(v.membershipLabel, tone: v.displayMembershipKey),
+            AdminBadge(titleCase(v.status)),
+            if (v.watchlisted) const AdminBadge('Watchlist'),
+          ]);
+          final actions = Wrap(spacing: 9, runSpacing: 8, children: [
+            AdminButton('Edit Profile', icon: Icons.edit_outlined,
+              outlined: true, onPressed: () => editVisitor(context, widget.store, v)),
+            OutlinedButton.icon(
+              icon: Icon(v.watchlisted ? Icons.flag : Icons.outlined_flag),
+              label: Text(v.watchlisted ? 'Remove Watchlist' : 'Add to Watchlist'),
+              onPressed: () async {
+                final ok = await widget.store.perform(() =>
+                  widget.store.repository.setWatchlist([v], !v.watchlisted));
+                if (ok && context.mounted) ScaffoldMessenger.of(context)
+                  .showSnackBar(const SnackBar(content: Text('Watchlist updated.')));
+              },
+            ),
+          ]);
+          return isWide ? Row(crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              AdminAvatar(v.name, photo: v.photo, radius: 48),
-              SizedBox(
-                width: 225,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      v.name,
-                      style: const TextStyle(
-                        fontSize: 30,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                    const SizedBox(height: 9),
-                    _iconText(Icons.mail_outline, v.email),
-                    const SizedBox(height: 8),
-                    _iconText(
-                      Icons.phone_outlined,
-                      v.phone.isEmpty ? 'Not provided' : v.phone,
-                    ),
-                  ],
-                ),
-              ),
-              AdminBadge(
-                '${titleCase(v.membership)} Member',
-                tone: v.membership,
-              ),
-              AdminBadge(titleCase(v.status)),
-              AdminBadge('Risk: ${titleCase(v.risk)}', tone: v.risk),
-              AdminButton(
-                'Edit Profile',
-                icon: Icons.edit_outlined,
-                outlined: true,
-                onPressed: () => editVisitor(context, widget.store, v),
-              ),
-              PopupMenuButton<String>(
-                tooltip: 'More visitor actions',
-                onSelected: (value) => widget.store.perform(
-                  () =>
-                      widget.store.repository.setWatchlist([v], !v.watchlisted),
-                ),
-                itemBuilder: (_) => [
-                  PopupMenuItem(
-                    value: 'watch',
-                    child: Text(
-                      v.watchlisted
-                          ? 'Remove from Watchlist'
-                          : 'Add to Watchlist',
-                    ),
-                  ),
-                ],
-                child: const Padding(
-                  padding: EdgeInsets.all(10),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text('More Actions', style: TextStyle(fontSize: 12)),
-                      Icon(Icons.keyboard_arrow_down, size: 18),
-                    ],
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
+              Expanded(flex: 5, child: identity),
+              const SizedBox(width: 15),
+              Expanded(flex: 3, child: badges),
+              const SizedBox(width: 12),
+              Flexible(flex: 4, child: actions),
+            ]) : Column(crossAxisAlignment: CrossAxisAlignment.start,
+              children: [identity, const SizedBox(height: 15), badges,
+                const SizedBox(height: 15), actions]);
+        })),
         const SizedBox(height: 20),
         SingleChildScrollView(
           scrollDirection: Axis.horizontal,
@@ -144,8 +119,7 @@ class _VisitorProfileState extends State<VisitorProfile> {
               for (final item in [
                 'Overview',
                 'Activity',
-                'Tickets & Orders',
-                'Payments',
+                'Bookings & Payments',
                 'Security',
               ])
                 InkWell(
@@ -396,52 +370,43 @@ class _VisitorProfileState extends State<VisitorProfile> {
               ],
             ),
           ),
-        if (tab == 'Tickets & Orders')
-          AdminCard(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _heading(Icons.confirmation_number_outlined, 'Park Tickets'),
-                const SizedBox(height: 15),
-                if (tickets.isEmpty)
-                  const AdminEmpty(
-                    'No tickets yet',
-                    'This visitor has no linked park tickets.',
-                  ),
-                for (final t in tickets) _ticket(t),
-              ],
-            ),
-          ),
-        if (tab == 'Payments')
-          AdminCard(
-            child: orders.isEmpty
-                ? const AdminEmpty(
-                    'No booking payments',
-                    'Completed booking amounts will appear here.',
-                  )
-                : AdminTable(
-                    minWidth: 700,
-                    columns: const [
-                      DataColumn(label: Text('Booking ID')),
-                      DataColumn(label: Text('Visit Date')),
-                      DataColumn(label: Text('Guests')),
-                      DataColumn(label: Text('Amount')),
-                      DataColumn(label: Text('Method')),
-                    ],
-                    rows: [
-                      for (final o in orders)
-                        DataRow(
-                          cells: [
-                            DataCell(Text(o.reference)),
-                            DataCell(Text(displayParkDate(o.visitDate))),
-                            DataCell(Text('${o.quantity}')),
-                            DataCell(Text(money(o.totalMinor))),
-                            DataCell(Text(o.paymentMethod)),
-                          ],
-                        ),
-                    ],
-                  ),
-          ),
+        if (tab == 'Bookings & Payments')
+          AdminCard(child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _heading(Icons.receipt_long_outlined, 'Bookings & Payments'),
+              const SizedBox(height: 12),
+              if (orders.isEmpty) const AdminEmpty('No bookings yet',
+                'This visitor does not have any linked bookings.'),
+              if (orders.isNotEmpty) AdminTable(
+                minWidth: 850,
+                columns: const [
+                  DataColumn(label: Text('Booking ID')),
+                  DataColumn(label: Text('Visit Date')),
+                  DataColumn(label: Text('Tickets')),
+                  DataColumn(label: Text('Amount')),
+                  DataColumn(label: Text('Payment')),
+                  DataColumn(label: Text('Ticket Status')),
+                ],
+                rows: [for (final order in orders)
+                  DataRow(cells: [
+                    DataCell(Text(order.reference)),
+                    DataCell(Text(displayParkDate(order.visitDate))),
+                    DataCell(Text('${order.quantity}')),
+                    DataCell(Text(money(order.totalMinor))),
+                    DataCell(Text(order.status == 'completed'
+                      ? 'Completed (${order.paymentMethod})'
+                      : titleCase(order.status))),
+                    DataCell(Text(() {
+                      final linked = tickets.where((t) => t.orderId == order.id).toList();
+                      if (linked.isEmpty) return 'No ticket issued';
+                      return linked.map((t) => t.filter).toSet().join(', ');
+                    }())),
+                  ]),
+                ],
+              ),
+            ],
+          )),
         if (tab == 'Security')
           AdminCard(
             child: Column(
@@ -654,7 +619,7 @@ Future<void> editVisitor(
 ) async {
   final name = TextEditingController(text: visitor.name),
       phone = TextEditingController(text: visitor.phone);
-  String membership = visitor.membership, risk = visitor.risk;
+  String risk = visitor.risk;
   final form = GlobalKey<FormState>();
   final data =
       await showDialog<
@@ -701,16 +666,10 @@ Future<void> editVisitor(
                         },
                       ),
                       const SizedBox(height: 20),
-                      AdminSelect(
-                        value: membership,
-                        options: const {
-                          'normal': 'Normal Member',
-                          'bronze': 'Bronze Member',
-                          'silver': 'Silver Member',
-                          'gold': 'Gold Member',
-                        },
-                        onChanged: (v) => setState(() => membership = v),
-                        width: 470,
+                      Text(
+                        'Membership: ${visitor.membershipLabel} (${visitor.lifetimeEarnedPoints?.toString() ?? 'Loading'} lifetime earned points). '
+                        'Change tier names and point thresholds from Visitor Accounts → Membership Rules.',
+                        style: const TextStyle(color: adminMuted, fontSize: 12),
                       ),
                       const SizedBox(height: 16),
                       AdminSelect(
@@ -746,7 +705,6 @@ Future<void> editVisitor(
                         ),
                       },
                       metadata: <String, dynamic>{
-                        'membership': membership,
                         'riskLevel': risk,
                       },
                     ));

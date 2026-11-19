@@ -69,15 +69,21 @@ class Attraction {
     required this.mapY,
     String? description,
     this.coverImageBase64,
+    this.categoryId,
+    ParkPlaceKind? placeKind,
     this.crowdLevel,
     this.standbyMinutes,
     this.updatedAt,
     this.ratingAverage,
     this.ratingCount = 0,
     this.reservationCapacity = defaultReservationCapacity,
+    this.rideDurationMinutes,
+    this.ridersPerCycle,
+    this.safetyNotes,
   }) : name = name.trim(),
        category = category.trim(),
-       description = description?.trim() {
+       description = description?.trim(),
+       _storedKind = placeKind {
     if (id.trim().isEmpty || id.contains('/')) {
       throw ArgumentError.value(id, 'id', 'Expected a document ID');
     }
@@ -89,6 +95,17 @@ class Attraction {
     }
     if (reservationCapacity < 1 || reservationCapacity > 1000) {
       throw ArgumentError.value(reservationCapacity, 'reservationCapacity');
+    }
+    if (rideDurationMinutes != null &&
+        (rideDurationMinutes! < 1 || rideDurationMinutes! > 120)) {
+      throw ArgumentError('Ride duration must be between 1 and 120 minutes.');
+    }
+    if (ridersPerCycle != null &&
+        (ridersPerCycle! < 1 || ridersPerCycle! > 1000)) {
+      throw ArgumentError('Riders per cycle must be between 1 and 1000.');
+    }
+    if (safetyNotes != null && safetyNotes!.length > 500) {
+      throw ArgumentError('Safety notes must be 500 characters or fewer.');
     }
     if (!mapX.isFinite || !mapY.isFinite) {
       throw ArgumentError('Map coordinates must be finite numbers');
@@ -106,11 +123,16 @@ class Attraction {
   final String id;
   final String name;
   final String category;
+  final String? categoryId;
+  final ParkPlaceKind? _storedKind;
   final AttractionStatus status;
   final int minHeightCm;
   final int reservationCapacity;
+  final int? rideDurationMinutes;
+  final int? ridersPerCycle;
+  final String? safetyNotes;
 
-  ParkPlaceKind get placeKind => ParkPlaceKind.fromCategory(category);
+  ParkPlaceKind get placeKind => _storedKind ?? ParkPlaceKind.fromCategory(category);
   bool get isRide => placeKind == ParkPlaceKind.attractions;
 
   // Coordinate units/origin must be agreed before the map module is connected.
@@ -144,6 +166,9 @@ class Attraction {
       id: id,
       name: name,
       category: category,
+      categoryId: data['categoryId'] as String?,
+      placeKind: ParkPlaceKind.values.where((kind) =>
+          kind.name == data['kind']).firstOrNull,
       status: AttractionStatus.parse(data['status']),
       minHeightCm: height,
       mapX: x.toDouble(),
@@ -163,12 +188,17 @@ class Attraction {
       ratingCount: data['ratingCount'] is int ? data['ratingCount'] as int : 0,
       reservationCapacity:
           data['reservationCapacity'] as int? ?? defaultReservationCapacity,
+      rideDurationMinutes: data['rideDurationMinutes'] as int?,
+      ridersPerCycle: data['ridersPerCycle'] as int?,
+      safetyNotes: data['safetyNotes'] as String?,
     );
   }
 
   Map<String, dynamic> toMap() => {
     'name': name,
     'category': category,
+    'kind': placeKind.name,
+    if (categoryId != null && categoryId!.isNotEmpty) 'categoryId': categoryId,
     'status': status.name,
     'minHeightCm': minHeightCm,
     'mapX': mapX,
@@ -177,6 +207,9 @@ class Attraction {
     'coverImageBase64': coverImageBase64,
     'crowdLevel': crowdLevel?.name,
     'standbyMinutes': standbyMinutes,
+    if (rideDurationMinutes != null) 'rideDurationMinutes': rideDurationMinutes,
+    if (ridersPerCycle != null) 'ridersPerCycle': ridersPerCycle,
+    if (safetyNotes != null) 'safetyNotes': safetyNotes,
     if (reservationCapacity != defaultReservationCapacity)
       'reservationCapacity': reservationCapacity,
   };

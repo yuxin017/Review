@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'tickets.dart';
+import 'membership_policy.dart';
 
 DateTime? rewardDate(dynamic value) =>
     value is Timestamp ? value.toDate() : null;
@@ -94,15 +95,18 @@ class RewardsTier {
   final String? next;
   final int start, target, earned;
   const RewardsTier(this.name, this.next, this.start, this.target, this.earned);
-  factory RewardsTier.forEarned(int earned) {
-    if (earned >= 3000) {
-      return RewardsTier('Platinum', null, 3000, 3000, earned);
-    }
-    if (earned >= 1500) {
-      return RewardsTier('Gold', 'Platinum', 1500, 3000, earned);
-    }
-    if (earned >= 500) return RewardsTier('Silver', 'Gold', 500, 1500, earned);
-    return RewardsTier('Normal', 'Silver', 0, 500, earned);
+  factory RewardsTier.forEarned(int earned, [MembershipPolicy? policy]) {
+    final rules = policy ?? MembershipPolicy.defaults;
+    final current = rules.forEarned(earned);
+    final nextIndex = rules.nextIndexFor(earned);
+    final next = nextIndex < 0 ? null : rules.levels[nextIndex];
+    return RewardsTier(
+      current.name,
+      next?.name,
+      current.minPoints,
+      next?.minPoints ?? current.minPoints,
+      earned,
+    );
   }
   double get progress =>
       next == null ? 1 : ((earned - start) / (target - start)).clamp(0, 1);

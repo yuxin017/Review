@@ -1,0 +1,1610 @@
+import 'dart:async';
+
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/material.dart';
+
+import '../admin_widgets.dart';
+import 'staff_access.dart';
+import 'staff_dialog_frame.dart';
+import 'staff_email_check.dart';
+import 'staff_form_validation.dart';
+import 'staff_onboarding_repository.dart';
+import 'staff_records.dart';
+import 'staff_records_repository.dart';
+import 'staff_training_catalog.dart';
+import 'staff_training_date_policy.dart';
+
+/// Workforce administration on Firebase Spark. Restricted staff are never
+/// granted the legacy admin claim or an operational permission by this UI.
+class StaffManagementPage extends StatefulWidget {
+  const StaffManagementPage({super.key, required this.repository});
+  final StaffRecordsRepository repository;
+
+  @override
+  State<StaffManagementPage> createState() => _StaffManagementPageState();
+}
+
+class _StaffManagementPageState extends State<StaffManagementPage> {
+  final searchController = TextEditingController();
+  late final StaffOnboardingRepository _onboarding = StaffOnboardingRepository();
+  late final StaffTrainingCatalogRepository _catalog =
+      StaffTrainingCatalogRepository(widget.repository.db);
+  late final Stream<List<StaffProfile>> _staffStream =
+      widget.repository.watchStaffDirectory();
+  late final Stream<QuerySnapshot<Map<String, dynamic>>> _proofStream =
+      widget.repository.db.collection('staffEmailVerifications').snapshots();
+
+  String search = '';
+  String statusFilter = 'all';
+  String? selectedUid;
+  String? error;
+  String? notice;
+  String? statusBusyUid;
+  List<StaffProfile> _lastDirectory = const [];
+
+  @override
+  void dispose() {
+    searchController.dispose();
+    super.dispose();
+  }
+
+  String _message(Object e) {
+    final value = e.toString().toLowerCase();
+    if (value.contains('email-already-in-use') ||
+        value.contains('already-exists') ||
+        value.contains('already belongs to a staff account')) {
+      return 'This email is already in use.';
+    }
+    if (value.contains('permission-denied') ||
+        value.contains('not authorized') || value.contains('unauthenticated')) {
+      return 'You can’t make this change with your current access. Please ask an administrator for help.';
+    }
+    if (value.contains('network') || value.contains('unavailable')) {
+      return 'Unable to connect right now. Check your internet connection and try again.';
+    }
+    if (value.contains('too-many-requests')) {
+      return 'Too many attempts. Try again later.';
+    }
+    if (value.contains('may exist without a staff profile')) {
+      return 'The account was created, but we couldn’t finish setting it up. Please contact support.';
+    }
+    if (value.contains('operation-not-allowed')) {
+      return 'Account registration is unavailable.';
+    }
+    if (value.contains('course with this name already exists')) {
+      return 'This course already exists.';
+    }
+    if (value.contains('course name must be')) {
+      return 'Enter a valid course name.';
+    }
+    if (e is ArgumentError) {
+      final message = e.message?.toString() ?? '';
+      if (message.startsWith('Enter ') || message.startsWith('Select ') ||
+          message.startsWith('Choose ') || message.startsWith('Set ') ||
+          message.startsWith('This ') || message.startsWith('Training ')) {
+        return message;
+      }
+      return 'Check the information and try again.';
+    }
+    return 'We couldn’t save your changes. Please try again.';
+  }
+
+  void _notify(String value, {bool failure = false}) {
+    if (!mounted) return;
+    setState(() {
+      if (failure) {
+        error = value;
+      } else {
+        notice = value;
+        error = null;
+      }
+    });
+  }
+
+  Future<void> _createStaff() async {
+    final form = GlobalKey<FormState>();
+    final name = TextEditingController();
+    final email = TextEditingController();
+    final roles = <StaffRole>{};
+    String? duplicateError;
+    String? formError;
+    String? roleError;
+    String? emailHint;
+    bool checking = false;
+    bool busy = false;
+    Timer? debounce;
+    int sequence = 0;
+
+    try {
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) => StatefulBuilder(
+          builder: (ctx, update) {
+            Future<void> checkEmail() async {
+              final address = email.text.trim().toLowerCase();
+              if (StaffFormValidation.email(address) != null) return;
+              final ticket = ++sequence;
+              final known = StaffEmailCheck.findDuplicate(
+                address, _lastDirectory.map((s) => s.email),
+              );
+              if (known != null) {
+                if (dialogContext.mounted) {
+                  update(() { duplicateError = known; emailHint = null; checking = false; });
+                  form.currentState?.validate();
+                }
+                return;
+              }
+              if (dialogContext.mounted) update(() { checking = true; emailHint = null; });
+              try {
+                final existing = await widget.repository.db
+                    .collection('staffProfiles')
+                    .where('email', isEqualTo: address)
+                    .limit(1).get();
+                if (!dialogContext.mounted || ticket != sequence ||
+                    address != email.text.trim().toLowerCase()) return;
+                update(() {
+                  duplicateError = existing.docs.isEmpty ? null
+                      : 'This email is already in use.';
+                  checking = false;
+                });
+                form.currentState?.validate();
+              } catch (_) {
+                if (dialogContext.mounted && ticket == sequence) {
+                  update(() {
+                    checking = false;
+                    emailHint = 'Couldn\'t check this email yet.';
+                  });
+                }
+              }
+            }
+
+            return StaffDialogFrame(
+              title: 'Create Staff Account',
+              subtitle: 'Use an email address this employee can receive.',
+              onClose: busy ? null : () => Navigator.pop(dialogContext),
+              child: Form(
+                key: form,
+                autovalidateMode: AutovalidateMode.onUserInteraction,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    const StaffFieldLabel('Full name *'),
+                    TextFormField(
+                      key: const Key('staff-create-name'),
+                      controller: name, enabled: !busy,
+                      textCapitalization: TextCapitalization.words,
+                      decoration: const InputDecoration(
+                        hintText: 'e.g. Loo Chee Beng',
+                        prefixIcon: Icon(Icons.person_outline, size: 20)),
+                      validator: StaffFormValidation.fullName,
+                    ),
+                    const SizedBox(height: 18),
+                    const StaffFieldLabel('Employee email *'),
+                    Focus(
+                      onFocusChange: (focused) {
+                        if (!focused && !busy) unawaited(checkEmail());
+                      },
+                      child: TextFormField(
+                        key: const Key('staff-create-email'),
+                        controller: email, enabled: !busy,
+                        keyboardType: TextInputType.emailAddress,
+                        autocorrect: false,
+                        autofillHints: const [AutofillHints.email],
+                        decoration: InputDecoration(
+                          hintText: 'e.g. staff@gmail.com',
+                          prefixIcon: const Icon(Icons.alternate_email, size: 20),
+                          suffixIcon: checking ? const Padding(
+                            padding: EdgeInsets.all(12),
+                            child: SizedBox(width: 17, height: 17,
+                              child: CircularProgressIndicator(strokeWidth: 2)),
+                          ) : null,
+                        ),
+                        validator: (value) =>
+                            StaffFormValidation.email(value) ?? duplicateError,
+                        onChanged: (value) {
+                          sequence++;
+                          debounce?.cancel();
+                          if (duplicateError != null || emailHint != null) {
+                            update(() { duplicateError = null; emailHint = null; checking = false; });
+                          }
+                          if (StaffFormValidation.email(value) == null) {
+                            debounce = Timer(const Duration(milliseconds: 550),
+                                () => unawaited(checkEmail()));
+                          }
+                        },
+                        onFieldSubmitted: (_) => unawaited(checkEmail()),
+                      ),
+                    ),
+                    const SizedBox(height: 7),
+                    if (emailHint != null) Padding(
+                      padding: const EdgeInsets.only(bottom: 6),
+                      child: Text(emailHint!, style: const TextStyle(
+                        fontSize: 12, color: Color(0xFF8E621E))),
+                    ),
+                    const Text(
+                      'Password setup instructions will be sent here. '
+                      'Email availability is checked when you create the account.',
+                      style: TextStyle(fontSize: 12, color: adminMuted),
+                    ),
+                    const SizedBox(height: 20),
+                    const Divider(height: 1, color: adminBorder),
+                    const SizedBox(height: 18),
+                    const StaffFieldLabel('Eligible roles *'),
+                    _StaffRolePicker(
+                      roles: roles, enabled: !busy,
+                      onToggle: (role, chosen) => update(() {
+                        if (chosen) { roles.add(role); } else { roles.remove(role); }
+                        roleError = null;
+                      }),
+                    ),
+                    if (roleError != null) _InlineError(roleError!),
+                    const SizedBox(height: 18),
+                    const Text('New staff start Inactive. Email verification '
+                        'and approval are required to activate.',
+                        style: TextStyle(fontSize: 12, color: adminMuted)),
+                    if (formError != null) _InlineError(formError!),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: busy ? null : () => Navigator.pop(dialogContext),
+                  child: const Text('Cancel'),
+                ),
+                AdminButton(busy ? 'Creating…' : 'Create Staff',
+                  icon: Icons.person_add_alt_1,
+                  onPressed: busy ? null : () async {
+                    final valid = form.currentState?.validate() ?? false;
+                    if (roles.isEmpty) update(() => roleError = 'Select at least one role.');
+                    if (!valid || roles.isEmpty) return;
+                    update(() { busy = true; formError = null; });
+                    try {
+                      // Recheck directory immediately before creating Auth user.
+                      await checkEmail();
+                      if (duplicateError != null) return;
+                      final created = await _onboarding.createStaff(
+                        fullName: name.text.trim(),
+                        email: email.text.trim().toLowerCase(),
+                        eligibleRoles: roles,
+                      );
+                      if (mounted) setState(() { selectedUid = created.uid; });
+                      try {
+                        await _onboarding.sendPasswordSetupEmail(created.email);
+                        _notify('Staff account created. Check the email inbox.');
+                      } catch (mailError) {
+                        _notify('Account created. Couldn\'t send the email. Select Resend Setup Email.', failure: true);
+                      }
+                      if (dialogContext.mounted) Navigator.pop(dialogContext);
+                    } catch (e) {
+                      if (dialogContext.mounted) {
+                        update(() {
+                          if (e.toString().contains('email-already-in-use')) {
+                            duplicateError = _message(e);
+                            form.currentState?.validate();
+                          } else {
+                            formError = _message(e);
+                          }
+                        });
+                      }
+                    } finally {
+                      if (dialogContext.mounted) update(() => busy = false);
+                    }
+                  },
+                ),
+              ],
+            );
+          },
+        ),
+      );
+    } finally {
+      debounce?.cancel();
+      name.dispose();
+      email.dispose();
+    }
+  }
+
+  Future<void> _resendSetupEmail(StaffProfile staff) async {
+    try {
+      await _onboarding.sendPasswordSetupEmail(staff.email);
+      _notify('Password setup email requested for ${staff.email}.');
+    } catch (e) {
+      _notify(_message(e), failure: true);
+    }
+  }
+
+  Future<bool> _confirm({
+    required String title,
+    required String details,
+    required String confirmLabel,
+  }) async {
+    final sensitive = confirmLabel == 'Suspend' ||
+        confirmLabel == 'Mark Inactive' ||
+        confirmLabel.toLowerCase().contains('revoke') ||
+        confirmLabel == 'Archive';
+    final accent = sensitive ? const Color(0xFFB75B58) : adminRose;
+    final icon = confirmLabel == 'Activate'
+        ? Icons.person_add_alt_1_rounded
+        : sensitive ? Icons.info_outline_rounded : Icons.check_circle_outline_rounded;
+    return await showDialog<bool>(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) => Dialog(
+        backgroundColor: Colors.white,
+        surfaceTintColor: Colors.transparent,
+        elevation: 10,
+        shadowColor: const Color(0x24000000),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+        insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 450),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(26, 26, 26, 22),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    Container(
+                      width: 48,
+                      height: 48,
+                      decoration: BoxDecoration(
+                        color: accent.withValues(alpha: .10),
+                        borderRadius: BorderRadius.circular(15),
+                      ),
+                      child: Icon(icon, color: accent, size: 25),
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(title, style: const TextStyle(
+                            fontSize: 20, height: 1.2,
+                            fontWeight: FontWeight.w700, color: adminDark,
+                          )),
+                          const SizedBox(height: 8),
+                          Text(details, style: const TextStyle(
+                            fontSize: 13, height: 1.45,
+                            color: Color(0xFF64707A),
+                          )),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 26),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(ctx, false),
+                      style: TextButton.styleFrom(foregroundColor: adminMuted),
+                      child: const Text('Cancel'),
+                    ),
+                    const SizedBox(width: 10),
+                    FilledButton(
+                      onPressed: () => Navigator.pop(ctx, true),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: accent,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 16),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      child: Text(confirmLabel),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    ) ?? false;
+  }
+
+  bool _verified(StaffProfile person, Map<String, String> proofs) =>
+      proofs[person.uid] == person.email.trim().toLowerCase();
+
+  Future<void> _changeStatus(StaffProfile person, String next) async {
+    if (next == person.status || statusBusyUid != null) return;
+    if (next == 'active') {
+      try {
+        // Never trust the UI's cached verification badge alone.
+        final proof = await widget.repository.db.collection('staffEmailVerifications')
+            .doc(person.uid).get();
+        if (!proof.exists || proof.data()?['email'] != person.email.trim().toLowerCase()) {
+          _notify('This employee needs to verify their email before you can activate the account.', failure: true);
+          return;
+        }
+      } catch (e) {
+        _notify('We couldn’t check this employee’s email verification. Please try again.', failure: true);
+        return;
+      }
+    }
+    if (!mounted) return;
+    final action = next == 'active' ? 'Activate' : next == 'suspended' ? 'Suspend' : 'Mark Inactive';
+    final okay = await _confirm(
+      title: next == 'active' ? 'Activate staff account?' : next == 'suspended' ? 'Suspend staff account?' : 'Set account to inactive?',
+      details: next == 'active'
+          ? '${person.fullName} has verified their email and can sign in to the Staff Portal once activated. Work duties still depend on their assigned role and training.'
+          : '${person.fullName} won’t be able to use the Staff Portal until the account is activated again. Their records will be kept.',
+      confirmLabel: action,
+    );
+    if (!okay || !mounted) return;
+    setState(() => statusBusyUid = person.uid);
+    try {
+      await widget.repository.saveStaffProfile(
+        uid: person.uid, fullName: person.fullName, email: person.email,
+        status: next, eligibleRoles: person.eligibleRoles,
+      );
+      _notify('${person.fullName}’s account is now ${next == 'active' ? 'active' : next == 'suspended' ? 'suspended' : 'inactive'}.');
+    } catch (e) {
+      _notify(_message(e), failure: true);
+    } finally {
+      if (mounted) setState(() => statusBusyUid = null);
+    }
+  }
+
+  Widget _statusButton(StaffProfile person, bool verified) {
+    if (statusBusyUid == person.uid) {
+      return const SizedBox(width: 22, height: 22,
+          child: CircularProgressIndicator(strokeWidth: 2));
+    }
+    final tone = person.status == 'active' ? const Color(0xFF27734F)
+        : person.status == 'suspended' ? const Color(0xFFB42318)
+        : const Color(0xFF926321);
+    return PopupMenuButton<String>(
+      tooltip: verified ? 'Change employee status' : 'Verify email before activation',
+      onSelected: (value) => _changeStatus(person, value),
+      itemBuilder: (_) => [
+        for (final status in const ['active', 'inactive', 'suspended'])
+          PopupMenuItem<String>(
+            value: status,
+            enabled: status != person.status && (status != 'active' || verified),
+            child: Row(children: [
+              Icon(status == 'active' ? Icons.check_circle_outline
+                  : status == 'suspended' ? Icons.block
+                  : Icons.pause_circle_outline, size: 17),
+              const SizedBox(width: 10),
+              Text(status == 'active' ? 'Active'
+                  : status == 'suspended' ? 'Suspended' : 'Inactive'),
+            ]),
+          ),
+      ],
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(7),
+          color: tone.withValues(alpha: 0.08),
+          border: Border.all(color: tone.withValues(alpha: 0.26)),
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Text(person.status == 'active' ? 'Active'
+              : person.status == 'suspended' ? 'Suspended' : 'Inactive',
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: tone)),
+          const SizedBox(width: 4),
+          Icon(Icons.arrow_drop_down, size: 18, color: tone),
+        ]),
+      ),
+    );
+  }
+
+  Future<void> _editStaff(StaffProfile person) async {
+    final form = GlobalKey<FormState>();
+    final name = TextEditingController(text: person.fullName);
+    final roles = <StaffRole>{...person.eligibleRoles};
+    String? formError;
+    bool saving = false;
+    try {
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => StatefulBuilder(builder: (ctx, update) => StaffDialogFrame(
+          title: 'Edit Staff Details & Roles',
+          subtitle: '${person.staffId} · ${person.email}',
+          onClose: saving ? null : () => Navigator.pop(ctx),
+          child: Form(
+            key: form,
+            autovalidateMode: AutovalidateMode.onUserInteraction,
+            child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+              const StaffFieldLabel('Full name *'),
+              TextFormField(
+                controller: name, enabled: !saving,
+                validator: StaffFormValidation.fullName,
+                decoration: const InputDecoration(prefixIcon: Icon(Icons.person_outline)),
+              ),
+              const SizedBox(height: 12),
+              const Text('Email cannot be changed here.',
+                  style: TextStyle(fontSize: 12, color: adminMuted)),
+              const SizedBox(height: 20),
+              const StaffFieldLabel('Eligible roles'),
+              _StaffRolePicker(
+                roles: roles, enabled: !saving,
+                onToggle: (role, chosen) => update(() {
+                  if (chosen) { roles.add(role); } else { roles.remove(role); }
+                }),
+              ),
+              const SizedBox(height: 14),
+              const Text('Account status is managed independently using the Status button in the staff row.',
+                  style: TextStyle(fontSize: 12, color: adminMuted)),
+              if (formError != null) _InlineError(formError!),
+            ]),
+          ),
+          actions: [
+            TextButton(onPressed: saving ? null : () => Navigator.pop(ctx),
+                child: const Text('Cancel')),
+            AdminButton(saving ? 'Saving…' : 'Save Changes',
+              onPressed: saving ? null : () async {
+                if (!(form.currentState?.validate() ?? false)) return;
+                update(() { saving = true; formError = null; });
+                try {
+                  await widget.repository.saveStaffProfile(
+                    uid: person.uid, fullName: name.text.trim(),
+                    email: person.email, status: person.status,
+                    eligibleRoles: roles,
+                  );
+                  if (ctx.mounted) Navigator.pop(ctx);
+                  _notify('Staff details updated.');
+                } catch (e) {
+                  if (ctx.mounted) update(() => formError = _message(e));
+                } finally {
+                  if (ctx.mounted) update(() => saving = false);
+                }
+              },
+            ),
+          ],
+        )),
+      );
+    } finally {
+      name.dispose();
+    }
+  }
+
+  Future<void> _createCourse() async {
+    final form = GlobalKey<FormState>();
+    final title = TextEditingController();
+    var role = StaffRole.photographer;
+
+    String? formError;
+    var busy = false;
+    try {
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => StatefulBuilder(builder: (ctx, update) => StaffDialogFrame(
+          title: 'Add Training Course',
+          subtitle: 'For ride training, use Park Facilities.',
+          onClose: busy ? null : () => Navigator.pop(ctx),
+          child: Form(
+            key: form, autovalidateMode: AutovalidateMode.onUserInteraction,
+            child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+              const StaffFieldLabel('Course name *'),
+              TextFormField(
+                controller: title, enabled: !busy,
+                decoration: const InputDecoration(
+                    hintText: 'e.g. Guest Photography & Privacy'),
+                validator: (value) {
+                  final text = (value ?? '').trim();
+                  return text.length < 4 || text.length > 120
+                      ? 'Enter a clear course name (4–120 characters).'
+                      : null;
+                },
+              ),
+              const SizedBox(height: 18),
+              const StaffFieldLabel('Required job role *'),
+              DropdownButtonFormField<StaffRole>(
+                initialValue: role,
+                isExpanded: true,
+                items: StaffRole.values.where((r) => r != StaffRole.superAdmin && r != StaffRole.attractionOperator)
+                    .map((r) => DropdownMenuItem(value: r, child: Text(r.label))).toList(),
+                onChanged: busy ? null : (v) => update(() => role = v ?? role),
+              ),
+               if (formError != null) _InlineError(formError!),
+            ]),
+          ),
+          actions: [
+            TextButton(onPressed: busy ? null : () => Navigator.pop(ctx),
+                child: const Text('Cancel')),
+            AdminButton(busy ? 'Saving…' : 'Add Course',
+              onPressed: busy ? null : () async {
+                if (!(form.currentState?.validate() ?? false)) return;
+
+                update(() { busy = true; formError = null; });
+                try {
+                  await _catalog.createCourse(
+                       title: title.text, role: role);
+                  if (ctx.mounted) Navigator.pop(ctx);
+                  _notify('Course added.');
+                } catch (e) {
+                  if (ctx.mounted) update(() => formError = _message(e));
+                } finally {
+                  if (ctx.mounted) update(() => busy = false);
+                }
+              },
+            ),
+          ],
+        )),
+      );
+    } finally {
+      title.dispose();
+    }
+  }
+
+  /// Courses created before the attraction binding update can be linked once.
+  Future<void> _linkCourseRide(StaffTrainingCourse course) async {
+    String? selectedRideId;
+    String? formError;
+    var busy = false;
+    final ridesFuture = widget.repository.db.collection('attractions').get();
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (ctx, update) => StaffDialogFrame(
+          title: 'Link Attraction',
+          subtitle: course.title,
+          onClose: busy ? null : () => Navigator.pop(dialogContext),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            const StaffFieldLabel('Assigned attraction *'),
+            FutureBuilder<QuerySnapshot<Map<String, dynamic>>>(
+              future: ridesFuture,
+              builder: (context, snapshot) {
+                if (snapshot.hasError) {
+                  return const _InlineError('Couldn\'t load attractions.');
+                }
+                if (!snapshot.hasData) return const LinearProgressIndicator();
+                final rides = snapshot.data!.docs.where((d) =>
+                    d.data()['deletedAt'] == null &&
+                    (d.data()['name']?.toString().trim() ?? '').isNotEmpty).toList();
+                if (rides.isEmpty) return const _InlineError('Add an attraction first.');
+                return DropdownButtonFormField<String>(
+                  key: const Key('existing-course-link-attraction'),
+                  initialValue: selectedRideId,
+                  hint: const Text('Select attraction'),
+                  isExpanded: true,
+                  items: rides.map((d) => DropdownMenuItem(
+                      value: d.id, child: Text(d.data()['name']?.toString() ?? d.id))).toList(),
+                  onChanged: busy ? null : (value) => update(() => selectedRideId = value),
+                );
+              },
+            ),
+            const SizedBox(height: 12),
+            const Text('An attraction can only be linked once.',
+                style: TextStyle(fontSize: 12, color: adminMuted)),
+            if (formError != null) _InlineError(formError!),
+          ]),
+          actions: [
+            TextButton(onPressed: busy ? null : () => Navigator.pop(dialogContext),
+                child: const Text('Cancel')),
+            AdminButton('Link Attraction',
+              onPressed: busy ? null : () async {
+                if (selectedRideId == null) {
+                  update(() => formError = 'Select an attraction.');
+                  return;
+                }
+                update(() { busy = true; formError = null; });
+                try {
+                  await _catalog.linkExistingRide(course, selectedRideId!);
+                  if (dialogContext.mounted) Navigator.pop(dialogContext);
+                  _notify('Attraction linked.');
+                } catch (e) {
+                  if (dialogContext.mounted) update(() => formError = _message(e));
+                } finally {
+                  if (dialogContext.mounted) update(() => busy = false);
+                }
+              }),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _manageCourses() async {
+    final rideLabels = <String, String>{};
+    try {
+      final snapshot = await widget.repository.db.collection('attractions').get();
+      for (final ride in snapshot.docs) {
+        if (ride.data()['deletedAt'] == null) {
+          rideLabels[ride.id] = ride.data()['name']?.toString() ?? ride.id;
+        }
+      }
+    } catch (_) {
+      _notify('Couldn\'t load attractions. Try again.', failure: true);
+      return;
+    }
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => StaffDialogFrame(
+        title: 'Training Course Catalogue',
+        subtitle: 'Ride courses are created in Park Facilities.',
+        maxWidth: 720,
+        maxHeight: 690,
+        onClose: () => Navigator.pop(ctx),
+        child: StreamBuilder<List<StaffTrainingCourse>>(
+          stream: _catalog.watchCourses(),
+          builder: (context, snapshot) {
+            if (snapshot.hasError) return _InlineError(_message(snapshot.error!));
+            if (!snapshot.hasData) return const LinearProgressIndicator();
+            final courses = snapshot.data!;
+            if (courses.isEmpty) return const Padding(
+              padding: EdgeInsets.symmetric(vertical: 20),
+              child: Text('No courses yet. Add one to get started.'),
+            );
+            return Column(children: [
+              for (final course in courses) Padding(
+                padding: const EdgeInsets.symmetric(vertical: 7),
+                child: Row(children: [
+                  Expanded(child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(course.title, style: const TextStyle(
+                          fontWeight: FontWeight.w600)),
+                      const SizedBox(height: 3),
+                      Text(course.role.label, style: const TextStyle(
+                          fontSize: 12, color: adminMuted)),
+                      if (course.role == StaffRole.attractionOperator)
+                        Text(course.needsRideLink
+                          ? 'Attraction not linked'
+                          : 'Attraction: ${rideLabels[course.attractionId] ?? 'Unavailable'}',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: course.needsRideLink
+                                ? const Color(0xFF9B651D) : adminMuted)),
+                    ],
+                  )),
+                  const SizedBox(width: 12),
+                  if (course.needsRideLink)
+                    TextButton(onPressed: () => _linkCourseRide(course),
+                        child: const Text('Link attraction')),
+                  Text(course.needsRideLink ? 'Needs setup' :
+                      (course.active ? 'Available' : 'Archived'),
+                    style: TextStyle(fontSize: 12,
+                      color: course.needsRideLink ? const Color(0xFF9B651D) :
+                        (course.active ? const Color(0xFF27734F) : adminMuted))),
+                  const SizedBox(width: 8),
+                  TextButton(
+                    onPressed: () async {
+                      final okay = await _confirm(
+                        title: course.active ? 'Archive course?' : 'Restore course?',
+                        details: 'Existing training history will be retained.',
+                        confirmLabel: course.active ? 'Archive' : 'Restore',
+                      );
+                      if (!okay) return;
+                      try {
+                        await _catalog.setActive(course, !course.active);
+                        _notify('Course updated.');
+                      } catch (e) {
+                        _notify(_message(e), failure: true);
+                      }
+                    },
+                    child: Text(course.active ? 'Archive' : 'Restore'),
+                  ),
+                ]),
+              ),
+            ]);
+          },
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close')),
+          AdminButton('Add Course', icon: Icons.add,
+            onPressed: _createCourse),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _addTraining(StaffProfile person) async {
+    if (person.eligibleRoles.isEmpty) {
+      _notify('Assign a role before recording training.', failure: true);
+      return;
+    }
+    List<StaffTrainingCourse> courses;
+    try {
+      courses = await _catalog.activeCourses();
+    } catch (_) {
+      _notify('Couldn\'t load courses. Try again.', failure: true);
+      return;
+    }
+    // Resolve the display name once. The course ID is the source of truth;
+    // no staff member is asked to choose an attraction during training.
+    final rideLabels = <String, String>{};
+    try {
+      final snapshot = await widget.repository.db.collection('attractions').get();
+      for (final ride in snapshot.docs) {
+        if (ride.data()['deletedAt'] == null) {
+          rideLabels[ride.id] = ride.data()['name']?.toString() ?? ride.id;
+        }
+      }
+    } catch (_) {
+      _notify('Couldn\'t load attractions. Try again.', failure: true);
+      return;
+    }
+    final applicable = courses.where((course) =>
+        person.eligibleRoles.contains(course.role) &&
+        !course.needsRideLink &&
+        (course.role != StaffRole.attractionOperator ||
+            rideLabels.containsKey(course.attractionId))).toList();
+    if (applicable.isEmpty) {
+      _notify('No courses available for this staff member.', failure: true);
+      return;
+    }
+
+    // The ride is fixed in Course Catalogue. Never ask again per employee.
+    final picked = <String>{};
+    final expiryByCourse = <String, DateTime>{};
+    final completed = ValueNotifier<DateTime>(DateUtils.dateOnly(DateTime.now()));
+    String? formError;
+    bool busy = false;
+
+    try {
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) => StatefulBuilder(
+          builder: (ctx, update) {
+            final chosen = applicable.where((c) => picked.contains(c.id)).toList();
+            return StaffDialogFrame(
+              title: 'Record Training',
+              subtitle: '${person.fullName} · ${person.staffId}',
+              maxWidth: 720,
+              maxHeight: 760,
+              onClose: busy ? null : () => Navigator.pop(dialogContext),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Text('Select completed courses only.',
+                      style: TextStyle(color: adminMuted, fontSize: 13)),
+                  const SizedBox(height: 16),
+                  const StaffFieldLabel('Completed courses *'),
+                  Container(
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      border: Border.all(color: adminBorder),
+                      borderRadius: BorderRadius.circular(9),
+                    ),
+                    child: Column(children: [
+                      for (final course in applicable) ...[
+                        if (course.id != applicable.first.id)
+                          const Divider(height: 1, color: adminBorder),
+                        CheckboxListTile(
+                          key: Key('staff-training-course-${course.id}'),
+                          value: picked.contains(course.id),
+                          enabled: !busy,
+                          controlAffinity: ListTileControlAffinity.leading,
+                          dense: true,
+                          activeColor: adminRose,
+                          title: Text(course.title, style: const TextStyle(
+                            fontSize: 13, fontWeight: FontWeight.w600)),
+                          subtitle: Text(course.role.label,
+                            style: const TextStyle(fontSize: 12, color: adminMuted)),
+                          onChanged: busy ? null : (yes) => update(() {
+                            if (yes == true) {
+                              if (picked.length >= 3) {
+                                formError = 'Select up to 3 courses at a time.';
+                                return;
+                              }
+                              picked.add(course.id);
+                            }
+                            else { picked.remove(course.id); }
+                            formError = null;
+                          }),
+                        ),
+                      ],
+                    ]),
+                  ),
+                  const SizedBox(height: 10),
+                  Text('${picked.length} course(s) selected',
+                    style: const TextStyle(fontSize: 12, color: adminMuted)),
+                  if (formError == 'Select at least one course.' ||
+                      formError == 'Select up to 3 courses at a time.')
+                    _InlineError(formError!),
+                  const SizedBox(height: 20),
+                  const StaffFieldLabel('Completion date *'),
+                  OutlinedButton.icon(
+                    icon: const Icon(Icons.event_outlined, size: 18),
+                    label: Text(_date(completed.value)),
+                    onPressed: busy ? null : () async {
+                      final date = await showDatePicker(
+                        context: dialogContext,
+                        initialDate: completed.value,
+                        firstDate: DateTime(2000),
+                        lastDate: DateUtils.dateOnly(DateTime.now()),
+                      );
+                      if (date != null) update(() {
+                        completed.value = date;
+                        final hadInvalidDates = expiryByCourse.values.any(
+                          (expiry) => !StaffTrainingDatePolicy.dateOnly(expiry)
+                              .isAfter(StaffTrainingDatePolicy.dateOnly(date)),
+                        );
+                        expiryByCourse.removeWhere((_, expiry) =>
+                            !StaffTrainingDatePolicy.dateOnly(expiry)
+                                .isAfter(StaffTrainingDatePolicy.dateOnly(date)));
+                        formError = hadInvalidDates
+                            ? 'Some expiry dates were cleared because they must be after the completion date.'
+                            : null;
+                      });
+                    },
+                  ),
+                  const SizedBox(height: 7),
+                  const Text('The completion date cannot be in the future.',
+                      style: TextStyle(fontSize: 12, color: adminMuted)),
+                  if (formError != null &&
+                      formError != 'Select at least one course.' &&
+                      formError != 'Select up to 3 courses at a time.') ...[
+                    const SizedBox(height: 10),
+                    _InlineError(formError!),
+                  ],
+                  if (chosen.isNotEmpty) ...[
+                    const SizedBox(height: 20),
+                    const StaffFieldLabel('Course details'),
+                    const Text('Ride training requires a review date. Other courses may have no expiry date.',
+                      style: TextStyle(fontSize: 12, color: adminMuted)),
+                    if (chosen.any((c) => c.role == StaffRole.attractionOperator)) ...[
+                      const SizedBox(height: 8),
+                      Align(alignment: Alignment.centerLeft,
+                        child: TextButton.icon(
+                          icon: const Icon(Icons.event_repeat_outlined, size: 18),
+                          label: const Text('Set the same ride review date'),
+                          onPressed: busy ? null : () async {
+                            final start = StaffTrainingDatePolicy.nextValidDate(completed.value);
+                            final date = await showDatePicker(
+                              context: dialogContext,
+                              initialDate: StaffTrainingDatePolicy.dateOnly(completed.value).add(const Duration(days: 365)),
+                              firstDate: start,
+                              lastDate: DateTime(2100),
+                            );
+                            if (date != null) update(() {
+                              for (final c in chosen.where((c) =>
+                                  c.role == StaffRole.attractionOperator)) {
+                                expiryByCourse[c.id] = date;
+                              }
+                            });
+                          },
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 10),
+                    for (final course in chosen) Container(
+                      key: Key('staff-training-details-${course.id}'),
+                      margin: const EdgeInsets.only(bottom: 12),
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        border: Border.all(color: adminBorder),
+                        borderRadius: BorderRadius.circular(9),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Text(course.title, style: const TextStyle(
+                              fontSize: 14, fontWeight: FontWeight.w600,
+                              color: adminDark)),
+                          if (course.role == StaffRole.attractionOperator) ...[
+                            const SizedBox(height: 8),
+                            Row(children: [
+                              const Icon(Icons.attractions_outlined,
+                                  size: 17, color: adminRose),
+                              const SizedBox(width: 8),
+                              Expanded(child: Text(
+                                'Attraction: ${rideLabels[course.attractionId] ?? 'Not found'}',
+                                style: const TextStyle(fontSize: 12,
+                                  color: adminMuted),
+                              )),
+                            ]),
+                          ],
+                          const SizedBox(height: 12),
+                          StaffFieldLabel(course.role == StaffRole.attractionOperator
+                              ? 'Review date *' : 'Expiry date (optional)'),
+                          Row(children: [
+                            Expanded(child: OutlinedButton.icon(
+                              icon: const Icon(Icons.event_available_outlined, size: 17),
+                              label: Text(expiryByCourse[course.id] == null
+                                  ? (course.role == StaffRole.attractionOperator
+                                      ? 'Choose review date' : 'Add expiry date')
+                                  : _date(expiryByCourse[course.id]!)),
+                              onPressed: busy ? null : () async {
+                                final firstValid = StaffTrainingDatePolicy.nextValidDate(completed.value);
+                                final current = expiryByCourse[course.id];
+                                final suggested = StaffTrainingDatePolicy.dateOnly(completed.value)
+                                    .add(const Duration(days: 365));
+                                final date = await showDatePicker(
+                                  context: dialogContext,
+                                  initialDate: current != null && !current.isBefore(firstValid)
+                                      ? current : suggested,
+                                  firstDate: firstValid,
+                                  lastDate: DateTime(2100),
+                                );
+                                if (date != null) update(() {
+                                  expiryByCourse[course.id] = date;
+                                  formError = null;
+                                });
+                              },
+                            )),
+                            if (expiryByCourse.containsKey(course.id) &&
+                                course.role != StaffRole.attractionOperator) ...[
+                              const SizedBox(width: 8),
+                              IconButton(
+                                tooltip: 'Remove expiry date (no expiry)',
+                                onPressed: busy ? null : () => update(() {
+                                  expiryByCourse.remove(course.id);
+                                  formError = null;
+                                }),
+                                icon: const Icon(Icons.close, size: 18),
+                              ),
+                            ],
+                          ]),
+                          const SizedBox(height: 7),
+                          Text(
+                            expiryByCourse[course.id] != null
+                                ? 'Must be later than the completion date.'
+                                : course.role == StaffRole.attractionOperator
+                                    ? 'Required for ride training. Choose a date after completion.'
+                                    : 'No expiry date — valid until revoked. Add a date if needed.',
+                            style: const TextStyle(fontSize: 12, color: adminMuted),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: busy ? null : () => Navigator.pop(dialogContext),
+                  child: const Text('Cancel'),
+                ),
+                AdminButton(busy ? 'Saving…' : 'Approve Training',
+                  icon: Icons.verified_outlined,
+                  onPressed: busy ? null : () async {
+                    if (chosen.isEmpty) {
+                      update(() => formError = 'Select at least one course.');
+                      return;
+                    }
+                    if (chosen.any((c) => c.needsRideLink)) {
+                      update(() => formError = 'Link the attraction in Course Catalogue.');
+                      return;
+                    }
+                    for (final course in chosen) {
+                      final reason = StaffTrainingDatePolicy.validate(
+                        completedAt: completed.value,
+                        expiresOn: expiryByCourse[course.id],
+                        requiresExpiry: course.role == StaffRole.attractionOperator,
+                      );
+                      if (reason != null) {
+                        update(() => formError = '${course.title}: $reason');
+                        return;
+                      }
+                    }
+                    update(() { busy = true; formError = null; });
+                    try {
+                      final existing = await widget.repository
+                          .watchQualifications(person.uid).first;
+                      for (final course in chosen) {
+                        if (existing.any((r) =>
+                            r.title == course.title && r.role == course.role &&
+                            (r.attractionId ?? '') == course.attractionId &&
+                            r.validAt(DateTime.now()))) {
+                          throw ArgumentError('This training is already recorded.');
+                        }
+                      }
+                      await widget.repository.saveQualificationsBatch(
+                        staffUid: person.uid,
+                        completedAt: completed.value,
+                        courses: [
+                          for (final course in chosen) StaffTrainingEntry(
+                            courseId: course.id,
+                            title: course.title,
+                            role: course.role,
+                            attractionId: course.attractionId.isEmpty
+                                ? null : course.attractionId,
+                            // The date shown to the user is inclusive; stored expiry is exclusive.
+                            expiresAt: expiryByCourse[course.id] == null ? null
+                                : expiryByCourse[course.id]!
+                                    .add(const Duration(days: 1))
+                                    .subtract(const Duration(milliseconds: 1)),
+                          ),
+                        ],
+                      );
+                      if (dialogContext.mounted) Navigator.pop(dialogContext);
+                      _notify('Training recorded for ${chosen.length} course(s).');
+                    } catch (e) {
+                      if (dialogContext.mounted) update(() => formError = _message(e));
+                    } finally {
+                      if (dialogContext.mounted) update(() => busy = false);
+                    }
+                  },
+                ),
+              ],
+            );
+          },
+        ),
+      );
+    } finally {
+      completed.dispose();
+    }
+  }
+
+  String _date(DateTime date) => '${date.year}-'
+      '${date.month.toString().padLeft(2, '0')}-'
+      '${date.day.toString().padLeft(2, '0')}';
+
+  Future<void> _revokeTraining(StaffQualification record) async {
+    final yes = await _confirm(
+      title: 'Revoke training?',
+      details: 'This will revoke "${record.title}" while keeping the training history.',
+      confirmLabel: 'Revoke Training',
+    );
+    if (!yes) return;
+    try {
+      await widget.repository.revokeQualification(record.id);
+      _notify('Training revoked.');
+    } catch (e) {
+      _notify(_message(e), failure: true);
+    }
+  }
+
+  Widget _qualifications(StaffProfile person) =>
+      StreamBuilder<List<StaffQualification>>(
+    stream: widget.repository.watchQualifications(person.uid),
+    builder: (ctx, snapshot) {
+      if (snapshot.hasError) return _InlineError(_message(snapshot.error!));
+      if (!snapshot.hasData) return const LinearProgressIndicator();
+      if (snapshot.data!.isEmpty) {
+        return const Padding(padding: EdgeInsets.symmetric(vertical: 16),
+            child: Text('No verified training records yet.',
+                style: TextStyle(color: adminMuted)));
+      }
+      return Column(children: [
+        for (final record in snapshot.data!) ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: Icon(record.validAt(DateTime.now())
+              ? Icons.verified_outlined : Icons.warning_amber_outlined,
+              color: record.validAt(DateTime.now())
+                  ? const Color(0xFF27734F) : const Color(0xFFC17A23)),
+          title: Text(record.title, style: const TextStyle(
+              fontWeight: FontWeight.w600, fontSize: 14)),
+          subtitle: Text('${record.role.label}'
+              '${record.attractionId == null ? '' : ' · Ride training'}'
+              ' · ${record.status == 'revoked' ? 'Revoked' : record.validAt(DateTime.now()) ? 'Valid' : 'Expired'}'
+              '${record.expiresAt == null ? '' : ' · Review by ${_date(record.expiresAt!.toLocal())}'}'),
+          trailing: record.status == 'approved' ? TextButton(
+            onPressed: () => _revokeTraining(record),
+            child: const Text('Revoke'),
+          ) : null,
+        ),
+      ]);
+    },
+  );
+
+  Widget _banner(String message, {bool failure = false}) => Padding(
+    padding: const EdgeInsets.only(bottom: 14),
+    child: Container(
+      padding: const EdgeInsets.all(15),
+      decoration: BoxDecoration(
+        color: failure ? const Color(0xFFFFE8E5) : const Color(0xFFEAF6EE),
+        borderRadius: BorderRadius.circular(9),
+        border: Border.all(color: failure
+            ? const Color(0xFFC55249) : const Color(0xFF91C9A5)),
+      ),
+      child: Row(children: [
+        Icon(failure ? Icons.error_outline : Icons.check_circle_outline,
+            color: failure ? const Color(0xFFA52C22) : const Color(0xFF27734F)),
+        const SizedBox(width: 12),
+        Expanded(child: Text(message, style: TextStyle(
+          fontSize: 13, fontWeight: FontWeight.w600,
+          color: failure ? const Color(0xFF92261F) : const Color(0xFF216D45),
+        ))),
+        IconButton(
+          tooltip: 'Dismiss message',
+          onPressed: () => setState(() {
+            if (failure) { error = null; } else { notice = null; }
+          }),
+          icon: const Icon(Icons.close, size: 18),
+        ),
+      ]),
+    ),
+  );
+
+  Widget _verificationBadge(bool verified) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+    decoration: BoxDecoration(
+      borderRadius: BorderRadius.circular(6),
+      color: verified ? const Color(0xFFEAF5EF) : const Color(0xFFFFF2DD),
+    ),
+    child: Row(mainAxisSize: MainAxisSize.min, children: [
+      Icon(verified ? Icons.verified_outlined : Icons.schedule_outlined,
+          size: 15, color: verified ? const Color(0xFF27734F) : const Color(0xFF9B651D)),
+      const SizedBox(width: 5),
+      Text(verified ? 'Verified' : 'Pending', style: TextStyle(
+        fontSize: 12, color: verified ? const Color(0xFF27734F) : const Color(0xFF9B651D),
+      )),
+    ]),
+  );
+
+  Widget _directory(List<StaffProfile> people, Map<String, String> proofs) =>
+      AdminCard(
+        padding: EdgeInsets.zero,
+        child: LayoutBuilder(
+          builder: (context, constraints) => SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: SizedBox(
+              // Wide tables scroll horizontally, but each expanded panel stays
+              // directly below its employee rather than at the page bottom.
+              width: constraints.maxWidth < 1090 ? 1090 : constraints.maxWidth,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Container(
+                    color: const Color(0xFFF9F3F1),
+                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
+                    child: Row(
+                      children: const [
+                        Expanded(flex: 25, child: _StaffColumnTitle('Employee')),
+                        Expanded(flex: 14, child: _StaffColumnTitle('Staff ID')),
+                        Expanded(flex: 18, child: _StaffColumnTitle('Eligible Roles')),
+                        Expanded(flex: 17, child: _StaffColumnTitle('Email Verification')),
+                        Expanded(flex: 14, child: _StaffColumnTitle('Status')),
+                        Expanded(flex: 12, child: _StaffColumnTitle('Actions')),
+                      ],
+                    ),
+                  ),
+                  for (final person in people) ...[
+                    Material(
+                      color: person.uid == selectedUid
+                          ? const Color(0xFFFFF4F1) : Colors.white,
+                      child: InkWell(
+                        onTap: () => setState(() => selectedUid =
+                            selectedUid == person.uid ? null : person.uid),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 20, vertical: 15),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                flex: 25,
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(person.fullName,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        fontSize: 14, fontWeight: FontWeight.w700,
+                                        color: adminDark,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(person.email,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        fontSize: 12, color: adminMuted,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              Expanded(
+                                flex: 14,
+                                child: Text(person.staffId.isEmpty ? '—' : person.staffId,
+                                  style: const TextStyle(fontSize: 13, color: adminDark),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                              Expanded(
+                                flex: 18,
+                                child: Text(
+                                  person.eligibleRoles.isEmpty
+                                      ? 'No role assigned'
+                                      : person.eligibleRoles.map((r) => r.label).join(', '),
+                                  maxLines: 2, overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(fontSize: 12, color: adminDark),
+                                ),
+                              ),
+                              Expanded(
+                                flex: 17,
+                                child: Align(
+                                  alignment: Alignment.centerLeft,
+                                  child: _verificationBadge(_verified(person, proofs)),
+                                ),
+                              ),
+                              Expanded(
+                                flex: 14,
+                                child: Align(
+                                  alignment: Alignment.centerLeft,
+                                  child: _statusButton(person, _verified(person, proofs)),
+                                ),
+                              ),
+                              Expanded(
+                                flex: 12,
+                                child: Align(
+                                  alignment: Alignment.centerLeft,
+                                  child: TextButton.icon(
+                                    key: Key('staff-details-toggle-${person.uid}'),
+                                    onPressed: () => setState(() => selectedUid =
+                                        selectedUid == person.uid ? null : person.uid),
+                                    style: TextButton.styleFrom(
+                                      foregroundColor: adminRose,
+                                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                                    ),
+                                    icon: Icon(
+                                      selectedUid == person.uid
+                                          ? Icons.keyboard_arrow_up_rounded
+                                          : Icons.keyboard_arrow_down_rounded,
+                                      size: 19,
+                                    ),
+                                    label: Text(selectedUid == person.uid ? 'Close' : 'Details'),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                    if (person.uid == selectedUid)
+                      Container(
+                        key: Key('staff-expanded-details-${person.uid}'),
+                        color: const Color(0xFFFFF9F7),
+                        padding: const EdgeInsets.fromLTRB(20, 0, 20, 18),
+                        child: _details(person, _verified(person, proofs)),
+                      ),
+                    const Divider(height: 1, color: adminBorder),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+
+  Widget _details(StaffProfile person, bool verified) => AdminCard(
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(children: [
+          Expanded(child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('STAFF PROFILE', style: TextStyle(
+                  color: adminMuted, fontSize: 11, fontWeight: FontWeight.w700)),
+              const SizedBox(height: 8),
+              Text(person.fullName, style: const TextStyle(
+                  color: adminDark, fontSize: 21, fontWeight: FontWeight.w700)),
+              const SizedBox(height: 4),
+              Text('${person.staffId} · ${person.email}',
+                style: const TextStyle(fontSize: 13, color: adminMuted)),
+            ],
+          )),
+          IconButton(
+            tooltip: 'Close employee details',
+            onPressed: () => setState(() => selectedUid = null),
+            icon: const Icon(Icons.close, color: adminMuted),
+          ),
+        ]),
+        const SizedBox(height: 14),
+        Wrap(spacing: 7, runSpacing: 7, children: [
+          _verificationBadge(verified),
+          for (final role in person.eligibleRoles) Chip(
+            side: const BorderSide(color: adminBorder),
+            backgroundColor: const Color(0xFFFCF6F4),
+            label: Text(role.label, style: const TextStyle(fontSize: 12)),
+          ),
+        ]),
+        if (!verified) Padding(
+          padding: const EdgeInsets.only(top: 10),
+          child: const Text('Email verification is needed before activation.',
+            style: TextStyle(color: Color(0xFF9B651D),
+                fontSize: 12, fontWeight: FontWeight.w600)),
+        ),
+        if (!verified && person.status == 'active') Padding(
+          padding: const EdgeInsets.only(top: 10),
+          child: const _InlineError('Email verification is missing. Please set this account to Inactive.'),
+        ),
+        const SizedBox(height: 18),
+        Wrap(spacing: 9, runSpacing: 9, children: [
+          AdminButton('Edit Details / Roles', outlined: true,
+            icon: Icons.edit_outlined, onPressed: () => _editStaff(person)),
+          AdminButton('Record Training', outlined: true,
+            icon: Icons.school_outlined, onPressed: () => _addTraining(person)),
+          AdminButton('Resend Setup Email', outlined: true,
+            icon: Icons.mark_email_unread_outlined,
+            onPressed: () => _resendSetupEmail(person)),
+        ]),
+        const Divider(height: 34, color: adminBorder),
+        const Text('Training Qualifications', style: TextStyle(
+            color: adminDark, fontSize: 16, fontWeight: FontWeight.w700)),
+        const SizedBox(height: 4),
+        _qualifications(person),
+      ],
+    ),
+  );
+
+  @override
+  Widget build(BuildContext context) => StreamBuilder<List<StaffProfile>>(
+    stream: _staffStream,
+    builder: (ctx, snapshot) => StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: _proofStream,
+      builder: (ctx, proofSnapshot) {
+        final everyone = snapshot.data ?? <StaffProfile>[];
+        _lastDirectory = everyone;
+        final proofs = <String, String>{};
+        if (proofSnapshot.hasData) {
+          for (final doc in proofSnapshot.data!.docs) {
+            final email = doc.data()['email'];
+            if (email is String) proofs[doc.id] = email.trim().toLowerCase();
+          }
+        }
+        final filter = search.trim().toLowerCase();
+        final people = everyone.where((p) {
+          final matchSearch = filter.isEmpty ||
+              '${p.fullName} ${p.email} ${p.staffId}'.toLowerCase().contains(filter);
+          return matchSearch && (statusFilter == 'all' || p.status == statusFilter);
+        }).toList();
+        return SingleChildScrollView(
+          padding: const EdgeInsets.all(8),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const AdminHeading('Staff Management',
+                'Manage employee accounts, roles and verified training records.'),
+              const SizedBox(height: 22),
+              if (notice != null) _banner(notice!),
+              if (error != null) _banner(error!, failure: true),
+              if (snapshot.hasError) _banner(_message(snapshot.error!), failure: true),
+              if (proofSnapshot.hasError) _banner(
+                'Couldn\'t load email verification status.',
+                failure: true),
+              AdminCard(
+                padding: const EdgeInsets.all(16),
+                child: Wrap(spacing: 12, runSpacing: 12,
+                  crossAxisAlignment: WrapCrossAlignment.center, children: [
+                    SizedBox(width: 310, child: TextField(
+                      key: const Key('staff-directory-search'),
+                      controller: searchController,
+                      onChanged: (v) => setState(() => search = v),
+                      decoration: const InputDecoration(
+                        prefixIcon: Icon(Icons.search, size: 20),
+                        hintText: 'Search name, email or Staff ID',
+                      ),
+                    )),
+                    SizedBox(width: 156, child: DropdownButtonFormField<String>(
+                      key: ValueKey(statusFilter),
+                      initialValue: statusFilter,
+                      decoration: const InputDecoration(labelText: 'Status'),
+                      items: const [
+                        DropdownMenuItem(value: 'all', child: Text('All statuses')),
+                        DropdownMenuItem(value: 'active', child: Text('Active')),
+                        DropdownMenuItem(value: 'inactive', child: Text('Inactive')),
+                        DropdownMenuItem(value: 'suspended', child: Text('Suspended')),
+                      ],
+                      onChanged: (v) => setState(() => statusFilter = v ?? 'all'),
+                    )),
+                    AdminButton('Training Catalogue', outlined: true,
+                      icon: Icons.menu_book_outlined, onPressed: _manageCourses),
+                    AdminButton('Create Staff Account',
+                      icon: Icons.person_add_alt_1, onPressed: _createStaff),
+                    Text('${everyone.length} staff',
+                      style: const TextStyle(fontSize: 13, color: adminMuted)),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              if (snapshot.connectionState == ConnectionState.waiting ||
+                  proofSnapshot.connectionState == ConnectionState.waiting)
+                const LinearProgressIndicator(),
+              if (snapshot.hasData && everyone.isEmpty)
+                const AdminCard(child: Padding(
+                  padding: EdgeInsets.all(16),
+                  child: Text('No staff records. Use Create Staff Account to add an employee.'),
+                )),
+              if (snapshot.hasData && everyone.isNotEmpty) ...[
+                if (people.isEmpty) const AdminCard(
+                  child: Text('No employees match these filters.'),
+                ) else _directory(people, proofs),
+              ],
+              if (proofSnapshot.hasError)
+                const Padding(
+                  padding: EdgeInsets.only(top: 10),
+                  child: Text('Can\'t confirm email verification yet. '
+                      'Please try again.',
+                      style: TextStyle(fontSize: 12, color: Color(0xFF9B651D))),
+                ),
+            ],
+          ),
+        );
+      },
+    ),
+  );
+}
+
+class _StaffColumnTitle extends StatelessWidget {
+  const _StaffColumnTitle(this.label);
+  final String label;
+
+  @override
+  Widget build(BuildContext context) => Text(
+    label,
+    style: const TextStyle(
+      fontSize: 12, fontWeight: FontWeight.w700, color: adminDark,
+    ),
+  );
+}
+
+class _InlineError extends StatelessWidget {
+  const _InlineError(this.value);
+  final String value;
+  @override
+  Widget build(BuildContext context) => Container(
+    margin: const EdgeInsets.only(top: 12),
+    padding: const EdgeInsets.all(12),
+    decoration: BoxDecoration(
+      color: const Color(0xFFFFE9E6),
+      border: Border.all(color: const Color(0xFFD56A62)),
+      borderRadius: BorderRadius.circular(7),
+    ),
+    child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      const Icon(Icons.error_outline, size: 19, color: Color(0xFFA52C22)),
+      const SizedBox(width: 9),
+      Expanded(child: Text(value, style: const TextStyle(
+        fontSize: 13, fontWeight: FontWeight.w600,
+        color: Color(0xFF9E2B22),
+      ))),
+    ]),
+  );
+}
+
+class _StaffRolePicker extends StatelessWidget {
+  const _StaffRolePicker({
+    required this.roles,
+    required this.enabled,
+    required this.onToggle,
+  });
+  final Set<StaffRole> roles;
+  final bool enabled;
+  final void Function(StaffRole role, bool chosen) onToggle;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      _group('Park operations', const [StaffRole.operationsManager,
+          StaffRole.attractionOperator, StaffRole.admissionStaff]),
+      const SizedBox(height: 12),
+      _group('Photo & guest services', const [StaffRole.photographer,
+          StaffRole.photoCounterStaff, StaffRole.customerSupport]),
+      const SizedBox(height: 12),
+      _group('Business', const [StaffRole.marketingStaff]),
+    ],
+  );
+
+  Widget _group(String name, List<StaffRole> options) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(name, style: const TextStyle(fontSize: 12,
+          fontWeight: FontWeight.w600, color: adminMuted)),
+      const SizedBox(height: 7),
+      Wrap(spacing: 8, runSpacing: 7, children: [
+        for (final role in options) FilterChip(
+          key: Key('staff-role-${role.code}'),
+          selected: roles.contains(role),
+          selectedColor: const Color(0xFFF1DADB),
+          backgroundColor: Colors.white,
+          checkmarkColor: adminRose,
+          side: BorderSide(color: roles.contains(role)
+              ? adminRose : adminBorder),
+          label: Text(role.label, style: TextStyle(
+              color: roles.contains(role) ? adminDark : adminMuted,
+              fontSize: 12, fontWeight: FontWeight.w500)),
+          onSelected: enabled ? (chosen) => onToggle(role, chosen) : null,
+        ),
+      ]),
+    ],
+  );
+}

@@ -8,6 +8,7 @@ import 'profile_settings_page.dart';
 import '../visitor_main_page.dart';
 import '../services/ticket_repository.dart';
 import '../models/rewards.dart';
+import '../models/membership_policy.dart';
 import '../services/rewards_repository.dart';
 import 'rewards_page.dart';
 import '../../support/support_page.dart';
@@ -281,16 +282,20 @@ class ProfilePage extends StatelessWidget {
                     border: Border.all(color: _primary),
                     borderRadius: BorderRadius.circular(20),
                   ),
-                  child: StreamBuilder<List<LoyaltyEvent>>(
-                    stream: FirebaseRewardsRepository().events(),
-                    builder: (context, snapshot) => Text(
-                      snapshot.hasData
-                          ? '${RewardsTier.forEarned(snapshot.data!.where((e) => e.delta > 0).fold<int>(0, (total, e) => total + e.delta)).name} Member'
-                          : membershipLabel,
-                      style: const TextStyle(
-                        fontSize: 10,
-                        fontWeight: FontWeight.w600,
-                        color: _primary,
+                  child: StreamBuilder<MembershipPolicy>(
+                    stream: FirebaseRewardsRepository().membershipPolicy(),
+                    builder: (context, policySnapshot) =>
+                        StreamBuilder<List<LoyaltyEvent>>(
+                      stream: FirebaseRewardsRepository().events(),
+                      builder: (context, snapshot) => Text(
+                        snapshot.hasData
+                            ? '${RewardsTier.forEarned(snapshot.data!.where((e) => e.delta > 0).fold<int>(0, (total, e) => total + e.delta), policySnapshot.data ?? MembershipPolicy.defaults).name} Member'
+                            : membershipLabel,
+                        style: const TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w600,
+                          color: _primary,
+                        ),
                       ),
                     ),
                   ),

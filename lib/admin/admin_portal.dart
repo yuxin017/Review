@@ -193,10 +193,17 @@ class AdminLoginPage extends StatefulWidget {
   final Future<void> Function(String email, String password, bool remember)
   onSignIn;
   final Future<void> Function({required String email}) onReset;
+  final String portalTitle;
+  final String portalSubtitle;
+  final String accessNotice;
   const AdminLoginPage({
     super.key,
     required this.onSignIn,
     required this.onReset,
+    this.portalTitle = 'Admin Portal',
+    this.portalSubtitle = 'Sign in to manage park operations',
+    this.accessNotice =
+        'Access is restricted to authorized park administrators.',
   });
   @override
   State<AdminLoginPage> createState() => _AdminLoginPageState();
@@ -282,7 +289,7 @@ class _AdminLoginPageState extends State<AdminLoginPage> {
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   Text(
-                    'Admin Portal',
+                    widget.portalTitle,
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       fontSize: wide ? 40 : 32,
@@ -290,8 +297,8 @@ class _AdminLoginPageState extends State<AdminLoginPage> {
                     ),
                   ),
                   const SizedBox(height: 12),
-                  const Text(
-                    'Sign in to manage park operations',
+                  Text(
+                    widget.portalSubtitle,
                     textAlign: TextAlign.center,
                     style: TextStyle(fontSize: 17, color: adminMuted),
                   ),
@@ -467,19 +474,19 @@ class _AdminLoginPageState extends State<AdminLoginPage> {
               ],
               card,
               const SizedBox(height: 30),
-              const Row(
+              Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Icon(
+                  const Icon(
                     Icons.verified_user_outlined,
                     color: adminMuted,
                     size: 23,
                   ),
-                  SizedBox(width: 12),
+                  const SizedBox(width: 12),
                   Flexible(
                     child: Text(
-                      'Access is restricted to authorized park administrators.',
-                      style: TextStyle(color: adminMuted, fontSize: 12),
+                      widget.accessNotice,
+                      style: const TextStyle(color: adminMuted, fontSize: 12),
                       textAlign: TextAlign.center,
                     ),
                   ),

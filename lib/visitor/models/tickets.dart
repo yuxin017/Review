@@ -319,7 +319,9 @@ class TicketOrder {
       visitDate,
       requestId,
       paymentMethod,
-      displayCode;
+      displayCode,
+      ownerUid,
+      status;
   final int quantity,
       totalMinor,
       subtotalMinor,
@@ -346,6 +348,8 @@ class TicketOrder {
     this.promoCode = '',
     this.paymentMethod = 'card',
     this.displayCode = '',
+    this.ownerUid = '',
+    this.status = 'unknown',
     this.ticketIds = const [],
     this.lines = const [],
     this.currencyQuote,
@@ -372,6 +376,8 @@ class TicketOrder {
     promoCode: data['promoCode'] as String? ?? '',
     paymentMethod: data['paymentMethod'] as String? ?? 'card',
     displayCode: data['displayCode'] as String? ?? '',
+    ownerUid: data['ownerUid'] as String? ?? '',
+    status: data['status'] as String? ?? 'unknown',
     ticketIds: (data['ticketIds'] as List?)?.whereType<String>().toList() ?? [],
     lines:
         (data['lineItems'] as List?)

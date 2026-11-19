@@ -20,179 +20,441 @@ class TicketCartScreen extends StatefulWidget {
 }
 
 class _TicketCartScreenState extends State<TicketCartScreen> {
-  bool editing = false;
-  @override
-  Widget build(BuildContext context) {
+  String? _swipedLineId;
+  double _swipeDistance = 0;
+
+  Future<void> _edit(TicketCartLine line) async {
     final j = widget.journey;
-    return TicketPageBody(
-      footer: j.cart.isEmpty
-          ? null
-          : TicketSurface(
-              padding: const EdgeInsets.all(14),
-              child: Row(
+    if (j.busy || j.pending != null) return;
+    setState(() => _swipedLineId = null);
+    final today = parkToday();
+    final last = today.add(const Duration(days: 365));
+    var selected = DateTime.tryParse(line.visitDate) ?? today;
+    if (selected.isBefore(today) || selected.isAfter(last)) selected = today;
+    var adults = line.adults;
+    var children = line.children;
+    final otherGuests = j.quantity - line.quantity;
+    String? validation;
+
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      backgroundColor: ticketBackground,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (sheetContext, setSheetState) {
+          final guests = adults + children;
+          final canAdd = guests + otherGuests < 10;
+          final subtotal = adults * line.adultPriceMinor +
+              children * line.childPriceMinor;
+          return Padding(
+            padding: EdgeInsets.fromLTRB(
+              20, 16, 20, 20 + MediaQuery.viewInsetsOf(sheetContext).bottom,
+            ),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text(
-                          'Total',
-                          style: TextStyle(color: ticketMuted, fontSize: 12),
-                        ),
-                        Text(
-                          ticketDisplayPrice(context, j.subtotal),
-                          style: const TextStyle(
-                            fontSize: 23,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                      ],
+                  Center(
+                    child: Container(width: 45, height: 4,
+                      decoration: BoxDecoration(color: ticketBorder,
+                        borderRadius: BorderRadius.circular(8))),
+                  ),
+                  const SizedBox(height: 18),
+                  Row(children: [
+                    const Expanded(child: Text('Edit Pass',
+                      style: TextStyle(fontSize: 23, fontWeight: FontWeight.w700))),
+                    IconButton(tooltip: 'Close editor',
+                      onPressed: () => Navigator.pop(sheetContext),
+                      icon: const Icon(Icons.close)),
+                  ]),
+                  Text(line.packageName,
+                    style: const TextStyle(color: ticketMuted, fontSize: 14)),
+                  const SizedBox(height: 22),
+                  const Text('Visit Date',
+                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+                  const SizedBox(height: 8),
+                  OutlinedButton.icon(
+                    key: const Key('cart-edit-date'),
+                    onPressed: () async {
+                      final value = await showDatePicker(
+                        context: sheetContext,
+                        initialDate: selected,
+                        firstDate: today,
+                        lastDate: last,
+                      );
+                      if (value != null && sheetContext.mounted) {
+                        setSheetState(() { selected = value; validation = null; });
+                      }
+                    },
+                    icon: const Icon(Icons.calendar_month_outlined),
+                    label: Text(displayParkDate(visitDateString(selected))),
+                    style: OutlinedButton.styleFrom(
+                      minimumSize: const Size.fromHeight(50),
+                      alignment: Alignment.centerLeft,
+                      foregroundColor: ticketInk,
+                      side: const BorderSide(color: ticketBorder),
                     ),
                   ),
-                  Expanded(
-                    child: TicketButton(
-                      'Checkout',
-                      onPressed: widget.onCheckout,
-                    ),
+                  const SizedBox(height: 22),
+                  const Text('Guests',
+                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+                  const SizedBox(height: 6),
+                  const Text('Up to 10 guests per order.',
+                    style: TextStyle(color: ticketMuted, fontSize: 12)),
+                  const SizedBox(height: 12),
+                  _cartCounterRow(
+                    title: 'Adults', subtitle: 'Age 12+', value: adults,
+                    price: line.adultPriceMinor,
+                    minus: adults > 0 && guests > 1
+                        ? () => setSheetState(() => adults--) : null,
+                    plus: canAdd ? () => setSheetState(() => adults++) : null,
                   ),
+                  const SizedBox(height: 12),
+                  _cartCounterRow(
+                    title: 'Children', subtitle: 'Age 3–11', value: children,
+                    price: line.childPriceMinor,
+                    minus: children > 0 && guests > 1
+                        ? () => setSheetState(() => children--) : null,
+                    plus: canAdd ? () => setSheetState(() => children++) : null,
+                  ),
+                  const Divider(height: 28, color: ticketBorder),
+                  Row(children: [
+                    const Expanded(child: Text('Updated subtotal',
+                      style: TextStyle(fontWeight: FontWeight.w600))),
+                    Text(ticketDisplayPrice(sheetContext, subtotal),
+                      style: const TextStyle(color: ticketRose,
+                        fontSize: 20, fontWeight: FontWeight.w700)),
+                  ]),
+                  if (validation != null) ...[
+                    const SizedBox(height: 10),
+                    Text(validation!, style: const TextStyle(color: ticketRose)),
+                  ],
+                  const SizedBox(height: 22),
+                  TicketButton('Save Changes', onPressed: () {
+                    try {
+                      j.updateCartLine(line.id, selected, adults, children);
+                      Navigator.pop(sheetContext);
+                    } catch (e) {
+                      setSheetState(() => validation = bookingError(e));
+                    }
+                  }),
                 ],
               ),
             ),
-      children: [
-        Row(
-          children: [
-            Expanded(
-              child: Text(
-                '${j.cart.length} ${j.cart.length == 1 ? 'item' : 'items'}',
-                style: const TextStyle(color: ticketMuted),
-              ),
-            ),
-            TextButton(
-              onPressed: j.pending != null
-                  ? null
-                  : () => setState(() => editing = !editing),
-              child: Text(
-                editing ? 'Done' : 'Edit',
-                style: const TextStyle(color: ticketRose),
-              ),
-            ),
-          ],
-        ),
-        if (j.cart.isEmpty) ...[
-          const SizedBox(height: 60),
-          const Icon(
-            Icons.shopping_cart_outlined,
-            size: 60,
-            color: ticketMutedRose,
-          ),
-          const SizedBox(height: 20),
-          const Text(
-            'Your next adventure starts here',
-            textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 21, fontWeight: FontWeight.w600),
-          ),
-          const SizedBox(height: 12),
-          const Text(
-            'Choose a park pass to add it to your cart.',
-            textAlign: TextAlign.center,
-            style: TextStyle(color: ticketMuted),
-          ),
-          const SizedBox(height: 25),
-          TicketButton('Browse Passes', onPressed: widget.onShop),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _cartCounterRow({
+    required String title,
+    required String subtitle,
+    required int value,
+    required int price,
+    VoidCallback? minus,
+    VoidCallback? plus,
+  }) => TicketSurface(
+    padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 13),
+    child: Row(children: [
+      Expanded(child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
+          Text('$subtitle · ${priceLabel(price)}',
+            style: const TextStyle(fontSize: 12, color: ticketMuted)),
         ],
-        for (final line in j.cart) ...[
-          TicketLineSummary(line, showTotal: true),
-          if (editing)
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 12),
+      )),
+      TicketCounter(label: title.toLowerCase(), value: value,
+        minus: minus, plus: plus),
+    ]),
+  );
+
+  Future<void> _delete(TicketCartLine line) async {
+    final j = widget.journey;
+    if (j.pending != null || j.busy) return;
+    setState(() => _swipedLineId = null);
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Remove this pass?'),
+        content: Text('Remove ${line.packageName} from your cart?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Keep')),
+          TextButton(onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Remove')),
+        ],
+      ),
+    );
+    if (accepted == true && mounted && j.pending == null) {
+      j.remove(line.id);
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Pass removed from your cart.'),
+      ));
+    }
+  }
+
+  Widget _lineCard(TicketCartLine line) {
+    final j = widget.journey;
+    final enabled = !j.busy && j.pending == null;
+    final opened = _swipedLineId == line.id;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 13),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(16),
+        child: LayoutBuilder(builder: (context, constraints) => Stack(children: [
+          Positioned.fill(child: Align(
+            alignment: Alignment.centerRight,
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              SizedBox(width: 76, child: Material(
+                color: const Color(0xFFECE3EF),
+                child: InkWell(
+                  key: Key('swipe-edit-${line.id}'),
+                  onTap: enabled ? () => _edit(line) : null,
+                  child: const Center(child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.edit_outlined, color: Color(0xFF55446F)),
+                      SizedBox(height: 4),
+                      Text('Edit', style: TextStyle(color: Color(0xFF55446F))),
+                    ],
+                  )),
+                ),
+              )),
+              SizedBox(width: 76, child: Material(
+                color: const Color(0xFFF8E3E1),
+                child: InkWell(
+                  key: Key('swipe-delete-${line.id}'),
+                  onTap: enabled ? () => _delete(line) : null,
+                  child: const Center(child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.delete_outline, color: Color(0xFF9E4545)),
+                      SizedBox(height: 4),
+                      Text('Delete', style: TextStyle(color: Color(0xFF9E4545))),
+                    ],
+                  )),
+                ),
+              )),
+            ]),
+          )),
+          AnimatedSlide(
+            duration: const Duration(milliseconds: 200),
+            curve: Curves.easeOutCubic,
+            offset: Offset(opened ? -(152.0 / constraints.maxWidth) : 0.0, 0.0),
+            child: GestureDetector(
+              onHorizontalDragStart: enabled
+                  ? (_) => _swipeDistance = 0 : null,
+              onHorizontalDragUpdate: enabled
+                  ? (details) => _swipeDistance += details.delta.dx : null,
+              onHorizontalDragEnd: enabled ? (details) {
+                if (_swipeDistance < -25) {
+                  setState(() => _swipedLineId = line.id);
+                } else if (_swipeDistance > 25) {
+                  setState(() => _swipedLineId = null);
+                }
+                _swipeDistance = 0;
+              } : null,
               child: TicketSurface(
+                padding: const EdgeInsets.all(13),
                 child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Row(
-                      children: [
-                        const Expanded(child: Text('Adults')),
-                        TicketCounter(
-                          label: 'adults',
-                          value: line.adults,
-                          minus: line.adults > 0 && line.quantity > 1
-                              ? () => j.changeCount(
-                                  line.id,
-                                  line.adults - 1,
-                                  line.children,
-                                )
-                              : null,
-                          plus: j.quantity < 10
-                              ? () => j.changeCount(
-                                  line.id,
-                                  line.adults + 1,
-                                  line.children,
-                                )
-                              : null,
+                    Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(10),
+                        child: Image.asset(line.imageAsset,
+                          width: 76, height: 80, fit: BoxFit.cover,
+                          errorBuilder: (context, error, stackTrace) => Container(
+                            width: 76, height: 80,
+                            color: const Color(0xFFF5E9E7),
+                            child: const Icon(Icons.confirmation_number_outlined,
+                              color: ticketRose),
+                          ),
                         ),
-                      ],
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(line.packageName,
+                            maxLines: 2, overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontSize: 15,
+                              fontWeight: FontWeight.w700)),
+                          const SizedBox(height: 5),
+                          Text(line.category == 'annual'
+                              ? 'Annual admission' : '${line.durationDays}-Day Admission',
+                            style: const TextStyle(color: ticketMuted,
+                              fontSize: 12)),
+                          const SizedBox(height: 7),
+                          Text(ticketDisplayPrice(context, line.subtotal),
+                            style: const TextStyle(color: ticketRose,
+                              fontWeight: FontWeight.w700, fontSize: 18)),
+                        ],
+                      )),
+                      PopupMenuButton<String>(
+                        key: Key('cart-actions-${line.id}'),
+                        tooltip: 'Pass actions',
+                        enabled: enabled,
+                        icon: const Icon(Icons.more_vert, color: ticketMuted),
+                        onSelected: (action) => action == 'edit'
+                            ? _edit(line) : _delete(line),
+                        itemBuilder: (context) => const [
+                          PopupMenuItem(value: 'edit',
+                            child: Text('Edit pass')),
+                          PopupMenuItem(value: 'delete',
+                            child: Text('Delete pass')),
+                        ],
+                      ),
+                    ]),
+                    const Divider(height: 24, color: ticketBorder),
+                    InkWell(
+                      key: Key('cart-date-${line.id}'),
+                      onTap: enabled ? () => _edit(line) : null,
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 5),
+                        child: Row(children: [
+                          const Icon(Icons.calendar_month_outlined,
+                            size: 18, color: ticketMutedRose),
+                          const SizedBox(width: 8),
+                          Expanded(child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text('Visit date',
+                                style: TextStyle(fontSize: 11,
+                                  color: ticketMuted)),
+                              Text(displayParkDate(line.visitDate),
+                                style: const TextStyle(fontWeight: FontWeight.w600)),
+                            ],
+                          )),
+                          if (enabled) const Icon(Icons.edit_outlined,
+                            size: 17, color: ticketRose),
+                        ]),
+                      ),
                     ),
-                    const SizedBox(height: 10),
-                    Row(
-                      children: [
-                        const Expanded(child: Text('Children')),
-                        TicketCounter(
-                          label: 'children',
-                          value: line.children,
-                          minus: line.children > 0 && line.quantity > 1
-                              ? () => j.changeCount(
-                                  line.id,
-                                  line.adults,
-                                  line.children - 1,
-                                )
-                              : null,
-                          plus: j.quantity < 10
-                              ? () => j.changeCount(
-                                  line.id,
-                                  line.adults,
-                                  line.children + 1,
-                                )
-                              : null,
-                        ),
-                      ],
-                    ),
-                    TextButton.icon(
-                      onPressed: () => j.remove(line.id),
-                      icon: const Icon(Icons.delete_outline, size: 18),
-                      label: const Text('Remove pass'),
+                    InkWell(
+                      key: Key('cart-guests-${line.id}'),
+                      onTap: enabled ? () => _edit(line) : null,
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 5),
+                        child: Row(children: [
+                          const Icon(Icons.people_outline,
+                            size: 18, color: ticketMutedRose),
+                          const SizedBox(width: 8),
+                          Expanded(child: Text(line.guestSummary,
+                            style: const TextStyle(fontWeight: FontWeight.w500,
+                              fontSize: 13))),
+                          if (enabled) const Icon(Icons.edit_outlined,
+                            size: 17, color: ticketRose),
+                        ]),
+                      ),
                     ),
                   ],
                 ),
               ),
             ),
-          const SizedBox(height: 12),
-        ],
-        if (j.cart.isNotEmpty) ...[
-          const TicketSurface(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Ticket information',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
-                ),
-                SizedBox(height: 20),
-                TicketMeta(
-                  Icons.confirmation_number_outlined,
-                  'Digital QR ticket issued after payment',
-                ),
-                Divider(height: 30, color: ticketBorder),
-                TicketMeta(
-                  Icons.calendar_today_outlined,
-                  'Admission is valid for the selected dates',
-                ),
-              ],
-            ),
           ),
-          const SizedBox(height: 12),
-          TextButton(
-            onPressed: widget.onShop,
-            child: const Text('Add another pass'),
+        ])),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final j = widget.journey;
+    return TicketPageBody(
+      footer: j.cart.isEmpty ? null : TicketSurface(
+        padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+        child: Row(children: [
+          Expanded(child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('${j.quantity} ${j.quantity == 1 ? 'ticket' : 'tickets'} · Total',
+                style: const TextStyle(fontSize: 12, color: ticketMuted)),
+              const SizedBox(height: 3),
+              Text(ticketDisplayPrice(context, j.subtotal),
+                key: const Key('cart-total'),
+                style: const TextStyle(fontWeight: FontWeight.w700,
+                  fontSize: 22, color: ticketRose)),
+            ],
+          )),
+          SizedBox(width: 158, child: TicketButton(
+            j.pending == null ? 'Checkout' : 'Payment pending',
+            onPressed: j.busy || j.pending != null || j.hasInvalidVisitDate
+                ? null : widget.onCheckout,
+          )),
+        ]),
+      ),
+      children: [
+        Row(children: [
+          const Expanded(child: Text('Review your passes',
+            style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700))),
+          Text('${j.cart.length} items',
+            style: const TextStyle(color: ticketMuted, fontSize: 13)),
+        ]),
+        const SizedBox(height: 8),
+        if (j.cart.isNotEmpty) const Padding(
+          padding: EdgeInsets.only(bottom: 12),
+          child: Row(children: [
+            Icon(Icons.swipe_left_alt_outlined,
+              size: 18, color: ticketMutedRose),
+            SizedBox(width: 7),
+            Expanded(child: Text('Swipe left to Edit / Delete. You can also tap the pencil.',
+              style: TextStyle(fontSize: 12, color: ticketMuted))),
+          ]),
+        ),
+        if (j.cartNotice != null) Padding(
+          padding: const EdgeInsets.only(bottom: 14),
+          child: TicketSurface(
+            color: const Color(0xFFFFF2E8),
+            padding: const EdgeInsets.all(12),
+            child: Row(children: [
+              const Icon(Icons.info_outline, color: ticketRose, size: 20),
+              const SizedBox(width: 9),
+              Expanded(child: Text(j.cartNotice!,
+                style: const TextStyle(fontSize: 13))),
+            ]),
           ),
+        ),
+        if (j.pending != null) const Padding(
+          padding: EdgeInsets.only(bottom: 14),
+          child: TicketSurface(
+            color: Color(0xFFFFF2E8),
+            child: Text('A payment is in progress. Check its status before editing your cart.'),
+          ),
+        ),
+        if (j.cart.isEmpty) ...[
+          const SizedBox(height: 48),
+          const Center(child: Icon(Icons.shopping_bag_outlined,
+            size: 62, color: ticketMutedRose)),
+          const SizedBox(height: 14),
+          const Center(child: Text('Your cart is empty',
+            style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700))),
+          const SizedBox(height: 10),
+          const Center(child: Text('Explore passes and plan your next adventure.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: ticketMuted))),
+          const SizedBox(height: 25),
+          TicketButton('Browse Passes', onPressed: widget.onShop),
+        ] else ...[
+          for (final line in j.cart) _lineCard(line),
+          TextButton.icon(onPressed: widget.onShop,
+            icon: const Icon(Icons.add_circle_outline),
+            label: const Text('Add another pass')),
+          const SizedBox(height: 6),
+          const TicketSurface(child: Row(children: [
+            Icon(Icons.lock_outline, color: ticketMutedRose, size: 19),
+            SizedBox(width: 8),
+            Expanded(child: Text('QR tickets are issued only after verified payment.',
+              style: TextStyle(color: ticketMuted, fontSize: 12))),
+          ])),
+          const SizedBox(height: 10),
         ],
       ],
     );
@@ -761,7 +1023,7 @@ class _TicketPromotionFieldState extends State<TicketPromotionField> {
   }
 }
 
-class TicketPaymentScreen extends StatefulWidget {
+class TicketPaymentScreen extends StatelessWidget {
   final TicketJourney journey;
   final Future<void> Function(String method, {String cardLast4}) onPay;
   const TicketPaymentScreen({
@@ -769,220 +1031,68 @@ class TicketPaymentScreen extends StatefulWidget {
     required this.journey,
     required this.onPay,
   });
-  @override
-  State<TicketPaymentScreen> createState() => _TicketPaymentScreenState();
-}
-
-class _TicketPaymentScreenState extends State<TicketPaymentScreen> {
-  late String method = widget.journey.pending?.paymentMethod ?? 'card';
-  final card = TextEditingController(),
-      expiry = TextEditingController(),
-      cvv = TextEditingController();
-  @override
-  void dispose() {
-    card.clear();
-    expiry.clear();
-    cvv.clear();
-    card.dispose();
-    expiry.dispose();
-    cvv.dispose();
-    super.dispose();
-  }
 
   @override
   Widget build(BuildContext context) {
-    final j = widget.journey;
-    final locked = j.busy || j.pending != null;
+    final j = journey;
     return TicketPageBody(
       footer: TicketButton(
-        j.busy
-            ? 'Confirming…'
-            : j.pending != null
-            ? 'Retry checkout'
-            : 'Pay ${j.paymentLabel}',
-        onPressed: j.busy
-            ? null
-            : () async {
-                final last = card.text.length >= 4
-                    ? card.text.substring(card.text.length - 4)
-                    : '';
-                await widget.onPay(method, cardLast4: last);
-                card.clear();
-                expiry.clear();
-                cvv.clear();
-              },
+        j.busy ? 'Checking payment…' :
+          j.pending != null ? 'Continue to Stripe Checkout' :
+          'Pay securely ${j.paymentLabel}',
+        onPressed: j.busy ? null : () => onPay('card'),
       ),
       children: [
         const TicketStepper(3),
+        const SizedBox(height: 24),
+        const Text('Secure Payment',
+          style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700)),
         const SizedBox(height: 18),
-        const Text(
-          'Order Summary',
-          style: TextStyle(fontSize: 19, fontWeight: FontWeight.w700),
-        ),
-        const SizedBox(height: 12),
-        TicketSurface(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text('Total to Pay', style: TextStyle(fontSize: 16)),
-              const SizedBox(height: 6),
-              Text(
-                j.paymentLabel,
-                style: const TextStyle(
-                  fontSize: 27,
-                  color: ticketRose,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-              if ((j.pending?.currencyQuote ?? j.currencyQuote)
-                  case final quote?) ...[
-                const SizedBox(height: 10),
-                Text(
-                  '1 MYR = ${quote.rate} ${quote.currency} • Rate date ${quote.asOf}',
-                  style: const TextStyle(fontSize: 12, color: ticketMuted),
-                ),
-              ],
-              if (j.pending == null && j.paymentCurrency != 'MYR')
-                TextButton(
-                  onPressed: j.busy
-                      ? null
-                      : () => j.prepareCurrency(j.paymentCurrency),
-                  child: const Text('Refresh Currency Quote'),
-                ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 23),
-        const Text(
-          'Payment Method',
-          style: TextStyle(fontSize: 19, fontWeight: FontWeight.w700),
-        ),
-        const SizedBox(height: 12),
-        for (final option in [
-          ('card', 'Credit / Debit Card', 'cards.png'),
-          ('fpx', 'FPX Online Banking', 'fpx.png'),
-          ('touch-go', 'Touch ’n Go eWallet', 'touch-go.png'),
-          ('apple-pay', 'Apple Pay', 'apple-pay.png'),
-          ('nfc', 'NFC payment', ''),
-        ]) ...[
-          TicketSurface(
-            padding: const EdgeInsets.all(12),
-            child: Column(
-              children: [
-                InkWell(
-                  onTap: locked
-                      ? null
-                      : () => setState(() => method = option.$1),
-                  child: Row(
-                    children: [
-                      Icon(
-                        method == option.$1
-                            ? Icons.radio_button_checked
-                            : Icons.radio_button_off,
-                        color: method == option.$1 ? ticketRose : ticketMuted,
-                        size: 23,
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Text(
-                          option.$2,
-                          style: const TextStyle(fontSize: 15),
-                        ),
-                      ),
-                      if (option.$3.isNotEmpty)
-                        Image.asset(
-                          'assets/images/ticketing/${option.$3}',
-                          height: 22,
-                          width: 65,
-                          fit: BoxFit.contain,
-                        )
-                      else
-                        const Icon(Icons.contactless_outlined, size: 25),
-                    ],
-                  ),
-                ),
-                if (option.$1 == 'card' && method == 'card') ...[
-                  const SizedBox(height: 20),
-                  TextField(
-                    key: const Key('payment-card'),
-                    controller: card,
-                    enabled: !locked,
-                    obscureText: true,
-                    enableSuggestions: false,
-                    autocorrect: false,
-                    keyboardType: TextInputType.number,
-                    inputFormatters: [
-                      FilteringTextInputFormatter.digitsOnly,
-                      LengthLimitingTextInputFormatter(19),
-                    ],
-                    decoration: const InputDecoration(
-                      labelText: 'Card Number',
-                      hintText: '••••  ••••  ••••  ••••',
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: TextField(
-                          controller: expiry,
-                          enabled: !locked,
-                          keyboardType: TextInputType.datetime,
-                          inputFormatters: [
-                            LengthLimitingTextInputFormatter(5),
-                          ],
-                          decoration: const InputDecoration(
-                            hintText: 'MM / YY',
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: TextField(
-                          controller: cvv,
-                          enabled: !locked,
-                          obscureText: true,
-                          enableSuggestions: false,
-                          autocorrect: false,
-                          keyboardType: TextInputType.number,
-                          inputFormatters: [
-                            FilteringTextInputFormatter.digitsOnly,
-                            LengthLimitingTextInputFormatter(4),
-                          ],
-                          decoration: const InputDecoration(hintText: 'CVV'),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  const TicketMeta(
-                    Icons.lock_outline,
-                    'Card details are not saved on this device.',
-                  ),
-                ],
-              ],
-            ),
-          ),
-          const SizedBox(height: 9),
+        TicketSurface(child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Total to Pay', style: TextStyle(fontSize: 15)),
+            const SizedBox(height: 8),
+            Text(j.paymentLabel,
+              style: const TextStyle(fontSize: 28, color: ticketRose,
+                fontWeight: FontWeight.w700)),
+            const SizedBox(height: 15),
+            const TicketMeta(Icons.lock_outline,
+              'You will pay on the secure Stripe Checkout page. '
+              'Available payment methods depend on the Stripe account. '
+              'Card information is never collected by this app.'),
+          ],
+        )),
+        const SizedBox(height: 18),
+        if (j.pending != null) ...[
+          TicketSurface(child: const Text(
+            'Already returned from Stripe? Verify your payment before retrying. '
+            'Tickets are issued only after payment is confirmed.')),
+          const SizedBox(height: 12),
+          TicketButton('Check Payment Status',
+            onPressed: j.busy ? null : () async {
+              final paid = await j.verifyHostedPayment();
+              if (paid && context.mounted) {
+                context.findAncestorStateOfType<TicketsPageState>()
+                    ?.showSection('success');
+              }
+            }),
+          const SizedBox(height: 10),
         ],
-        const SizedBox(height: 12),
-        const TicketMeta(
-          Icons.lock_outline,
-          'Your booking is securely saved to your account.',
-        ),
-        if (j.pending != null)
-          TextButton(
-            onPressed: j.busy
-                ? null
-                : () async {
-                    if (await j.reviewPending() && context.mounted) {
-                      context
-                          .findAncestorStateOfType<TicketsPageState>()
-                          ?.showSection('cart');
-                    }
-                  },
-            child: const Text('Review or change this checkout'),
+        if (j.error?.contains('Choose a valid visit date') == true ||
+            j.error == 'This payment is not linked to your account.') ...[
+          const SizedBox(height: 10),
+          OutlinedButton.icon(
+            onPressed: j.busy ? null : () async {
+              if (await j.recoverRejectedVisitDate() && context.mounted) {
+                context.findAncestorStateOfType<TicketsPageState>()
+                    ?.showSection('cart');
+              }
+            },
+            icon: const Icon(Icons.edit_calendar_outlined),
+            label: const Text('Change Visit Date'),
           ),
+        ],
       ],
     );
   }

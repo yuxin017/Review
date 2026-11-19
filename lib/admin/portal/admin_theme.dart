@@ -28,7 +28,7 @@ abstract final class AdminTheme {
       fillColor: Colors.white,
       isDense: true,
       contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 16),
-      border: OutlineInputBorder(borderRadius: BorderRadius.circular(6)),
+      border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
       enabledBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(6),
         borderSide: const BorderSide(color: Color(0xFFDADBDD)),
@@ -41,6 +41,24 @@ abstract final class AdminTheme {
         foregroundColor: Colors.white,
         minimumSize: const Size(0, 44),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(5)),
+      ),
+    ),
+    dialogTheme: DialogThemeData(
+      backgroundColor: const Color(0xFFF7EDEC),
+      surfaceTintColor: Colors.transparent,
+      elevation: 22,
+      shadowColor: const Color(0x660F151C),
+      insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 26),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(24),
+        side: const BorderSide(color: Color(0xFFE8D9D7), width: 1),
+      ),
+      titleTextStyle: const TextStyle(
+        fontSize: 23, fontWeight: FontWeight.w700,
+        color: ink, letterSpacing: -0.4,
+      ),
+      contentTextStyle: const TextStyle(
+        fontSize: 14, color: ink, height: 1.45,
       ),
     ),
     dividerTheme: const DividerThemeData(color: border, space: 1),

@@ -6,6 +6,8 @@ import 'package:latlong2/latlong.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../attractions/models/attraction.dart';
 import '../attractions/widgets/queue_attraction_card.dart';
+import '../attractions/widgets/attraction_widgets.dart';
+import 'visitor_map_types.dart';
 import 'park_visit.dart';
 import 'venue_configuration.dart';
 
@@ -93,6 +95,11 @@ class GeographicParkMap extends StatelessWidget {
   final ValueChanged<Attraction> onPlace;
   final Attraction? origin, destination;
   final Map<String, dynamic>? density;
+  final LatLng? currentPosition;
+  final double? currentAccuracyMeters;
+  final bool approximateCurrentPosition;
+  final List<VisitorTeammatePin> teammates;
+  final ValueChanged<VisitorTeammatePin>? onTeammate;
   const GeographicParkMap({
     super.key,
     required this.visit,
@@ -101,6 +108,11 @@ class GeographicParkMap extends StatelessWidget {
     this.origin,
     this.destination,
     this.density,
+    this.currentPosition,
+    this.currentAccuracyMeters,
+    this.approximateCurrentPosition = false,
+    this.teammates = const [],
+    this.onTeammate,
   });
   @override
   Widget build(BuildContext context) {
@@ -168,6 +180,20 @@ class GeographicParkMap extends StatelessWidget {
               ),
             ],
           ),
+        if (currentPosition != null &&
+            currentAccuracyMeters != null &&
+            currentAccuracyMeters!.isFinite &&
+            currentAccuracyMeters! > 0)
+          CircleLayer(circles: [
+            CircleMarker(
+              point: currentPosition!,
+              radius: currentAccuracyMeters!,
+              useRadiusInMeter: true,
+              color: Colors.blue.withValues(alpha: .10),
+              borderColor: Colors.blue.withValues(alpha: .45),
+              borderStrokeWidth: 1.5,
+            ),
+          ]),
         MarkerLayer(
           markers: [
             for (final place in visible)
@@ -181,12 +207,20 @@ class GeographicParkMap extends StatelessWidget {
                     message: place.name,
                     child: Column(
                       children: [
-                        Icon(
-                          Icons.location_on,
-                          size: 36,
-                          color: place.status == AttractionStatus.open
-                              ? queueRose
-                              : Colors.grey,
+                        Container(
+                          width: 34, height: 34,
+                          decoration: BoxDecoration(shape: BoxShape.circle,
+                            color: place.status != AttractionStatus.open
+                              ? Colors.grey : switch (place.placeKind) {
+                                  ParkPlaceKind.attractions => queueRose,
+                                  ParkPlaceKind.dining => const Color(0xFFD28D51),
+                                  ParkPlaceKind.facilities => const Color(0xFF4D97A1),
+                                  ParkPlaceKind.shops => const Color(0xFF8270A4),
+                                },
+                            border: Border.all(color: Colors.white, width: 2),
+                          ),
+                          child: Icon(parkPlaceIcon(place.placeKind),
+                            size: 20, color: Colors.white),
                         ),
                         Container(
                           padding: const EdgeInsets.all(3),
@@ -208,6 +242,28 @@ class GeographicParkMap extends StatelessWidget {
                     ),
                   ),
                 ),
+              ),
+            for (final teammate in teammates)
+              Marker(
+                point: teammate.position,
+                width: 48, height: 48,
+                child: GestureDetector(
+                  onTap: onTeammate == null ? null : () => onTeammate!(teammate),
+                  child: Tooltip(message: teammate.name,
+                    child: const Icon(Icons.person_pin_circle,
+                      color: Color(0xFF557BB9), size: 42)),
+                ),
+              ),
+            if (currentPosition != null)
+              Marker(
+                point: currentPosition!, width: 43, height: 43,
+                 child: Tooltip(
+                   message: approximateCurrentPosition
+                       ? 'Approximate GPS position (not for navigation)'
+                       : 'My current position',
+                   child: Icon(Icons.my_location, size: 33,
+                     color: approximateCurrentPosition
+                         ? const Color(0xFF4C86BD) : Colors.blue)),
               ),
             if (origin != null)
               Marker(

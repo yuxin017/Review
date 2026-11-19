@@ -2,6 +2,9 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'dart:async';
+import 'package:geolocator/geolocator.dart';
+import 'package:latlong2/latlong.dart';
 
 import '../../attractions/data/attraction_reader.dart';
 import '../../attractions/data/attraction_repository.dart';
@@ -18,6 +21,11 @@ import '../../park/assistant_page.dart';
 import '../../park/intelligence_repository.dart';
 import '../../park/landmark_page.dart';
 import '../../park/live_location_page.dart';
+import '../../park/venue_map.dart';
+import '../../park/visitor_gps.dart';
+import '../../park/visitor_map_types.dart';
+import '../../park/visitor_navigation_page.dart';
+import '../../park/park_live_sharing.dart';
 import '../../reservations/data/reservation_repository.dart';
 import '../../reservations/pages/my_reservations_page.dart';
 import '../../reservations/pages/reserve_attraction_page.dart';
@@ -45,6 +53,248 @@ class _MapPageState extends State<MapPage> {
   bool _filterChosen = false;
   bool _showAll = false, _heatmap = false;
 
+
+  Position? _gpsPosition;
+  String? _gpsMessage;
+  bool _locating = false;
+  String? _selectedGroupId;
+  Timer? _gpsClock;
+  Position? get _effectiveGps => VisitorGps.trusted(_gpsPosition)
+      ? _gpsPosition : ParkLiveSharing.instance.position.value;
+  bool get _onCampus => VisitorGps.trusted(_effectiveGps);
+
+  // A coarse fix may be displayed as an estimate, but must never enable
+  // nearby ranking, on-campus check-in, or walking directions.
+  Position? get _displayGps {
+    final fix = _gpsPosition ?? ParkLiveSharing.instance.position.value;
+    if (fix == null || !fix.latitude.isFinite || !fix.longitude.isFinite ||
+        !fix.accuracy.isFinite || fix.accuracy < 0 ||
+        DateTime.now().difference(fix.timestamp).abs() > VisitorGps.maxAge ||
+        !VisitorGps.inside(fix.latitude, fix.longitude)) {
+      return null;
+    }
+    return fix;
+  }
+
+  Future<void> _locate() async {
+    if (_locating) return;
+    setState(() { _locating = true; _gpsMessage = null; });
+    try {
+      final fix = await VisitorGps.locate();
+      if (!mounted) return;
+      setState(() {
+        _gpsPosition = fix;
+        _gpsMessage = VisitorGps.reason(fix);
+        _locating = false;
+      });
+    } catch (e) {
+      if (mounted) setState(() {
+        _gpsPosition = null;
+        _gpsMessage = e is StateError ? e.message :
+            'Unable to find your current location. Try again.';
+        _locating = false;
+      });
+    }
+  }
+
+  Future<void> _navigateTo(String name, LatLng destination) async {
+    // A recent, in-park approximate GPS fix can be used for route PREVIEW.
+    // Never use it for precise turn-by-turn or proximity decisions.
+    if (_displayGps == null) {
+      await _locate();
+      if (!mounted || _displayGps == null) return;
+    }
+    if (!mounted) return;
+    await Navigator.push(context, MaterialPageRoute<void>(
+      builder: (_) => VisitorNavigationPage(
+        destinationName: name,
+        destination: destination,
+      ),
+    ));
+  }
+
+  Future<void> _chooseTeam() async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+    try {
+      final groups = await FirebaseFirestore.instance.collection('groups')
+          .where('memberUids', arrayContains: uid).get();
+      if (!mounted) return;
+      final selected = await showModalBottomSheet<String>(
+        context: context,
+        showDragHandle: true,
+        builder: (ctx) => SafeArea(child: ListView(
+          shrinkWrap: true,
+          children: [
+            const ListTile(title: Text('Show teammates on map'),
+                subtitle: Text('Only teammates who have chosen to share can appear.')),
+            ListTile(leading: const Icon(Icons.visibility_off_outlined),
+                title: const Text('Hide teammates'),
+                onTap: () => Navigator.pop(ctx, 'hide')),
+            for (final group in groups.docs)
+              ListTile(leading: const Icon(Icons.groups_outlined),
+                title: Text(group.data()['name'] as String? ?? 'My group'),
+                onTap: () => Navigator.pop(ctx, group.id)),
+          ],
+        )),
+      );
+      if (mounted && selected != null) {
+        setState(() => _selectedGroupId = selected == 'hide' ? null : selected);
+      }
+    } catch (_) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Could not load your groups. Check your connection.'),
+      ));
+    }
+  }
+
+  void _teammateDetails(VisitorTeammatePin teammate) {
+    showModalBottomSheet<void>(context: context, showDragHandle: true,
+      builder: (ctx) => SafeArea(child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(children: [
+              const Icon(Icons.person_pin_circle_outlined, color: Color(0xFF557BB9)),
+              const SizedBox(width: 12),
+              Expanded(child: Text(teammate.name,
+                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold))),
+            ]),
+            const SizedBox(height: 8),
+            const Text('This teammate has opted to share a recent on-campus location.'),
+            const SizedBox(height: 15),
+            FilledButton.icon(
+              onPressed: () { Navigator.pop(ctx); _navigateTo(teammate.name, teammate.position); },
+              icon: const Icon(Icons.directions_walk),
+              label: const Text('Walk to teammate'),
+            ),
+          ],
+        ),
+      )),
+    );
+  }
+
+  Widget _mapWithTeam(ParkVisit visit, List<Attraction> matches, Attraction? origin) {
+    Widget render(List<VisitorTeammatePin> pins) => ParkMapCanvas(
+      visit: visit,
+      visible: matches,
+      origin: _onCampus ? origin : null,
+      heatmap: _heatmap,
+      selectedId: _selectedId,
+      currentPosition: _displayGps == null ? null
+          : LatLng(_displayGps!.latitude, _displayGps!.longitude),
+      currentAccuracyMeters: _displayGps?.accuracy,
+      approximateCurrentPosition: _displayGps != null && !_onCampus,
+      teammates: pins,
+      onTeammate: _teammateDetails,
+      onPlace: (place) => _placeDetails(place, visit),
+    );
+    final id = _selectedGroupId;
+    if (id == null) return render(const []);
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance.collection('groupMembers')
+          .where('groupId', isEqualTo: id).snapshots(),
+      builder: (context, memberSnapshot) {
+        final members = <String,String>{};
+        for (final doc in memberSnapshot.data?.docs ?? []) {
+          final d = doc.data();
+          if (d['memberId'] is String) members[d['memberId'] as String] =
+              d['displayName'] as String? ?? 'Teammate';
+        }
+        return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+          stream: FirebaseFirestore.instance.collection('groupLocations')
+              .where('groupId', isEqualTo: id).snapshots(),
+          builder: (context, locationSnapshot) {
+            final pins = <VisitorTeammatePin>[];
+            final myUid = FirebaseAuth.instance.currentUser?.uid;
+            for (final doc in locationSnapshot.data?.docs ?? []) {
+              final d = doc.data();
+              final owner = d['ownerUid'];
+              final lat = d['latitude'], lon = d['longitude'];
+              final expires = d['expiresAt'];
+              final accuracy = d['accuracy'];
+              if (owner is! String || owner == myUid ||
+                  !members.containsKey(owner) ||
+                  lat is! num || lon is! num || accuracy is! num ||
+                  accuracy > VisitorGps.maxAccuracyMeters ||
+                  expires is! Timestamp ||
+                  !expires.toDate().isAfter(DateTime.now()) ||
+                  !VisitorGps.inside(lat.toDouble(), lon.toDouble())) continue;
+              pins.add(VisitorTeammatePin(id: owner,
+                  name: members[owner] ?? 'Teammate',
+                  position: LatLng(lat.toDouble(), lon.toDouble())));
+            }
+            return render(pins);
+          },
+        );
+      },
+    );
+  }
+
+  void _showDetailsPage(Attraction place, ParkVisit visit) {
+    Navigator.push(context, MaterialPageRoute<void>(
+      builder: (_) => AttractionDetailsPage(
+        store: _attractions,
+        attractionId: place.id,
+        slotReader: place.isRide ? _slots : null,
+        day: visit.day,
+        placeKind: place.placeKind,
+      ),
+    ));
+  }
+
+  void _placeDetails(Attraction place, ParkVisit visit) {
+    showModalBottomSheet<void>(context: context, showDragHandle: true,
+      builder: (ctx) => SafeArea(child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 0, 20, 22),
+        child: Column(mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(children: [
+              AttractionCover(encoded: place.coverImageBase64,
+                width: 84, height: 84,
+                placeholderIcon: parkPlaceIcon(place.placeKind)),
+              const SizedBox(width: 14),
+              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(place.name, style: const TextStyle(
+                    fontSize: 19, fontWeight: FontWeight.w700)),
+                  const SizedBox(height: 4),
+                  Text('${place.placeKind.label} • ${place.category}'),
+                  Text(_status(place), style: TextStyle(color: place.status ==
+                      AttractionStatus.open ? Colors.green : queueRose)),
+                ],
+              )),
+            ]),
+            const SizedBox(height: 16),
+            Row(children: [
+              Expanded(child: OutlinedButton(
+                onPressed: () { Navigator.pop(ctx); _showDetailsPage(place, visit); },
+                child: const Text('View Details'),
+              )),
+              const SizedBox(width: 10),
+              Expanded(child: FilledButton.icon(
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  _navigateTo(place.name, venueCoordinate(place, visit.places));
+                },
+                icon: const Icon(Icons.directions_walk, size: 18),
+                label: const Text('Navigate'),
+              )),
+            ]),
+          ],
+        ),
+      )),
+    );
+  }
+
+  String _status(Attraction place) => switch(place.status) {
+    AttractionStatus.open => 'Open',
+    AttractionStatus.closed => 'Closed',
+    AttractionStatus.maintenance => 'Under maintenance',
+  };
+
   AttractionReader get _attractions => widget.attractions ?? _catalogue;
   SlotReader get _slots => widget.slots ?? _catalogue;
   String? get _startId => widget.startPlace?.value ?? _localStart;
@@ -69,7 +319,16 @@ class _MapPageState extends State<MapPage> {
   }
 
   @override
+  void initState() {
+    super.initState();
+    _gpsClock = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (mounted && (_gpsPosition != null || ParkLiveSharing.instance.active.value)) setState(() {});
+    });
+  }
+
+  @override
   void dispose() {
+    _gpsClock?.cancel();
     _search.dispose();
     super.dispose();
   }
@@ -191,11 +450,7 @@ class _MapPageState extends State<MapPage> {
   }
 
   void _directions(Attraction destination, ParkVisit visit) {
-    if (visit.place(_startId) == null) {
-      _setStart(visit, destination: destination);
-    } else {
-      setState(() => _destinationId = destination.id);
-    }
+    _navigateTo(destination.name, venueCoordinate(destination, visit.places));
   }
 
   @override
@@ -238,14 +493,10 @@ class _MapPageState extends State<MapPage> {
                   .contains(query),
         )
         .toList();
-    if (origin != null) {
-      matches.sort((a, b) {
-        final distance = parkDistanceSquared(
-          a,
-          origin,
-        ).compareTo(parkDistanceSquared(b, origin));
-        return distance == 0 ? a.name.compareTo(b.name) : distance;
-      });
+    if (_onCampus) {
+      matches.sort((a, b) => VisitorGps.metres(_effectiveGps!,
+        venueCoordinate(a, visit.places)).compareTo(VisitorGps.metres(
+        _effectiveGps!, venueCoordinate(b, visit.places))));
     }
     final selected = matches
         .where((place) => place.id == _selectedId)
@@ -391,14 +642,7 @@ class _MapPageState extends State<MapPage> {
           child: Stack(
             children: [
               Positioned.fill(
-                child: ParkMapCanvas(
-                  visit: visit,
-                  visible: matches,
-                  origin: origin,
-                  heatmap: _heatmap,
-                  selectedId: _selectedId,
-                  onPlace: (place) => setState(() => _selectedId = place.id),
-                ),
+                child: _mapWithTeam(visit, matches, origin),
               ),
               Positioned(
                 right: 14,
@@ -418,20 +662,26 @@ class _MapPageState extends State<MapPage> {
                     ),
                     const SizedBox(height: 8),
                     _mapButton(
-                      'My Live Location',
-                      Icons.location_searching,
-                      () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => const LiveLocationPage(),
-                        ),
-                      ),
+                      'Show My Team',
+                      Icons.groups_2_outlined,
+                      _chooseTeam,
                     ),
                     const SizedBox(height: 8),
                     _mapButton(
-                      'Find My Location',
-                      Icons.my_location,
-                      visit.places.isEmpty ? null : () => _setStart(visit),
+                      'My Live Location',
+                      Icons.location_searching,
+                      () async {
+                         await Navigator.push(context, MaterialPageRoute(
+                           builder: (_) => const LiveLocationPage(),
+                         ));
+                         if (mounted) setState(() => _gpsPosition = ParkLiveSharing.instance.position.value);
+                       },
+                    ),
+                    const SizedBox(height: 8),
+                    _mapButton(
+                      'Use My GPS',
+                       Icons.my_location,
+                       _locating ? null : _locate,
                     ),
                   ],
                 ),
@@ -455,9 +705,9 @@ class _MapPageState extends State<MapPage> {
               ),
               Row(
                 children: [
-                  const Expanded(
+                  Expanded(
                     child: Text(
-                      'Nearby',
+                      _onCampus ? 'Nearby' : 'Explore the park',
                       style: TextStyle(
                         fontSize: 17,
                         fontWeight: FontWeight.w700,
@@ -477,16 +727,33 @@ class _MapPageState extends State<MapPage> {
                     ),
                 ],
               ),
-              if (origin == null)
-                const Text(
-                  'Choose a starting point to sort by nearby places.',
-                  style: TextStyle(fontSize: 12),
-                )
-              else
-                Text(
-                  'Starting point: ${origin.name}',
-                  style: const TextStyle(fontSize: 12),
-                ),
+              if (_onCampus)
+                Text('Showing facilities by distance from your location • accuracy ±${_effectiveGps!.accuracy.round()} m',
+                  style: const TextStyle(fontSize: 12))
+              else ...[
+                if (_displayGps != null) ...[
+                  Text('Approximate location shown on map (±${_displayGps!.accuracy.round()} m). Nearby sorting and walking directions need a more precise fix.',
+                    style: const TextStyle(fontSize: 12, color: queueInk)),
+                  const SizedBox(height: 8),
+                ],
+                Container(padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(color: const Color(0xFFFFF6F2),
+                    borderRadius: BorderRadius.circular(12)),
+                  child: Row(children: [
+                    const Icon(Icons.location_off_outlined, color: queueRose),
+                    const SizedBox(width: 10),
+                    Expanded(child: Text(_gpsMessage ?? VisitorGps.reason(_effectiveGps) ??
+                      'Enable GPS when you arrive at TAR UMT Penang.',
+                      style: const TextStyle(fontSize: 12))),
+                  ])),
+                const SizedBox(height: 8),
+                OutlinedButton.icon(onPressed: _locating ? null : _locate,
+                  icon: const Icon(Icons.my_location, size: 17),
+                  label: Text(_locating ? 'Finding location…' : 'Check My Location')),
+                if (_search.text.trim().isEmpty)
+                  TextButton(onPressed: () => setState(() => _showAll = !_showAll),
+                    child: Text(_showAll ? 'Hide park directory' : 'Browse all facilities')),
+              ],
               const SizedBox(height: 8),
               if (selected != null) ...[
                 _placeRow(selected, visit),
@@ -497,7 +764,9 @@ class _MapPageState extends State<MapPage> {
                   icon: const Icon(Icons.directions_walk),
                   label: const Text('Directions'),
                 ),
-              ] else if (matches.isEmpty)
+              ] else if (!_onCampus && _search.text.trim().isEmpty && !_showAll)
+                const SizedBox.shrink()
+              else if (matches.isEmpty)
                 const Padding(
                   padding: EdgeInsets.symmetric(vertical: 16),
                   child: Text('No places match this view.'),
@@ -512,26 +781,53 @@ class _MapPageState extends State<MapPage> {
     );
   }
 
-  Widget _placeRow(Attraction place, ParkVisit visit) => ListTile(
-    contentPadding: EdgeInsets.zero,
-    leading: AttractionCover(
-      encoded: place.coverImageBase64,
-      width: 48,
-      height: 52,
-      placeholderIcon: parkPlaceIcon(place.placeKind),
-    ),
-    title: Text(
-      place.name,
-      style: const TextStyle(fontWeight: FontWeight.w700, color: queueInk),
-    ),
-    subtitle: Text(
-      place.description ?? place.category,
-      maxLines: 2,
-      overflow: TextOverflow.ellipsis,
-    ),
-    trailing: const Icon(Icons.chevron_right),
-    onTap: () => _details(place, visit),
-  );
+  Widget _placeRow(Attraction place, ParkVisit visit) {
+    final distance = _onCampus
+        ? VisitorGps.metres(_effectiveGps!, venueCoordinate(place, visit.places))
+        : null;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      child: Material(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(16),
+          onTap: () => _placeDetails(place, visit),
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Row(children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: AttractionCover(encoded: place.coverImageBase64,
+                  width: 70, height: 70,
+                  placeholderIcon: parkPlaceIcon(place.placeKind)),
+              ),
+              const SizedBox(width: 12),
+              Expanded(child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(place.name, maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontWeight: FontWeight.w700,
+                      fontSize: 15, color: queueInk)),
+                  const SizedBox(height: 3),
+                  Text('${place.category}  •  ${_status(place)}',
+                    maxLines: 1, overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 12, color: Color(0xFF81726F))),
+                  if (distance != null) ...[
+                    const SizedBox(height: 4),
+                    Text('~${distance.round()} m away (straight-line)',
+                      style: const TextStyle(fontSize: 11, color: queueRose)),
+                  ],
+                ],
+              )),
+              const Icon(Icons.chevron_right, color: queueRose),
+            ]),
+          ),
+        ),
+      ),
+    );
+  }
 
   Widget _mapButton(String label, IconData icon, VoidCallback? action) =>
       IconButton.filled(

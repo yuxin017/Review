@@ -417,9 +417,9 @@ class _PhotoKioskState extends State<PhotoKiosk> {
                                   ),
                                   const SizedBox(height: 12),
                                   AdminButton(
-                                    'Edit Photo',
+                                    'Filters & Stickers',
                                     outlined: true,
-                                    icon: Icons.edit_outlined,
+                                    icon: Icons.auto_fix_high_outlined,
                                     onPressed: busy || printed || collected
                                         ? null
                                         : () => edit(photo),
@@ -636,7 +636,7 @@ class _PhotoKioskState extends State<PhotoKiosk> {
           ),
           const SizedBox(height: 10),
           const Text(
-            'View your gallery, edit your photos, choose print sizes and use your points.',
+            'View your gallery, add filters & stickers, choose print sizes and use your points.',
             textAlign: TextAlign.center,
             style: TextStyle(color: adminMuted),
           ),

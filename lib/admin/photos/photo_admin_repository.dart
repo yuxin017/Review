@@ -16,7 +16,8 @@ abstract class PhotoAdminRepository {
 class FirebasePhotoAdminRepository implements PhotoAdminRepository {
   final FirebaseFirestore db;
   final FirebaseAuth auth;
-  FirebasePhotoAdminRepository({required this.db, required this.auth});
+  final String? staffPhotographerUid;
+  FirebasePhotoAdminRepository({required this.db, required this.auth, this.staffPhotographerUid});
   @override
   Stream<List<ParkPhoto>> records(String collection) {
     if (![
@@ -27,9 +28,14 @@ class FirebasePhotoAdminRepository implements PhotoAdminRepository {
     ].contains(collection)) {
       throw ArgumentError('Unknown photo section.');
     }
-    return db
-        .collection(collection)
-        .snapshots()
+    if (staffPhotographerUid != null && collection != 'parkPhotos') {
+      return Stream.value(const <ParkPhoto>[]);
+    }
+    final query = staffPhotographerUid == null
+        ? db.collection(collection)
+        : db.collection('parkPhotos').where(
+            'photographerUid', isEqualTo: staffPhotographerUid);
+    return query.snapshots()
         .map((s) => s.docs.map((d) => ParkPhoto(d.id, d.data())).toList());
   }
 

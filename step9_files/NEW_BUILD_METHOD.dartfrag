@@ -1,0 +1,277 @@
+  String statusFilter = 'all';
+
+  @override
+  Widget build(BuildContext context) => StreamBuilder<List<StaffProfile>>(
+    stream: widget.repository.watchStaffDirectory(),
+    builder: (context, snapshot) {
+      final people = snapshot.data ?? <StaffProfile>[];
+      final filtered = people.where((person) {
+        final term = search.trim().toLowerCase();
+        final matchesText = term.isEmpty ||
+            '${person.fullName} ${person.staffId} ${person.email} ${person.uid}'
+                .toLowerCase().contains(term);
+        final matchesStatus = statusFilter == 'all' || person.status == statusFilter;
+        return matchesText && matchesStatus;
+      }).toList();
+      final selected = people.where((p) => p.uid == selectedUid).firstOrNull;
+      return SingleChildScrollView(
+        child: Padding(
+          padding: const EdgeInsets.all(8),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            const AdminHeading(
+              'Staff Management',
+              'Manage employee accounts, roles and verified training records.',
+            ),
+            const SizedBox(height: 24),
+            if (notice != null) Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: AdminCard(color: const Color(0xFFF0F8F2), child: Row(children: [
+                const Icon(Icons.check_circle_outline, color: Color(0xFF278D52)),
+                const SizedBox(width: 10),
+                Expanded(child: Text(notice!, style: const TextStyle(fontSize: 13))),
+                IconButton(tooltip: 'Dismiss', onPressed: () => setState(() => notice = null),
+                  icon: const Icon(Icons.close, size: 18)),
+              ])),
+            ),
+            if (error != null || snapshot.hasError) Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: AdminCard(color: const Color(0xFFFFF0EE), child: Row(children: [
+                const Icon(Icons.error_outline, color: Color(0xFFB42318)),
+                const SizedBox(width: 10),
+                Expanded(child: Text(
+                  error ?? _message(snapshot.error!),
+                  style: const TextStyle(color: Color(0xFFB42318), fontSize: 13))),
+              ])),
+            ),
+            AdminCard(
+              padding: const EdgeInsets.all(16),
+              child: Wrap(
+                spacing: 12, runSpacing: 12,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  SizedBox(width: 300, child: TextField(
+                    key: const Key('staff-directory-search'),
+                    controller: searchController,
+                    onChanged: (v) => setState(() => search = v),
+                    decoration: const InputDecoration(
+                      prefixIcon: Icon(Icons.search, size: 20),
+                      hintText: 'Search name, email or Staff ID',
+                    ),
+                  )),
+                  SizedBox(width: 158, child: DropdownButtonFormField<String>(
+                    key: ValueKey(statusFilter),
+                    initialValue: statusFilter,
+                    isExpanded: true,
+                    decoration: const InputDecoration(labelText: 'Status'),
+                    items: const [
+                      DropdownMenuItem(value: 'all', child: Text('All statuses')),
+                      DropdownMenuItem(value: 'active', child: Text('Active')),
+                      DropdownMenuItem(value: 'inactive', child: Text('Inactive')),
+                      DropdownMenuItem(value: 'suspended', child: Text('Suspended')),
+                    ],
+                    onChanged: (v) => setState(() => statusFilter = v ?? 'all'),
+                  )),
+                  AdminButton('Create Staff Account',
+                    icon: Icons.person_add_alt_1, onPressed: _createStaff),
+                  Text('${people.length} staff',
+                    style: const TextStyle(color: adminMuted, fontSize: 13)),
+                ],
+              ),
+            ),
+            const SizedBox(height: 18),
+            if (snapshot.connectionState == ConnectionState.waiting)
+              const LinearProgressIndicator(color: adminRose),
+            if (snapshot.hasData && people.isEmpty)
+              const AdminCard(child: Padding(
+                padding: EdgeInsets.symmetric(vertical: 18),
+                child: Text('No staff records yet. Create the first employee account.'),
+              )),
+            if (snapshot.hasData && people.isNotEmpty) LayoutBuilder(
+              builder: (context, size) {
+                final wide = size.maxWidth >= 920;
+                final directory = AdminCard(
+                  padding: EdgeInsets.zero,
+                  child: Column(children: [
+                    for (var i = 0; i < filtered.length; i++) ...[
+                      if (i > 0) const Divider(height: 1, color: adminBorder),
+                      Builder(builder: (context) {
+                        final person = filtered[i];
+                        final selectedRow = selectedUid == person.uid;
+                        return Material(
+                          color: selectedRow ? const Color(0xFFFFF6F4) : Colors.transparent,
+                          child: InkWell(
+                            onTap: () => setState(() => selectedUid = person.uid),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 15),
+                              child: Row(children: [
+                                CircleAvatar(
+                                  backgroundColor: const Color(0xFFF4E6E4),
+                                  foregroundColor: adminRose,
+                                  radius: 20,
+                                  child: Text(person.fullName.isNotEmpty
+                                      ? person.fullName[0].toUpperCase() : '?'),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(person.fullName, maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        fontSize: 14, color: adminDark,
+                                        fontWeight: FontWeight.w600)),
+                                    const SizedBox(height: 3),
+                                    Text(person.email, maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        color: adminMuted, fontSize: 12)),
+                                    const SizedBox(height: 4),
+                                    Text(person.staffId.isNotEmpty ? person.staffId
+                                      : person.eligibleRoles.map((r) => r.label).join(', '),
+                                      maxLines: 1, overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(color: adminMuted, fontSize: 11)),
+                                  ],
+                                )),
+                                const SizedBox(width: 8),
+                                _statusControl(person),
+                              ]),
+                            ),
+                          ),
+                        );
+                      }),
+                    ],
+                    if (filtered.isEmpty) const Padding(
+                      padding: EdgeInsets.all(24),
+                      child: Text('No staff match these filters.',
+                        style: TextStyle(color: adminMuted)),
+                    ),
+                  ]),
+                );
+                final details = selected == null
+                    ? const AdminCard(child: Padding(
+                        padding: EdgeInsets.symmetric(vertical: 30),
+                        child: Center(child: Text('Select an employee to view their details.',
+                          style: TextStyle(color: adminMuted))),
+                      ))
+                    : AdminCard(child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(selected.fullName,
+                            style: const TextStyle(color: adminDark,
+                              fontSize: 22, fontWeight: FontWeight.w700)),
+                          const SizedBox(height: 6),
+                          Text(selected.email,
+                            style: const TextStyle(color: adminMuted, fontSize: 13)),
+                          const SizedBox(height: 12),
+                          Text('Staff ID  ${selected.staffId.isEmpty ? 'Not assigned' : selected.staffId}',
+                            style: const TextStyle(color: adminDark,
+                              fontWeight: FontWeight.w600, fontSize: 13)),
+                          const SizedBox(height: 10),
+                          if (selected.eligibleRoles.isNotEmpty) Wrap(
+                            spacing: 6, runSpacing: 6,
+                            children: selected.eligibleRoles.map((role) => Chip(
+                              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                              backgroundColor: const Color(0xFFF8F3F2),
+                              side: const BorderSide(color: adminBorder),
+                              label: Text(role.label, style: const TextStyle(fontSize: 12)),
+                            )).toList(),
+                          ),
+                          const SizedBox(height: 16),
+                          Wrap(spacing: 8, runSpacing: 8, children: [
+                            AdminButton('Edit Details / Roles',
+                              outlined: true, icon: Icons.edit_outlined,
+                              onPressed: () => _editStaff(selected)),
+                            AdminButton('Record Training',
+                              outlined: true, icon: Icons.school_outlined,
+                              onPressed: () => _addTraining(selected)),
+                            AdminButton('Resend Setup Email',
+                              outlined: true, icon: Icons.mark_email_unread_outlined,
+                              onPressed: () => _resendSetupEmail(selected)),
+                          ]),
+                          const Divider(height: 28, color: adminBorder),
+                          const Text('Training Qualifications', style: TextStyle(
+                            fontSize: 16, fontWeight: FontWeight.w700, color: adminDark)),
+                          const SizedBox(height: 6),
+                          _qualifications(selected),
+                          const SizedBox(height: 16),
+                          SelectableText('Firebase UID: ${selected.uid}',
+                            style: const TextStyle(color: adminMuted, fontSize: 11)),
+                        ],
+                      ));
+                if (!wide) return Column(children: [
+                  directory, const SizedBox(height: 14), details,
+                ]);
+                return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Expanded(flex: 5, child: directory),
+                  const SizedBox(width: 14),
+                  Expanded(flex: 6, child: details),
+                ]);
+              },
+            ),
+          ]),
+        ),
+      );
+    },
+  );
+}
+
+/// Compact, accessible multiselect controls grouped by department.
+class _StaffRolePicker extends StatelessWidget {
+  const _StaffRolePicker({
+    required this.roles,
+    required this.enabled,
+    required this.onToggle,
+  });
+  final Set<StaffRole> roles;
+  final bool enabled;
+  final void Function(StaffRole role, bool selected) onToggle;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      _group('Park operations', const [
+        StaffRole.operationsManager,
+        StaffRole.attractionOperator,
+        StaffRole.admissionStaff,
+      ]),
+      const SizedBox(height: 12),
+      _group('Photo & guest services', const [
+        StaffRole.photographer,
+        StaffRole.photoCounterStaff,
+        StaffRole.customerSupport,
+      ]),
+      const SizedBox(height: 12),
+      _group('Business', const [StaffRole.marketingStaff]),
+    ],
+  );
+
+  Widget _group(String label, List<StaffRole> options) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(label, style: const TextStyle(fontSize: 12,
+        fontWeight: FontWeight.w600, color: adminMuted)),
+      const SizedBox(height: 7),
+      Wrap(spacing: 8, runSpacing: 5, children: [
+        for (final role in options)
+          FilterChip(
+            key: Key('staff-role-${role.code}'),
+            label: Text(role.label,
+              style: TextStyle(fontSize: 12,
+                color: roles.contains(role) ? adminDark : adminMuted)),
+            selected: roles.contains(role),
+            onSelected: enabled ? (value) => onToggle(role, value) : null,
+            selectedColor: const Color(0xFFF7E9E8),
+            backgroundColor: Colors.white,
+            checkmarkColor: adminRose,
+            side: BorderSide(color: roles.contains(role)
+              ? adminRose : adminBorder),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(7)),
+            showCheckmark: true,
+            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            visualDensity: VisualDensity.compact,
+          ),
+      ]),
+    ],
+  );
+}

@@ -1,0 +1,27 @@
+{
+  "tag": "StaffStep19SafeMerge",
+  "root": "C:\\Users\\Yu Xin\\Downloads\\FYP_Visitor_Settings_Update\\FYP_New",
+  "entries": [
+    {
+      "relative": "lib/admin/staff/staff_management_page.dart",
+      "existed": true,
+      "backupFile": "original_0.bin",
+      "before": "dac35dcc734a209433120ff603c696dcfd4ef9dccdd0d28cdb480c2261c57a78",
+      "after": "f2a4a1c43cae3f77f5794651eb8c114912d63dba84a4453466e147cfab66462c"
+    },
+    {
+      "relative": "lib/admin/staff/staff_training_date_policy.dart",
+      "existed": false,
+      "backupFile": null,
+      "before": null,
+      "after": "e0b2a9e6e2e79c74e8c74601ba18f32128932f96f4206912dff784df64f8cccb"
+    },
+    {
+      "relative": "test/admin/staff_training_date_policy_test.dart",
+      "existed": false,
+      "backupFile": null,
+      "before": null,
+      "after": "25512014d58eaa200e4168cf4420090235b5b4c3d8574def2899f646ebcce205"
+    }
+  ]
+}

@@ -45,6 +45,297 @@ service cloud.firestore {
     // VISITOR MANAGEMENT
     // =====================================================
 
+    // =====================================================
+    // STAFF WORKFORCE RECORDS — Step 4
+    // Only privileged root admins can change identities/qualifications.
+    // Restricted staff MUST NOT be given the legacy `admin: true` claim.
+    // This is only the record layer; shift-based operational authorization
+    // will be enforced in the later backend integration phase.
+    // =====================================================
+    function workforceSuperAdmin() {
+      return isAdmin();
+    }
+
+    function workforceProfileValid(data) {
+      return data.keys().hasOnly([
+          'fullName', 'email', 'status', 'eligibleRoles', 'updatedAt', 'staffId'
+        ])
+        && data.keys().hasAll([
+          'fullName', 'email', 'status', 'eligibleRoles', 'updatedAt'
+        ])
+        && data.fullName is string
+        && data.fullName.size() >= 2
+        && data.fullName.size() <= 120
+        && data.email is string
+        && data.email.size() >= 5
+        && data.email.size() <= 254
+        && data.email.matches('^[^@ ]+@[^@ ]+\\.[^@ ]+$')
+        && data.status in ['active', 'inactive', 'suspended']
+        && data.eligibleRoles is list
+        && data.eligibleRoles.size() <= 7
+        && data.eligibleRoles.toSet().size() == data.eligibleRoles.size()
+        && (!('marketing_staff' in data.eligibleRoles) || data.eligibleRoles.size() == 1)
+        && data.eligibleRoles.toSet().hasOnly([
+          'operations_manager', 'attraction_operator', 'admission_staff',
+          'photographer', 'photo_counter_staff', 'marketing_staff',
+          'customer_support'
+        ])
+        && (!data.keys().hasAny(['staffId']) ||
+          (data.staffId is string && data.staffId.matches('^STF-[0-9]{5,8}$')))
+        && data.updatedAt == request.time;
+    }
+
+    match /staffProfiles/{staffUid} {
+      allow get: if workforceSuperAdmin()
+        || (signedIn() && request.auth.uid == staffUid);
+      allow list: if workforceSuperAdmin();
+      allow create: if workforceSuperAdmin()
+        && workforceProfileValid(request.resource.data)
+        && request.resource.data.status == 'inactive';
+      allow update: if workforceSuperAdmin()
+        && workforceProfileValid(request.resource.data)
+        && request.resource.data.get('staffId','') == resource.data.get('staffId','')
+        // Firebase Auth email must be changed through a separate trusted flow.
+        && request.resource.data.email == resource.data.email
+        // An already-active legacy profile may be edited without changing
+        // its status; every NEW transition to Active requires verified proof.
+        && (request.resource.data.status != 'active'
+          || resource.data.status == 'active'
+          || (exists(/databases/$(database)/documents/staffEmailVerifications/$(staffUid))
+            && get(/databases/$(database)/documents/staffEmailVerifications/$(staffUid)).data.email == request.resource.data.email));
+      allow delete: if false;
+    }
+
+    // =====================================================
+    // STAFF STEP 10: VERIFIED EMAIL PROOF + COURSE CATALOGUE
+    // No client may claim to be verified using a boolean in staffProfiles.
+    // Only Firebase Auth's email_verified ID token can publish proof.
+    // =====================================================
+    // Generated rota drafts: readable and writable only by verified root admins.
+    // Published operational shifts remain a separate, trusted flow.
+    match /staffShiftDrafts/{shiftId} {
+      allow get, list: if workforceSuperAdmin();
+      allow create, update: if workforceSuperAdmin()
+        && request.resource.data.keys().hasOnly([
+          'staffUid', 'staffName', 'roleCode', 'startsAt', 'endsAt',
+          'attractionIds', 'published', 'updatedAt'
+        ])
+        && request.resource.data.keys().hasAll([
+          'staffUid', 'staffName', 'roleCode', 'startsAt', 'endsAt',
+          'attractionIds', 'published', 'updatedAt'
+        ])
+        && request.resource.data.staffUid is string
+        && request.resource.data.staffName is string
+        && request.resource.data.roleCode in [
+          'operations_manager', 'attraction_operator', 'admission_staff',
+          'photographer', 'photo_counter_staff', 'marketing_staff',
+          'customer_support'
+        ]
+        && request.resource.data.startsAt is timestamp
+        && request.resource.data.endsAt is timestamp
+        && request.resource.data.endsAt > request.resource.data.startsAt
+        && request.resource.data.attractionIds is list
+        && request.resource.data.attractionIds.size() <= 5
+        && request.resource.data.published == false
+        && request.resource.data.updatedAt == request.time;
+      allow delete: if workforceSuperAdmin();
+    }
+
+    // WORKFORCE_V5_BEGIN: staff self-service and approved weekly schedule.
+    function activeWorkforceMember(staffUid) {
+      return signedIn() && request.auth.uid == staffUid
+        && exists(/databases/$(database)/documents/staffProfiles/$(staffUid))
+        && get(/databases/$(database)/documents/staffProfiles/$(staffUid)).data.status == 'active';
+    }
+
+    match /staffAvailability/{recordId} {
+      allow get: if workforceSuperAdmin() ||
+        (signedIn() && recordId.matches('^' + request.auth.uid + '_[0-9]{4}-[0-9]{2}-[0-9]{2}$'));
+      allow list: if workforceSuperAdmin() ||
+        (signedIn() && resource.data.staffUid == request.auth.uid);
+      allow create, update: if activeWorkforceMember(request.resource.data.staffUid)
+        && recordId == request.auth.uid + '_' + request.resource.data.weekStart
+        && request.resource.data.keys().hasOnly(['staffUid','weekStart','availableDays','updatedAt'])
+        && request.resource.data.keys().hasAll(['staffUid','weekStart','availableDays','updatedAt'])
+        && request.resource.data.staffUid == request.auth.uid
+        && request.resource.data.weekStart is string
+        && request.resource.data.weekStart.size() == 10
+        && request.resource.data.availableDays is list
+        && request.resource.data.availableDays.size() <= 7
+        && request.resource.data.availableDays.toSet().size() == request.resource.data.availableDays.size()
+        && request.resource.data.updatedAt == request.time;
+      allow delete: if false;
+    }
+
+    match /staffLeaveRequests/{leaveId} {
+      allow get, list: if workforceSuperAdmin() ||
+        (signedIn() && resource.data.staffUid == request.auth.uid);
+      allow create: if activeWorkforceMember(request.resource.data.staffUid)
+        && request.resource.data.keys().hasOnly(['staffUid','staffName','leaveType','startOn','endOn','reason','status','decisionNote','createdAt','updatedAt'])
+        && request.resource.data.keys().hasAll(['staffUid','staffName','leaveType','startOn','endOn','reason','status','decisionNote','createdAt','updatedAt'])
+        && request.resource.data.staffUid == request.auth.uid
+        && request.resource.data.staffName is string
+        && request.resource.data.staffName.size() <= 120
+        && request.resource.data.leaveType in ['Annual Leave','Sick Leave','Emergency Leave','Unpaid Leave']
+        && request.resource.data.startOn is string
+        && request.resource.data.endOn is string
+        && request.resource.data.startOn.size() == 10
+        && request.resource.data.endOn.size() == 10
+        && request.resource.data.startOn <= request.resource.data.endOn
+        && request.resource.data.reason is string
+        && request.resource.data.reason.size() >= 3
+        && request.resource.data.reason.size() <= 300
+        && request.resource.data.status == 'pending'
+        && request.resource.data.decisionNote == ''
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time;
+      allow update: if workforceSuperAdmin()
+        && resource.data.status == 'pending'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','decisionNote','updatedAt'])
+        && request.resource.data.status in ['approved','rejected']
+        && request.resource.data.decisionNote is string
+        && request.resource.data.decisionNote.size() <= 240
+        && request.resource.data.updatedAt == request.time;
+      allow delete: if false;
+    }
+
+    match /staffPublishedShifts/{shiftId} {
+      allow get, list: if workforceSuperAdmin() ||
+        (signedIn() && resource.data.staffUid == request.auth.uid);
+      allow create, update: if workforceSuperAdmin()
+        && request.resource.data.keys().hasOnly(['weekStart','staffUid','staffName','roleCode','startsAt','endsAt','attractionIds','published','updatedAt'])
+        && request.resource.data.keys().hasAll(['weekStart','staffUid','staffName','roleCode','startsAt','endsAt','attractionIds','published','updatedAt'])
+        && request.resource.data.weekStart is string
+        && request.resource.data.weekStart.size() == 10
+        && request.resource.data.staffUid is string
+        && request.resource.data.staffName is string
+        && request.resource.data.roleCode in ['operations_manager','attraction_operator','admission_staff','photographer','photo_counter_staff','marketing_staff','customer_support']
+        && request.resource.data.startsAt is timestamp
+        && request.resource.data.endsAt is timestamp
+        && request.resource.data.endsAt > request.resource.data.startsAt
+        && request.resource.data.attractionIds is list
+        && request.resource.data.attractionIds.size() <= 5
+        && request.resource.data.published == true
+        && request.resource.data.updatedAt == request.time;
+      allow delete: if workforceSuperAdmin();
+    }
+    // WORKFORCE_V5_END
+
+    match /staffEmailVerifications/{staffUid} {
+      allow get: if workforceSuperAdmin()
+        || (signedIn() && request.auth.uid == staffUid);
+      allow list: if workforceSuperAdmin();
+      allow create, update: if signedIn()
+        && request.auth.uid == staffUid
+        && request.auth.token.get('email_verified', false) == true
+        && exists(/databases/$(database)/documents/staffProfiles/$(staffUid))
+        && request.resource.data.keys().hasOnly(['email', 'verifiedAt'])
+        && request.resource.data.keys().hasAll(['email', 'verifiedAt'])
+        && request.resource.data.email is string
+        && request.resource.data.email == request.auth.token.email.lower()
+        && request.resource.data.email == get(
+          /databases/$(database)/documents/staffProfiles/$(staffUid)
+        ).data.email
+        && request.resource.data.verifiedAt == request.time;
+      allow delete: if false;
+    }
+
+    // STEP12_COURSE_ATTRACTION_BINDING_V1
+    // STEP13_ATTRACTION_AUTO_COURSE_V1
+    // STEP14_ATTRACTION_UX_V1
+    function workforceTrainingCourseValid(data) {
+      return data.keys().hasOnly(['title', 'roleCode', 'active', 'updatedAt', 'attractionId'])
+        && data.keys().hasAll(['title', 'roleCode', 'active', 'updatedAt'])
+        && data.title is string && data.title.size() >= 4 && data.title.size() <= 120
+        && data.roleCode in [
+          'operations_manager', 'attraction_operator', 'admission_staff',
+          'photographer', 'photo_counter_staff', 'marketing_staff',
+          'customer_support'
+        ]
+        && data.active is bool
+        && (data.roleCode != 'attraction_operator'
+          ? data.get('attractionId', '') == ''
+          : (data.get('attractionId', '') is string
+            && data.get('attractionId', '').size() >= 1
+            && data.get('attractionId', '').size() <= 128
+            && (exists(/databases/$(database)/documents/attractions/$(data.attractionId)) || existsAfter(/databases/$(database)/documents/attractions/$(data.attractionId)))))
+        && data.updatedAt == request.time;
+    }
+    match /staffTrainingCourses/{courseId} {
+      allow get, list: if workforceSuperAdmin();
+      allow create: if workforceSuperAdmin()
+        && workforceTrainingCourseValid(request.resource.data);
+      allow update: if workforceSuperAdmin()
+        && workforceTrainingCourseValid(request.resource.data)
+        && request.resource.data.title == resource.data.title
+        && request.resource.data.roleCode == resource.data.roleCode
+        && (resource.data.get('attractionId','') == ''
+          || request.resource.data.attractionId == resource.data.attractionId);
+      allow delete: if false;
+    }
+
+    function workforceQualificationMatchesCourse(data) {
+      return !data.keys().hasAny(['courseId'])
+        || (exists(/databases/$(database)/documents/staffTrainingCourses/$(data.courseId))
+          && get(/databases/$(database)/documents/staffTrainingCourses/$(data.courseId)).data.active == true
+          && get(/databases/$(database)/documents/staffTrainingCourses/$(data.courseId)).data.title == data.title
+          && get(/databases/$(database)/documents/staffTrainingCourses/$(data.courseId)).data.roleCode == data.roleCode
+          && get(/databases/$(database)/documents/staffTrainingCourses/$(data.courseId)).data.get('attractionId', '') == data.attractionId);
+    }
+
+    function workforceQualificationValid(data) {
+      return data.keys().hasOnly([
+          'staffUid', 'roleCode', 'title', 'status', 'attractionId',
+          'completedAt', 'expiresAt', 'updatedAt', 'courseId'
+        ])
+        && data.keys().hasAll([
+          'staffUid', 'roleCode', 'title', 'status', 'attractionId',
+          'completedAt', 'expiresAt', 'updatedAt'
+        ])
+        && data.staffUid is string
+        && data.staffUid.size() >= 1
+        && data.staffUid.size() <= 128
+        && data.staffUid.matches('^[^/ ]+$')
+        && data.roleCode in [
+          'operations_manager', 'attraction_operator', 'admission_staff',
+          'photographer', 'photo_counter_staff', 'marketing_staff',
+          'customer_support'
+        ]
+        && data.title is string
+        && data.title.size() >= 3
+        && data.title.size() <= 160
+        && (!data.keys().hasAny(['courseId'])
+          || (data.courseId is string && data.courseId.size() >= 1 && data.courseId.size() <= 128))
+        && data.status in ['approved', 'revoked']
+        && data.attractionId is string
+        && data.attractionId.size() <= 128
+        && (data.roleCode != 'attraction_operator'
+          || data.attractionId.size() > 0)
+        && data.completedAt is timestamp
+        && (data.expiresAt == null ||
+          (data.expiresAt is timestamp && data.expiresAt > data.completedAt))
+        && data.updatedAt == request.time;
+    }
+
+    // STEP10_TRAINING_CATALOGUE_HOTFIX_V1
+    // New approvals require a real course. Historical records can only be revoked.
+    match /staffQualifications/{qualificationId} {
+      allow get, list: if workforceSuperAdmin()
+        || (signedIn() && resource.data.staffUid == request.auth.uid);
+      allow create: if workforceSuperAdmin()
+        && workforceQualificationValid(request.resource.data)
+        && request.resource.data.keys().hasAll(['courseId'])
+        && workforceQualificationMatchesCourse(request.resource.data);
+      allow update: if workforceSuperAdmin()
+        && resource.data.staffUid == request.resource.data.staffUid
+        && workforceQualificationValid(request.resource.data)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','updatedAt'])
+        && resource.data.status == 'approved'
+        && request.resource.data.status == 'revoked';
+      allow delete: if false;
+    }
+
+
     match /visitors/{visitorId} {
 
       // Visitor can read their own profile.
@@ -601,12 +892,7 @@ service cloud.firestore {
       allow get: if signedIn() && (resource.data.ownerUid == request.auth.uid ||
         (verifiedVisitor() && resource.data.guestEmail == request.auth.token.email.lower()));
       allow list, update, delete: if false;
-      allow create: if verifiedVisitor()
-        && request.resource.data.keys().hasOnly(['ticketId','ownerUid','guestEmail'])
-        && request.resource.data.ownerUid == request.auth.uid
-        && getAfter(/databases/$(database)/documents/tickets/$(request.resource.data.ticketId)).data.displayCode == code
-        && getAfter(/databases/$(database)/documents/tickets/$(request.resource.data.ticketId)).data.ownerUid == request.auth.uid
-        && getAfter(/databases/$(database)/documents/tickets/$(request.resource.data.ticketId)).data.guestEmail == request.resource.data.guestEmail;
+      allow create: if false; // Stripe-verified Cloud Function only.
     }
     match /ticketPackages/{id} {
 
@@ -615,6 +901,10 @@ service cloud.firestore {
         && resource.data.active == true;
 
       allow write: if false;
+    }
+
+    match /ticketPayments/{paymentId} {
+      allow read, write: if false; // Payment attempts only accessible via Cloud Functions.
     }
 
     // =====================================================
@@ -632,8 +922,7 @@ service cloud.firestore {
 
       allow list: if ownsBooking();
 
-      allow create: if verifiedVisitor() && (request.resource.data.get('version', 1) == 2
-        ? validJourneyOrder(id, request.resource.data) : validNewOrder(id, request.resource.data));
+      allow create: if false; // Stripe-verified Cloud Function only.
 
       allow update, delete: if false;
     }
@@ -646,8 +935,7 @@ service cloud.firestore {
 
       allow read: if ownsBooking() || (verifiedVisitor() && resource.data.get('guestEmail', '') == request.auth.token.email.lower());
 
-      allow create: if verifiedVisitor() && activeVisitor(request.auth.uid) && (request.resource.data.get('version', 1) == 2
-        ? validJourneyTicket(id, request.resource.data) : validNewTicket(id, request.resource.data));
+      allow create: if false; // Stripe-verified Cloud Function only.
 
       allow update, delete: if false;
     }
@@ -655,7 +943,8 @@ service cloud.firestore {
     // MODULE 1: ATTRACTIONS AND SESSIONS
     function module1AttractionFields() {
       return ['name', 'category', 'status', 'minHeightCm', 'mapX', 'mapY',
-        'description', 'coverImageBase64', 'crowdLevel', 'standbyMinutes', 'updatedAt', 'reservationCapacity'];
+        'description', 'coverImageBase64', 'crowdLevel', 'standbyMinutes', 'updatedAt', 'reservationCapacity',
+        'rideDurationMinutes', 'ridersPerCycle', 'safetyNotes', 'kind', 'categoryId'];
     }
 
     function module1FiniteNumber(value) {
@@ -667,10 +956,24 @@ service cloud.firestore {
       return data.keys().hasAll(['name', 'category', 'status', 'minHeightCm', 'mapX', 'mapY'])
         && data.name is string && data.name.size() <= 80 && data.name.matches('.*\\S.*')
         && data.category is string && data.category.size() <= 60 && data.category.matches('.*\\S.*')
+        && (data.get('kind', null) == null ||
+          data.kind in ['attractions', 'dining', 'facilities', 'shops'])
+        && (data.get('categoryId', null) == null ||
+          (data.categoryId is string && data.categoryId.size() > 0 &&
+           data.categoryId.size() <= 120 && data.get('kind', null) != null &&
+           existsAfter(/databases/$(database)/documents/parkCategories/$(data.categoryId)) &&
+           getAfter(/databases/$(database)/documents/parkCategories/$(data.categoryId)).data.kind == data.kind &&
+           getAfter(/databases/$(database)/documents/parkCategories/$(data.categoryId)).data.name == data.category))
         && data.status in ['open', 'closed', 'maintenance']
         && data.minHeightCm is int && data.minHeightCm >= 0 && data.minHeightCm <= 250
         && data.get('reservationCapacity', 10) is int
         && data.get('reservationCapacity', 10) >= 1 && data.get('reservationCapacity', 10) <= 1000
+        && (data.get('rideDurationMinutes', null) == null ||
+          (data.rideDurationMinutes is int && data.rideDurationMinutes >= 1 && data.rideDurationMinutes <= 120))
+        && (data.get('ridersPerCycle', null) == null ||
+          (data.ridersPerCycle is int && data.ridersPerCycle >= 1 && data.ridersPerCycle <= 1000))
+        && (data.get('safetyNotes', null) == null ||
+          (data.safetyNotes is string && data.safetyNotes.size() <= 500))
         && module1FiniteNumber(data.mapX) && module1FiniteNumber(data.mapY)
         && (data.get('description', null) == null || (data.description is string && data.description.size() <= 1200))
         && (data.get('coverImageBase64', null) == null || (data.coverImageBase64 is string
@@ -751,16 +1054,46 @@ service cloud.firestore {
       allow delete: if cameraStaff() && resource.data.viewerUid == request.auth.uid;
     }
 
+    // STEP16_DYNAMIC_PARK_CATEGORIES_V2
+    function step16ValidCategory(data) {
+      return data.keys().hasOnly(['name', 'kind', 'active', 'createdAt', 'updatedAt'])
+        && data.keys().hasAll(['name', 'kind', 'active', 'createdAt', 'updatedAt'])
+        && data.name is string && data.name.size() >= 2 && data.name.size() <= 60
+        && data.name.matches('.*\\S.*')
+        && data.kind in ['attractions', 'dining', 'facilities', 'shops']
+        && data.active is bool && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+    match /parkCategories/{categoryId} {
+      allow read: if signedIn();
+      allow create: if isAdmin() && step16ValidCategory(request.resource.data)
+        && request.resource.data.active == true
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time;
+      allow update: if isAdmin() && step16ValidCategory(request.resource.data)
+        && request.resource.data.kind == resource.data.kind
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['name', 'active', 'updatedAt'])
+        && request.resource.data.updatedAt == request.time;
+      allow delete: if isAdmin();
+    }
+
     match /attractions/{attractionId} {
       allow read: if signedIn();
       allow create: if isAdmin()
         && request.resource.data.keys().hasOnly(module1AttractionFields())
         && module1ValidAttraction(request.resource.data)
+        && (request.resource.data.get('categoryId', null) == null ||
+          getAfter(/databases/$(database)/documents/parkCategories/$(request.resource.data.categoryId)).data.active == true)
         && (request.resource.data.get('updatedAt', null) == null || request.resource.data.updatedAt == request.time);
       allow update: if isAdmin()
         && resource.data.get('deletedAt', null) == null
         && ((request.resource.data.diff(resource.data).affectedKeys().hasOnly(module1AttractionFields())
           && module1ValidAttraction(request.resource.data)
+          && (request.resource.data.get('categoryId', null) == null ||
+            request.resource.data.get('categoryId', null) == resource.data.get('categoryId', null) ||
+            getAfter(/databases/$(database)/documents/parkCategories/$(request.resource.data.categoryId)).data.active == true)
           && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['updatedAt']) || request.resource.data.updatedAt == request.time))
         || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['deletedAt', 'updatedAt', 'status'])
           && request.resource.data.deletedAt == request.time
@@ -770,17 +1103,81 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    function validMembershipLevel(level, expectedKey) {
+      return level is map
+        && level.keys().hasOnly(['key', 'name', 'minPoints', 'description', 'highlights', 'colorKey', 'upgradeBonusPoints', 'foodVoucherRewardId'])
+        && level.keys().hasAll(['key', 'name', 'minPoints'])
+        && level.key == expectedKey
+        && level.name is string
+        && level.name.matches('^[A-Za-z][A-Za-z0-9 &-]{1,23}$')
+        && level.minPoints is int
+        && level.minPoints >= 0 && level.minPoints <= 10000000
+        && level.get('description', '') is string
+        && level.get('description', '').size() <= 100
+        && level.get('colorKey', 'rose') in ['rose', 'slate', 'gold', 'violet', 'teal']
+        && level.get('highlights', []) is list
+        && level.get('highlights', []).size() <= 3
+        && (level.get('highlights', []).size() < 1 ||
+            (level.get('highlights', [])[0] is string && level.get('highlights', [])[0].size() <= 70))
+        && (level.get('highlights', []).size() < 2 ||
+            (level.get('highlights', [])[1] is string && level.get('highlights', [])[1].size() <= 70))
+        && (level.get('highlights', []).size() < 3 ||
+            (level.get('highlights', [])[2] is string && level.get('highlights', [])[2].size() <= 70))
+        && level.get('upgradeBonusPoints', 0) is int
+        && level.get('upgradeBonusPoints', 0) >= 0
+        && level.get('upgradeBonusPoints', 0) <= 10000
+        && level.get('foodVoucherRewardId', '') is string
+        && level.get('foodVoucherRewardId', '').size() <= 80
+        && (level.get('foodVoucherRewardId', '') == '' ||
+            level.get('foodVoucherRewardId', '').matches('^[a-zA-Z0-9_-]{1,80}$'));
+    }
+    function validMembershipPolicy(data) {
+      return data.keys().hasOnly(['levels', 'updatedBy', 'updatedAt'])
+        && data.keys().hasAll(['levels', 'updatedBy', 'updatedAt'])
+        && data.levels is list && data.levels.size() == 4
+        && validMembershipLevel(data.levels[0], 'normal')
+        && validMembershipLevel(data.levels[1], 'silver')
+        && validMembershipLevel(data.levels[2], 'gold')
+        && validMembershipLevel(data.levels[3], 'platinum')
+        && data.levels[0].minPoints == 0
+        && data.levels[1].minPoints > data.levels[0].minPoints
+        && data.levels[2].minPoints > data.levels[1].minPoints
+        && data.levels[3].minPoints > data.levels[2].minPoints
+        && data.levels[0].name != data.levels[1].name
+        && data.levels[0].name != data.levels[2].name
+        && data.levels[0].name != data.levels[3].name
+        && data.levels[1].name != data.levels[2].name
+        && data.levels[1].name != data.levels[3].name
+        && data.levels[2].name != data.levels[3].name
+        && data.updatedBy == request.auth.uid
+        && data.updatedAt == request.time;
+    }
     match /parkSettings/{settingId} {
       allow read: if signedIn();
-      allow write: if false;
+      // Only authenticated root admins may edit membership configuration.
+      allow create, update: if settingId == 'membership'
+        && isAdmin() && validMembershipPolicy(request.resource.data);
+      allow delete: if false;
     }
     // Photo originals, face templates, codes and matching jobs remain server-only.
     match /faceProfiles/{uid} {
       allow get: if isAdmin() || (signedIn() && request.auth.uid == uid);
       allow list, write: if false;
     }
+    function activeStaffWithRole(role) {
+      let profile = /databases/$(database)/documents/staffProfiles/$(request.auth.uid);
+      return signedIn()
+        && request.auth.token.get('email_verified', false) == true
+        && exists(profile)
+        && get(profile).data.get('status', '') == 'active'
+        && get(profile).data.get('email', '') == request.auth.token.email.lower()
+        && role in get(profile).data.get('eligibleRoles', []);
+    }
     match /parkPhotos/{photoId} {
-      allow read: if isAdmin();
+      // Photographers see ONLY photos they uploaded, not visitor photo orders,
+      // face matches, original images or other photographers' records.
+      allow get, list: if isAdmin() || (activeStaffWithRole('photographer')
+        && resource.data.photographerUid == request.auth.uid);
       allow write: if false;
     }
     match /photoMatches/{id} {
@@ -1245,6 +1642,104 @@ service cloud.firestore {
         && (isAdmin() || (supportOwner(request.resource.data.ownerUid) && request.resource.data.action == 'reopened'
           && request.resource.data.fromStatus == 'resolved' && request.resource.data.toStatus == 'in_progress'));
     }
+
+    // COMMERCE_V6_BEGIN: Admin-only product catalogue drafts.
+    // Never trust these prices from the visitor checkout. Purchase backends
+    // must reprice bundles against current ticket package records.
+    function validParkMenuItem(d) {
+      return d.keys().hasOnly(['storeId','name','description','category',
+        'priceMinor','currency','active','imageUrl','createdAt','updatedAt'])
+        && d.keys().hasAll(['storeId','name','description','category',
+        'priceMinor','currency','active','imageUrl','createdAt','updatedAt'])
+        && d.storeId is string && d.storeId.size() > 0 && d.storeId.size() <= 128
+        && d.name is string && d.name.size() >= 2 && d.name.size() <= 90
+        && d.description is string && d.description.size() <= 250
+        && d.category in ['Dessert','Meals','Snacks','Beverages','Other',
+          'Souvenirs','Apparel','Toys','Accessories','Collectibles','Gifts']
+        && d.priceMinor is int && d.priceMinor >= 1 && d.priceMinor <= 10000000
+        && d.currency == 'MYR' && d.active is bool
+        && d.imageUrl is string && d.imageUrl.size() <= 2048
+        && d.createdAt is timestamp && d.updatedAt == request.time;
+    }
+    match /parkMenuItems/{itemId} {
+      allow get, list: if isAdmin();
+      allow create: if isAdmin() && validParkMenuItem(request.resource.data)
+        && request.resource.data.createdAt == request.time;
+      allow update: if isAdmin() && validParkMenuItem(request.resource.data)
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.storeId == resource.data.storeId;
+      allow delete: if false;
+    }
+    function validTicketBundle(d) {
+      return d.keys().hasOnly(['name','basePackageId','adults','children',
+        'basePriceMinor','discountMinor','priceMinor','currency','status',
+        'createdAt','updatedAt','imageUrl'])
+        && d.keys().hasAll(['name','basePackageId','adults','children',
+        'basePriceMinor','discountMinor','priceMinor','currency','status',
+        'createdAt','updatedAt'])
+        && d.name is string && d.name.size() >= 2 && d.name.size() <= 80
+        && d.basePackageId is string && d.basePackageId.size() > 0
+        && d.basePackageId.size() <= 128
+        && d.adults is int && d.adults >= 0 && d.adults <= 12
+        && d.children is int && d.children >= 0 && d.children <= 12
+        && d.adults + d.children >= 1 && d.adults + d.children <= 12
+        && d.basePriceMinor is int && d.basePriceMinor > 0
+        && d.discountMinor is int && d.discountMinor >= 0
+        && d.priceMinor is int && d.priceMinor > 0
+        && d.basePriceMinor == d.priceMinor + d.discountMinor
+        && d.currency == 'MYR' && d.status == 'draft'
+        // Optional image URL is uploaded by the admin to Firebase Storage.
+        && (!d.keys().hasAny(['imageUrl'])
+          || (d.imageUrl is string
+            && d.imageUrl.size() > 0 && d.imageUrl.size() <= 2048
+            && d.imageUrl.matches('^https://.*')))
+        && d.createdAt is timestamp && d.updatedAt == request.time;
+    }
+    match /ticketBundles/{bundleId} {
+      allow get, list: if isAdmin();
+      allow create: if isAdmin() && validTicketBundle(request.resource.data)
+        && request.resource.data.createdAt == request.time;
+      allow update: if isAdmin() && validTicketBundle(request.resource.data)
+        && request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if false;
+    }
+    // Photo product catalogue: Digital, Photo Print, and Packages.
+    // Admin-only catalogue; visitor checkout remains server-priced.
+    function validPhotoProduct(d) {
+      return d.keys().hasOnly([
+          'name', 'description', 'type', 'sizeLabel', 'componentIds',
+          'priceMinor', 'currency', 'active', 'imageUrl',
+          'createdAt', 'updatedAt'
+        ])
+        && d.keys().hasAll([
+          'name', 'description', 'type', 'sizeLabel', 'componentIds',
+          'priceMinor', 'currency', 'active', 'imageUrl',
+          'createdAt', 'updatedAt'
+        ])
+        && d.name is string && d.name.size() >= 2 && d.name.size() <= 100
+        && d.description is string && d.description.size() <= 300
+        && d.type in ['digital', 'print', 'bundle']
+        && d.sizeLabel is string && d.sizeLabel.size() <= 30
+        && (d.type != 'print' || d.sizeLabel.size() > 0)
+        && d.componentIds is list && d.componentIds.size() <= 30
+        && (d.type == 'bundle' ? d.componentIds.size() >= 2
+                               : d.componentIds.size() == 0)
+        && d.priceMinor is int && d.priceMinor >= 1 && d.priceMinor <= 100000000
+        && d.currency == 'MYR' && d.active is bool
+        && d.imageUrl is string && d.imageUrl.size() <= 2048
+        && (d.imageUrl == '' || d.imageUrl.matches('^https://.*'))
+        && d.createdAt is timestamp && d.updatedAt == request.time;
+    }
+    match /photoProducts/{productId} {
+      allow get, list: if isAdmin();
+      allow create: if isAdmin() && validPhotoProduct(request.resource.data)
+        && request.resource.data.createdAt == request.time;
+      allow update: if isAdmin() && validPhotoProduct(request.resource.data)
+        && request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if false;
+    }
+
+    // COMMERCE_V6_END
 
     match /{document=**} {
       allow read, write: if false;

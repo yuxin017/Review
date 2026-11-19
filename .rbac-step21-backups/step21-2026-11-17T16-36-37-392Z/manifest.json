@@ -1,0 +1,59 @@
+{
+  "files": [
+    {
+      "path": "firestore.rules",
+      "before": "38062b142edd6d9bb49c7c60ccb10dc1c25c3d103cf782d300c84a75f9b86db7",
+      "after": "013267d393b1d56147908f6e17726a53c59e73ffcc8c36b99b215761484b45e5"
+    },
+    {
+      "path": "functions/src/photos.js",
+      "before": "e949ceef48a370f11c97bacc7101c7f4e33c47855a8afe8d96018852eee0a5c4",
+      "after": "2579f1da498401039ca93dadefd9195c2907ee259710fa6f6d0a922b327ea835"
+    },
+    {
+      "path": "functions/src/staff_photo_access.js",
+      "before": null,
+      "after": "20152fc3570382733dc433c3d8043e1bf754752b6da336e1f3446ad16fbc871e"
+    },
+    {
+      "path": "lib/admin/admin_repository.dart",
+      "before": "b51b4d24c896cccd7d4651c03d2722ac150875fa1110c6be2a7f7d7a467160b2",
+      "after": "f4cc8578e8f61de96a794cdf67d36d2e69b8619b9c49d8f1c18f65add2a337bc"
+    },
+    {
+      "path": "lib/admin/admin_shell.dart",
+      "before": "439744aed474f4e9e8b81371c3422ce712675d63cbd7ae1896c4ce9b58df55fc",
+      "after": "cfaa30b3ab7db63028cfc36de4a9bf3f9ec94d654a9bc30f4cd0e890a25c73a7"
+    },
+    {
+      "path": "lib/admin/photos/photo_admin_repository.dart",
+      "before": "bbf7f27b2c8609a568c05ac1790dbc2ead9ea9294a7a770dd0ab99fd2d8033a9",
+      "after": "15ad44a8e0e1df21b90393f9b692bb0b9e754d0903b51f4a763e5aef4acc90d4"
+    },
+    {
+      "path": "lib/admin/photos/photo_management.dart",
+      "before": "88358f26aed01168f2d1a68ec9e64c1e7bde83a19aa90967807a04b48b2c5e11",
+      "after": "a68fe7c0eab18e1640a43153657e37973ed7898401da34d666f0e1057db10dc4"
+    },
+    {
+      "path": "lib/admin/staff/staff_portal.dart",
+      "before": "04a85763455bb331590b7872224ecfb994cc00f1377aee46f0601f277b3d14b4",
+      "after": "6b76bbef975358984a2ca18544e90718369a512764977623ce0609778d681809"
+    },
+    {
+      "path": "lib/admin/staff/staff_portal_navigation.dart",
+      "before": null,
+      "after": "d8fa4b9dca7f32b064648b07447b207d7db2468d1af04b11561c5f954560be64"
+    },
+    {
+      "path": "test/admin/rbac_photo_server_test.cjs",
+      "before": null,
+      "after": "3ea150003ab813913bc8a4d770441bba33de63a7520e2719266f5b632d46641e"
+    },
+    {
+      "path": "test/admin/rbac_sidebar_policy_test.dart",
+      "before": null,
+      "after": "eb195a6930d9248a3908e891086ef9c580f26a2c6a36dff9abc1fb4fda229ba9"
+    }
+  ]
+}

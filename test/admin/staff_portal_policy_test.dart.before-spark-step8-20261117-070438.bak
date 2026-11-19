@@ -1,0 +1,39 @@
+import 'package:flutter_test/flutter_test.dart';
+import 'package:collaborative_asg/admin/staff/staff_portal_policy.dart';
+
+void main() {
+  StaffPortalStage check({
+    bool signedIn = true,
+    bool hasStaffClaim = true,
+    bool emailVerified = true,
+    String? profileStatus = 'active',
+  }) => StaffPortalPolicy.evaluate(
+    signedIn: signedIn,
+    hasStaffClaim: hasStaffClaim,
+    emailVerified: emailVerified,
+    profileStatus: profileStatus,
+  );
+
+  test('signed out user sees sign in', () {
+    expect(check(signedIn: false), StaffPortalStage.signIn);
+  });
+  test('legacy admin without staff claim cannot enter staff portal', () {
+    expect(check(hasStaffClaim: false), StaffPortalStage.notStaff);
+  });
+  test('unverified email cannot enter staff dashboard', () {
+    expect(check(emailVerified: false), StaffPortalStage.verifyEmail);
+  });
+  test('inactive staff may complete setup but cannot access dashboard', () {
+    expect(check(profileStatus: 'inactive'), StaffPortalStage.pendingApproval);
+  });
+  test('suspended staff cannot enter dashboard', () {
+    expect(check(profileStatus: 'suspended'), StaffPortalStage.suspended);
+  });
+  test('active verified restricted staff can see read-only dashboard', () {
+    expect(check(), StaffPortalStage.ready);
+  });
+  test('missing or unknown profile is denied', () {
+    expect(check(profileStatus: null), StaffPortalStage.notStaff);
+    expect(check(profileStatus: 'pending'), StaffPortalStage.notStaff);
+  });
+}

@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import '../visitor/models/tickets.dart';
 import '../visitor/services/ticket_journey.dart';
 import 'admin_models.dart';
+import '../visitor/models/membership_policy.dart';
 import 'admin_repository.dart';
 
 class AdminStore extends ChangeNotifier {
@@ -10,16 +11,22 @@ class AdminStore extends ChangeNotifier {
   AdminStore(this.repository);
   List<AdminVisitor> _raw = [];
   Map<String, Map<String, dynamic>> _meta = {}, _access = {};
-  List<AdminVisitor> get visitors => _raw
-      .map(
-        (v) => AdminVisitor(
-          v.id,
-          v.data,
-          metadata: _meta[v.id] ?? {},
-          access: _access[v.id] ?? {},
-        ),
-      )
-      .toList();
+  Map<String, int> _lifetimeEarned = {};
+  bool _earningsLoaded = false;
+  MembershipPolicy membershipPolicy = MembershipPolicy.defaults;
+  List<AdminVisitor> get visitors => _raw.map((v) {
+    final points = _lifetimeEarned[v.id] ?? 0;
+    final level = membershipPolicy.forEarned(points);
+    return AdminVisitor(
+      v.id,
+      v.data,
+      metadata: _meta[v.id] ?? {},
+      access: _access[v.id] ?? {},
+      computedMembershipKey: _earningsLoaded ? level.key : null,
+      computedMembershipName: _earningsLoaded ? level.name : null,
+      lifetimeEarnedPoints: _earningsLoaded ? points : null,
+    );
+  }).toList();
   List<AdminPackage> packages = [];
   List<ParkTicket> tickets = [];
   List<TicketOrder> orders = [];
@@ -60,6 +67,11 @@ class AdminStore extends ChangeNotifier {
     listen(repository.sessions(), (v) => sessions = v);
     listen(repository.audit(), (v) => audit = v);
     listen(repository.admissions(), (v) => admissions = v);
+    listen(repository.membershipPolicy(), (v) => membershipPolicy = v);
+    listen(repository.lifetimeEarnedPoints(), (v) {
+      _lifetimeEarned = v;
+      _earningsLoaded = true;
+    });
   }
 
   Future<bool> perform(Future<void> Function() action) async {

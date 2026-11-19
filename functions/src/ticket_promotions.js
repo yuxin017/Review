@@ -55,6 +55,95 @@ function createTicketPromotionHandlers({db,FieldValue,exchangeRates,clock=()=>ne
       if(value.pointsUsed)tx.update(value.profile.ref,{loyaltyPoints:value.balance-value.pointsUsed,lastRedemptionOrderId:ref.id});recordPromotion(tx,value.promotion,uid,ref.id,FieldValue);return{orderId:ref.id};
     });
   }
-  return{quote,checkout};
+
+  // Secure Stripe ticket checkout: price and guest lists are validated on the server.
+  async function reserveStripe(request){
+    const d=input(request),uid=request.auth.uid,ref=db.doc('ticketPayments/'+d.requestId);
+    if(typeof d.clientFingerprint!=='string'||!/^[a-f0-9]{64}$/.test(d.clientFingerprint)||d.paymentCurrency&&d.paymentCurrency!=='MYR')fail('invalid-argument','Review your ticket order in MYR.');
+    if(!Number.isInteger(d.expectedTotalMinor))fail('invalid-argument','Review the total before paying.');
+    return db.runTransaction(async tx=>{
+      const previous=await tx.get(ref);
+      if(previous.exists){
+        const saved=previous.data();
+        if(saved.ownerUid!==uid||saved.fingerprint!==d.clientFingerprint)fail('already-exists','This checkout belongs to a different booking.');
+        return{orderId:ref.id,amountMinor:saved.amountMinor,status:saved.status,sessionId:saved.sessionId??'',url:saved.url??''};
+      }
+      const v=await price(tx,request);
+      if(v.totalMinor!==d.expectedTotalMinor)fail('failed-precondition','The ticket price or promotion changed. Please review the total.');
+      // Current Stripe MYR settlement minimum is RM 2.00.
+      if(v.totalMinor<200)fail('failed-precondition','Online payment requires at least RM 2.00 after discounts.');
+      if(v.totalMinor>99999999)fail('failed-precondition','The payment exceeds the online payment limit.');
+      const lines=d.lines.map(l=>({id:l.id,packageId:l.packageId,packageName:l.packageName,visitDate:l.visitDate,adults:l.adults,children:l.children,adultPriceMinor:l.adultPriceMinor,childPriceMinor:l.childPriceMinor,durationDays:l.durationDays,category:l.category==='annual'?'annual':'day',imageAsset:l.category==='annual'?'assets/images/ticketing/annual-pass.png':'assets/images/ticketing/castle.png'}));
+      tx.create(ref,{
+        ownerUid:uid,fingerprint:d.clientFingerprint,amountMinor:v.totalMinor,currency:'MYR',
+        status:'pending',sessionId:'',url:'',packageId:d.lines[0].packageId,
+        packageName:d.lines.length===1?d.lines[0].packageName:'Theme Park Tickets',
+        visitDate:d.lines[0].visitDate,quantity:v.items.length,items:v.items,lineItems:lines,
+        subtotalMinor:v.subtotalMinor,discountMinor:v.discountMinor,pointsUsed:v.pointsUsed,
+        promoCode:d.promoCode??'',loyaltyEarnRate:v.rate,
+        createdAt:FieldValue.serverTimestamp(),
+      });
+      return{orderId:ref.id,amountMinor:v.totalMinor,status:'pending',sessionId:'',url:''};
+    });
+  }
+  async function completeStripe(session){
+    if(!session||session.payment_status!=='paid'||session.currency!=='myr'||!Number.isInteger(session.amount_total))return'pending';
+    const id=session.client_reference_id;
+    if(typeof id!=='string'||!/^[a-f0-9]{48}$/.test(id))throw new Error('Invalid ticket payment reference');
+    const paymentRef=db.doc('ticketPayments/'+id),orderRef=db.doc('orders/'+id);
+    return db.runTransaction(async tx=>{
+      const [attempt,existing]=await tx.getAll(paymentRef,orderRef);
+      if(!attempt.exists)throw new Error('Ticket payment record missing');
+      const d=attempt.data();
+      if(existing.exists){
+        if(existing.data().paymentProvider!=='stripe'||existing.data().stripeSessionId!==session.id)throw new Error('Order reference conflict');
+        if(d.status!=='paid')tx.update(paymentRef,{status:'paid',paidAt:FieldValue.serverTimestamp()});
+        return'paid';
+      }
+      if(d.ownerUid!==session.metadata?.uid||d.amountMinor!==session.amount_total||d.currency!=='MYR'||(d.sessionId&&d.sessionId!==session.id))throw new Error('Payment verification mismatch');
+      const profileRef=db.doc('visitors/'+d.ownerUid),profile=await tx.get(profileRef);
+      if(!profile.exists)throw new Error('Visitor profile missing after payment');
+      const balance=profile.data().loyaltyPoints??0;
+      if(d.pointsUsed>balance){
+        tx.update(paymentRef,{status:'manual_review',reason:'loyalty_balance_changed',sessionId:session.id,paidAt:FieldValue.serverTimestamp()});
+        return'manual_review';
+      }
+      let promo=null;
+      if(d.promoCode){
+        const code=d.promoCode,ref=db.doc('campaigns/'+code),usageRef=db.doc('campaignRedemptions/'+crypto.createHash('sha256').update(d.ownerUid+'\0'+code).digest('hex'));
+        const [offer,usage]=await tx.getAll(ref,usageRef);
+        if(offer.exists){promo={ref,usageRef,offer:offer.data(),usage:usage.data()?.count??0};}
+        else{
+          tx.update(paymentRef,{status:'manual_review',reason:'promotion_unavailable',sessionId:session.id,paidAt:FieldValue.serverTimestamp()});
+          return'manual_review';
+        }
+      }
+      const ticketIds=d.items.map((_,i)=>id+'_'+(i+1));
+      tx.create(orderRef,{
+        version:2,ownerUid:d.ownerUid,requestId:id,fingerprint:d.fingerprint,
+        packageId:d.packageId,packageName:d.packageName,visitDate:d.visitDate,
+        quantity:d.quantity,ticketIds,items:d.items,lineItems:d.lineItems,
+        subtotalMinor:d.subtotalMinor,discountMinor:d.discountMinor,pointsUsed:d.pointsUsed,
+        totalMinor:d.amountMinor,loyaltyEarnRate:d.loyaltyEarnRate,promoCode:d.promoCode,
+        paymentMethod:'stripe',paymentProvider:'stripe',paymentStatus:'paid',
+        stripeSessionId:session.id,currency:'MYR',status:'completed',
+        displayCode:reference(id,d.visitDate),createdAt:FieldValue.serverTimestamp(),
+      });
+      for(let i=0;i<d.items.length;i++){
+        const item=d.items[i],code=reference(id,item.visitDate)+'-'+String(i+1).padStart(2,'0');
+        tx.create(db.doc('tickets/'+ticketIds[i]),{...item,item,version:2,index:i,ownerUid:d.ownerUid,purchaserUid:d.ownerUid,orderId:id,displayCode:code,currency:'MYR',status:'valid',createdAt:FieldValue.serverTimestamp()});
+        tx.create(db.doc('ticketReferences/'+code),{ticketId:ticketIds[i],ownerUid:d.ownerUid,guestEmail:item.guestEmail});
+      }
+      if(d.pointsUsed)tx.update(profileRef,{loyaltyPoints:balance-d.pointsUsed,lastRedemptionOrderId:id});
+      if(promo){
+        // Honour the server-approved discount at payment time; record it once.
+        tx.update(promo.ref,{usageCount:(promo.offer.usageCount??0)+1,updatedAt:FieldValue.serverTimestamp()});
+        tx.set(promo.usageRef,{ownerUid:d.ownerUid,campaignId:promo.ref.id,count:promo.usage+1,lastSourceId:id,updatedAt:FieldValue.serverTimestamp()});
+      }
+      tx.update(paymentRef,{status:'paid',sessionId:session.id,paidAt:FieldValue.serverTimestamp()});
+      return'paid';
+    });
+  }
+  return{quote,checkout,reserveStripe,completeStripe};
 }
 module.exports={createTicketPromotionHandlers};

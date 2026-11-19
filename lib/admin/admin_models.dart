@@ -25,11 +25,16 @@ String titleCase(String value) =>
 class AdminVisitor {
   final String id;
   final Map<String, dynamic> data, metadata, access;
+  final String? computedMembershipKey, computedMembershipName;
+  final int? lifetimeEarnedPoints;
   const AdminVisitor(
     this.id,
     this.data, {
     this.metadata = const {},
     this.access = const {},
+    this.computedMembershipKey,
+    this.computedMembershipName,
+    this.lifetimeEarnedPoints,
   });
   String get name => data['fullName'] as String? ?? 'Visitor';
   String get email => data['email'] as String? ?? '';
@@ -37,6 +42,9 @@ class AdminVisitor {
   String get photo => data['profilePhotoBase64'] as String? ?? '';
   String get status => access['status'] as String? ?? 'active';
   String get membership => metadata['membership'] as String? ?? 'normal';
+  String get displayMembershipKey => computedMembershipKey ?? membership;
+  String get membershipLabel =>
+      '${computedMembershipName ?? titleCase(membership)} Member';
   String get risk => metadata['riskLevel'] as String? ?? 'normal';
   String get note => metadata['notes'] as String? ?? '';
   bool get watchlisted => metadata['watchlisted'] == true;
@@ -65,6 +73,8 @@ class PackageDraft {
   final int priceMinor, durationDays, sortOrder;
   final int? childPriceMinor;
   final bool active;
+  final List<String> benefits;
+  final String? imageUrl;
   const PackageDraft({
     required this.name,
     required this.description,
@@ -74,10 +84,13 @@ class PackageDraft {
     this.childPriceMinor,
     this.sortOrder = 0,
     this.active = true,
+    this.benefits = const [],
+    this.imageUrl,
   });
   Map<String, dynamic> toMap() => {
     'name': name.trim(),
     'description': description.trim(),
+    if (benefits.isNotEmpty) 'benefits': benefits,
     'category': category,
     'priceMinor': priceMinor,
     if (childPriceMinor != null) 'childPriceMinor': childPriceMinor,
@@ -86,6 +99,7 @@ class PackageDraft {
     'active': active,
     'currency': 'MYR',
     'imageAsset': category == 'annual' ? ticketAnnualAsset : ticketCastleAsset,
+    if (imageUrl != null && imageUrl!.isNotEmpty) 'imageUrl': imageUrl,
   };
 }
 

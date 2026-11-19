@@ -1,0 +1,893 @@
+import 'dart:math' as math;
+import 'package:flutter/material.dart';
+import '../admin_widgets.dart';
+import 'staff_form_validation.dart';
+import 'staff_access.dart';
+import 'staff_records.dart';
+import 'staff_records_repository.dart';
+import 'staff_onboarding_repository.dart';
+
+/// Super Admin-only administration of workforce records.
+/// Note: the current legacy admin: true gate is still the sole entry point.
+/// Staff logins, shift authorization and Auth account invitation are NOT
+/// enabled by this page and must be implemented in later secured steps.
+class StaffManagementPage extends StatefulWidget {
+  const StaffManagementPage({super.key, required this.repository});
+  final StaffRecordsRepository repository;
+
+  @override
+  State<StaffManagementPage> createState() => _StaffManagementPageState();
+}
+
+class _StaffManagementPageState extends State<StaffManagementPage> {
+  String? selectedUid;
+  String? error;
+  String? notice;
+  late final StaffOnboardingRepository _onboarding = StaffOnboardingRepository();
+  String search = '';
+  final searchController = TextEditingController();
+
+  @override
+  void dispose() {
+    searchController.dispose();
+    super.dispose();
+  }
+
+  String _message(Object e) {
+    final s = e.toString();
+    if (s.contains('permission-denied')) {
+      return 'Access denied. The staff Firestore rules may not be deployed, or your account lacks the required administrator permission.';
+    }
+    if (s.contains('unavailable') || s.contains('network')) {
+      return 'Unable to connect. Check your internet connection and try again.';
+    }
+    if (s.contains('email-already-in-use') || s.contains('already-exists')) {
+      return 'This email is already registered in Firebase Authentication. Use a different real inbox or ask an administrator to review the existing account.';
+    }
+    if (s.contains('operation-not-allowed')) {
+      return 'Email/Password sign-in is disabled. Enable it in Firebase Console > Authentication > Sign-in method.';
+    }
+    if (s.contains('too-many-requests')) {
+      return 'Too many signup or email requests. Try again later.';
+    }
+    if (s.contains('may exist without a Staff Profile')) {
+      return 'A Firebase Auth account may have been created without its Staff Profile. Check Firebase Authentication and Firestore before trying again.';
+    }
+    if (s.contains('not authorized to create staff') || s.contains('verified Admin account')) {
+      return 'A verified Administrator account with admin permission is required.';
+    }
+    if (s.contains('not-found')) return 'Staff onboarding service is not deployed yet. Contact your administrator.';
+    if (s.contains('unauthenticated')) return 'Your administrator session has expired. Sign in and retry.';
+    if (e is ArgumentError) return e.message?.toString() ?? 'Invalid input.';
+    return 'Unable to save this change. Please review the details and try again.';
+  }
+
+
+  Future<void> _createStaff() async {
+    final formKey = GlobalKey<FormState>();
+    final name = TextEditingController();
+    final email = TextEditingController();
+    final roles = <StaffRole>{};
+    String? roleError;
+    String? formError;
+    var busy = false;
+    try {
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) => StatefulBuilder(
+          builder: (context, update) => Dialog(
+            backgroundColor: Colors.white,
+            surfaceTintColor: Colors.transparent,
+            insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+            child: SizedBox(
+              width: math.min(620.0, MediaQuery.sizeOf(context).width - 44.0),
+              height: math.min(650.0, MediaQuery.sizeOf(context).height - 48.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(28, 24, 28, 16),
+                    child: Row(children: [
+                      const Expanded(child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Create Staff Account', style: TextStyle(
+                            fontSize: 25, fontWeight: FontWeight.w700, color: adminDark)),
+                          SizedBox(height: 5),
+                          Text('Add an employee using an email they can access.',
+                            style: TextStyle(fontSize: 13, color: adminMuted)),
+                        ],
+                      )),
+                      IconButton(
+                        tooltip: 'Close',
+                        onPressed: busy ? null : () => Navigator.pop(dialogContext),
+                        icon: const Icon(Icons.close, color: adminMuted),
+                      ),
+                    ]),
+                  ),
+                  const Divider(height: 1, color: adminBorder),
+                  Expanded(
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.fromLTRB(28, 20, 28, 18),
+                      child: Form(
+                        key: formKey,
+                        autovalidateMode: AutovalidateMode.onUserInteraction,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            const Text('Full name *', style: TextStyle(
+                              fontWeight: FontWeight.w600, fontSize: 13, color: adminDark)),
+                            const SizedBox(height: 8),
+                            TextFormField(
+                              key: const Key('staff-create-name'),
+                              controller: name,
+                              enabled: !busy,
+                              textCapitalization: TextCapitalization.words,
+                              autofillHints: const [AutofillHints.name],
+                              decoration: const InputDecoration(
+                                hintText: 'e.g. Loo Chee Beng',
+                                prefixIcon: Icon(Icons.person_outline, size: 20)),
+                              validator: StaffFormValidation.fullName,
+                            ),
+                            const SizedBox(height: 16),
+                            const Text('Employee email *', style: TextStyle(
+                              fontWeight: FontWeight.w600, fontSize: 13, color: adminDark)),
+                            const SizedBox(height: 8),
+                            TextFormField(
+                              key: const Key('staff-create-email'),
+                              controller: email,
+                              enabled: !busy,
+                              keyboardType: TextInputType.emailAddress,
+                              autofillHints: const [AutofillHints.email],
+                              autocorrect: false,
+                              decoration: const InputDecoration(
+                                hintText: 'e.g. staff@gmail.com',
+                                prefixIcon: Icon(Icons.alternate_email, size: 20)),
+                              validator: StaffFormValidation.email,
+                            ),
+                            const SizedBox(height: 8),
+                            const Text('A password setup link will be sent to this inbox.',
+                              style: TextStyle(fontSize: 12, color: adminMuted)),
+                            const SizedBox(height: 22),
+                            const Divider(height: 1, color: adminBorder),
+                            const SizedBox(height: 18),
+                            const Row(children: [
+                              Expanded(child: Text('Eligible roles *', style: TextStyle(
+                                fontSize: 15, fontWeight: FontWeight.w700, color: adminDark))),
+                              Text('Select at least one', style: TextStyle(
+                                fontSize: 12, color: adminMuted)),
+                            ]),
+                            const SizedBox(height: 10),
+                            _StaffRolePicker(
+                              roles: roles,
+                              enabled: !busy,
+                              onToggle: (role, selected) => update(() {
+                                if (selected) { roles.add(role); } else { roles.remove(role); }
+                                roleError = null;
+                              }),
+                            ),
+                            if (roleError != null) Padding(
+                              padding: const EdgeInsets.only(top: 8),
+                              child: Text(roleError!, style: const TextStyle(
+                                fontSize: 12, color: Color(0xFFB42318))),
+                            ),
+                            const SizedBox(height: 14),
+                            const Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                              Icon(Icons.info_outline, color: adminMuted, size: 17),
+                              SizedBox(width: 9),
+                              Expanded(child: Text(
+                                'New staff start Inactive. A verified email, training and approved shift are required for operational access.',
+                                style: TextStyle(fontSize: 12, color: adminMuted, height: 1.4))),
+                            ]),
+                            if (formError != null) Padding(
+                              padding: const EdgeInsets.only(top: 12),
+                              child: Text(formError!, style: const TextStyle(
+                                fontSize: 12, color: Color(0xFFB42318))),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                  const Divider(height: 1, color: adminBorder),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(28, 16, 28, 18),
+                    child: Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+                      TextButton(
+                        onPressed: busy ? null : () => Navigator.pop(dialogContext),
+                        child: const Text('Cancel'),
+                      ),
+                      const SizedBox(width: 10),
+                      AdminButton(
+                        busy ? 'Creating...' : 'Create Staff',
+                        icon: Icons.person_add_alt_1,
+                        onPressed: busy ? null : () async {
+                          final fieldsValid = formKey.currentState?.validate() ?? false;
+                          if (roles.isEmpty) {
+                            update(() => roleError = 'Choose at least one eligible role.');
+                          }
+                          if (!fieldsValid || roles.isEmpty) return;
+                          update(() { busy = true; formError = null; });
+                          try {
+                            final created = await _onboarding.createStaff(
+                              fullName: name.text.trim(),
+                              email: email.text.trim().toLowerCase(),
+                              eligibleRoles: roles,
+                            );
+                            if (mounted) setState(() {
+                              selectedUid = created.uid;
+                              error = null;
+                              notice = 'Created ${created.staffId}. Staff account is Inactive.';
+                            });
+                            try {
+                              await _onboarding.sendPasswordSetupEmail(created.email);
+                              if (mounted) setState(() {
+                                notice = 'Created ${created.staffId}. Setup email requested for ${created.email}. Verify the inbox and email address before activation.';
+                              });
+                            } catch (mailError) {
+                              if (mounted) setState(() {
+                                error = 'Staff account ${created.staffId} WAS CREATED, but setup email failed: ${_message(mailError)}. Use Resend Setup Email; do not create a second account.';
+                              });
+                            }
+                            if (dialogContext.mounted) Navigator.pop(dialogContext);
+                          } catch (e) {
+                            if (dialogContext.mounted) update(() => formError = _message(e));
+                          } finally {
+                            if (dialogContext.mounted) update(() => busy = false);
+                          }
+                        },
+                      ),
+                    ]),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    } finally {
+      name.dispose();
+      email.dispose();
+    }
+  }
+
+  Future<void> _resendSetupEmail(StaffProfile staff) async {
+    try {
+      await _onboarding.sendPasswordSetupEmail(staff.email);
+      if (mounted) {
+        setState(() {
+        error = null;
+        notice = 'Password setup/reset email requested for ${staff.email}. Delivery may take a few minutes.';
+      });
+      }
+    } catch (e) {
+      if (mounted) setState(() => error = 'Unable to request setup email: ${_message(e)}');
+    }
+  }
+
+  String? _statusUpdatingUid;
+
+  Future<void> _changeStatus(StaffProfile person, String next) async {
+    if (next == person.status || _statusUpdatingUid != null) return;
+    final action = next == 'active' ? 'Activate' : next == 'suspended' ? 'Suspend' : 'Mark Inactive';
+    final approved = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('$action ${person.fullName}?'),
+        content: Text(next == 'active'
+            ? 'This enables the employee’s read-only Staff Portal after email verification. Training and shift-based operating permissions remain separate.'
+            : 'This blocks the employee’s Staff Portal access while keeping their records and training history. It does not delete the Firebase login account.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: Text(action)),
+        ],
+      ),
+    );
+    if (approved != true || !mounted) return;
+    setState(() => _statusUpdatingUid = person.uid);
+    try {
+      await widget.repository.saveStaffProfile(
+        uid: person.uid,
+        fullName: person.fullName,
+        email: person.email,
+        status: next,
+        eligibleRoles: person.eligibleRoles,
+      );
+      if (mounted) setState(() {
+        notice = '${person.fullName} is now ${next.toUpperCase()}.';
+        error = null;
+      });
+    } catch (e) {
+      if (mounted) setState(() => error = _message(e));
+    } finally {
+      if (mounted) setState(() => _statusUpdatingUid = null);
+    }
+  }
+
+  Widget _statusControl(StaffProfile person) {
+    if (_statusUpdatingUid == person.uid) {
+      return const SizedBox(width: 28, height: 28,
+        child: CircularProgressIndicator(strokeWidth: 2));
+    }
+    final statusColor = person.status == 'active'
+        ? const Color(0xFF26734D)
+        : person.status == 'suspended'
+            ? const Color(0xFFB42318)
+            : const Color(0xFF96651C);
+    final statusLabel = person.status == 'active' ? 'Active'
+        : person.status == 'suspended' ? 'Suspended' : 'Inactive';
+    return PopupMenuButton<String>(
+      tooltip: 'Change status for ${person.fullName}',
+      enabled: _statusUpdatingUid == null,
+      onSelected: (value) => _changeStatus(person, value),
+      itemBuilder: (context) => [
+        for (final status in const ['active', 'inactive', 'suspended'])
+          PopupMenuItem<String>(
+            value: status,
+            enabled: status != person.status,
+            child: Row(children: [
+              Icon(status == 'active' ? Icons.check_circle_outline
+                : status == 'suspended' ? Icons.block_outlined
+                : Icons.pause_circle_outline, size: 18),
+              const SizedBox(width: 10),
+              Text(status == 'active' ? 'Active'
+                : status == 'suspended' ? 'Suspended' : 'Inactive'),
+              if (status == person.status) ...[
+                const Spacer(),
+                const Icon(Icons.check, size: 16),
+              ],
+            ]),
+          ),
+      ],
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: statusColor.withValues(alpha: .08),
+          border: Border.all(color: statusColor.withValues(alpha: .24)),
+          borderRadius: BorderRadius.circular(7),
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Text(statusLabel, style: TextStyle(
+            fontSize: 12, fontWeight: FontWeight.w600, color: statusColor)),
+          const SizedBox(width: 6),
+          Icon(Icons.keyboard_arrow_down, size: 17, color: statusColor),
+        ]),
+      ),
+    );
+  }
+
+  Future<void> _editStaff(StaffProfile existing) async {
+    final formKey = GlobalKey<FormState>();
+    final name = TextEditingController(text: existing.fullName);
+    final roles = <StaffRole>{...existing.eligibleRoles};
+    String? formError;
+    var busy = false;
+    try {
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => StatefulBuilder(
+          builder: (context, update) => Dialog(
+            backgroundColor: Colors.white,
+            insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+            child: SizedBox(
+              width: math.min(600.0, MediaQuery.sizeOf(context).width - 44.0),
+              height: math.min(560.0, MediaQuery.sizeOf(context).height - 48.0),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(28, 24, 28, 16),
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    const Text('Edit Staff Details & Roles', style: TextStyle(
+                      fontSize: 24, fontWeight: FontWeight.w700, color: adminDark)),
+                    const SizedBox(height: 5),
+                    Text(existing.email, style: const TextStyle(fontSize: 13, color: adminMuted)),
+                  ]),
+                ),
+                const Divider(height: 1, color: adminBorder),
+                Expanded(child: SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(28, 22, 28, 14),
+                  child: Form(
+                    key: formKey,
+                    autovalidateMode: AutovalidateMode.onUserInteraction,
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                      const Text('Full name *', style: TextStyle(
+                        fontSize: 13, fontWeight: FontWeight.w600, color: adminDark)),
+                      const SizedBox(height: 8),
+                      TextFormField(
+                        key: const Key('staff-edit-name'),
+                        controller: name,
+                        enabled: !busy,
+                        validator: StaffFormValidation.fullName,
+                        decoration: const InputDecoration(prefixIcon: Icon(Icons.person_outline)),
+                      ),
+                      const SizedBox(height: 12),
+                      const Text('Email is linked to Firebase Authentication and cannot be edited here.',
+                        style: TextStyle(fontSize: 12, color: adminMuted)),
+                      const SizedBox(height: 20),
+                      const Text('Eligible roles', style: TextStyle(
+                        fontSize: 15, fontWeight: FontWeight.w700, color: adminDark)),
+                      const SizedBox(height: 10),
+                      _StaffRolePicker(
+                        roles: roles,
+                        enabled: !busy,
+                        onToggle: (role, selected) => update(() {
+                          if (selected) { roles.add(role); } else { roles.remove(role); }
+                        }),
+                      ),
+                      const SizedBox(height: 12),
+                      const Text('Change account status using the Status button in the staff directory. Roles do not grant shift or training permission.',
+                        style: TextStyle(fontSize: 12, color: adminMuted, height: 1.4)),
+                      if (formError != null) Padding(
+                        padding: const EdgeInsets.only(top: 10),
+                        child: Text(formError!, style: const TextStyle(color: Color(0xFFB42318))),
+                      ),
+                    ]),
+                  ),
+                )),
+                const Divider(height: 1, color: adminBorder),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(28, 14, 28, 18),
+                  child: Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+                    TextButton(onPressed: busy ? null : () => Navigator.pop(dialogContext),
+                      child: const Text('Cancel')),
+                    const SizedBox(width: 10),
+                    AdminButton(busy ? 'Saving...' : 'Save Changes',
+                      onPressed: busy ? null : () async {
+                        if (!(formKey.currentState?.validate() ?? false)) return;
+                        update(() { busy = true; formError = null; });
+                        try {
+                          await widget.repository.saveStaffProfile(
+                            uid: existing.uid,
+                            fullName: name.text.trim(),
+                            email: existing.email,
+                            status: existing.status,
+                            eligibleRoles: roles,
+                          );
+                          if (dialogContext.mounted) Navigator.pop(dialogContext);
+                          if (mounted) setState(() {
+                            selectedUid = existing.uid;
+                            error = null;
+                            notice = 'Updated ${existing.fullName}.';
+                          });
+                        } catch (e) {
+                          if (dialogContext.mounted) update(() => formError = _message(e));
+                        } finally {
+                          if (dialogContext.mounted) update(() => busy = false);
+                        }
+                      },
+                    ),
+                  ]),
+                ),
+              ]),
+            ),
+          ),
+        ),
+      );
+    } finally {
+      name.dispose();
+    }
+  }
+
+  Future<void> _addTraining(StaffProfile staff) async {
+    final title = TextEditingController();
+    var role = StaffRole.admissionStaff;
+    DateTime completed = DateTime.now();
+    DateTime? expiry;
+    String? attractionId;
+    String? formError;
+    var busy = false;
+    final attractionsFuture = widget.repository.db.collection('attractions').get();
+    try {
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => StatefulBuilder(
+          builder: (context, update) => AlertDialog(
+            title: Text('Record Training — ${staff.fullName}'),
+            content: SizedBox(width: 470, child: SingleChildScrollView(child: Column(
+              mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Text('Only record training that was actually completed and verified. Never approve training merely to unblock a shift.', style: TextStyle(fontSize: 12)),
+                const SizedBox(height: 16),
+                DropdownButtonFormField<StaffRole>(
+                  initialValue: role,
+                  decoration: const InputDecoration(labelText: 'Training role', border: OutlineInputBorder()),
+                  isExpanded: true,
+                  items: StaffRole.values.where((r) => r != StaffRole.superAdmin).map((r) => DropdownMenuItem(value: r, child: Text(r.label))).toList(),
+                  onChanged: busy ? null : (r) => update(() { role = r ?? role; attractionId = null; }),
+                ),
+                const SizedBox(height: 12),
+                TextField(controller: title, enabled: !busy, decoration: const InputDecoration(labelText: 'Training name *', border: OutlineInputBorder())),
+                if (role == StaffRole.attractionOperator) ...[
+                  const SizedBox(height: 12),
+                  FutureBuilder(
+                    future: attractionsFuture,
+                    builder: (context, snapshot) {
+                      if (snapshot.hasError) return const Text('Cannot load attractions. Check your access.', style: TextStyle(color: Colors.red));
+                      if (!snapshot.hasData) return const LinearProgressIndicator();
+                      final docs = snapshot.data!.docs.where((d) => d.data()['deletedAt'] == null).toList();
+                      if (docs.isEmpty) return const Text('Add an attraction before recording ride-specific training.');
+                      return DropdownButtonFormField<String>(
+                        initialValue: docs.any((d) => d.id == attractionId) ? attractionId : null,
+                        isExpanded: true,
+                        decoration: const InputDecoration(labelText: 'Qualified attraction *', border: OutlineInputBorder()),
+                        items: docs.map((d) => DropdownMenuItem(value: d.id, child: Text(d.data()['name']?.toString() ?? d.id))).toList(),
+                        onChanged: busy ? null : (v) => update(() => attractionId = v),
+                      );
+                    },
+                  ),
+                ],
+                const SizedBox(height: 14),
+                OutlinedButton.icon(
+                  icon: const Icon(Icons.event),
+                  onPressed: busy ? null : () async {
+                    final value = await showDatePicker(context: dialogContext, initialDate: completed,
+                      firstDate: DateTime(2000), lastDate: DateTime.now().add(const Duration(days: 1)));
+                    if (value != null) update(() => completed = value);
+                  },
+                  label: Text('Completed: ${completed.year}-${completed.month.toString().padLeft(2, '0')}-${completed.day.toString().padLeft(2, '0')}'),
+                ),
+                OutlinedButton.icon(
+                  icon: const Icon(Icons.event_available),
+                  onPressed: busy ? null : () async {
+                    final value = await showDatePicker(context: dialogContext,
+                      initialDate: expiry ?? DateTime.now().add(const Duration(days: 365)),
+                      firstDate: completed.add(const Duration(days: 1)), lastDate: DateTime(2100));
+                    if (value != null) update(() => expiry = value);
+                  },
+                  label: Text(expiry == null ? 'Expiry: Not specified' : 'Expires: ${expiry!.year}-${expiry!.month.toString().padLeft(2, '0')}-${expiry!.day.toString().padLeft(2, '0')}'),
+                ),
+                if (expiry != null) TextButton(onPressed: busy ? null : () => update(() => expiry = null), child: const Text('Clear expiry date')),
+                if (formError != null) Padding(padding: const EdgeInsets.only(top: 8), child: Text(formError!, style: const TextStyle(color: Colors.red))),
+              ],
+            ))),
+            actions: [
+              TextButton(onPressed: busy ? null : () => Navigator.pop(dialogContext), child: const Text('Cancel')),
+              FilledButton(
+                onPressed: busy ? null : () async {
+                  if (title.text.trim().length < 3 || (role == StaffRole.attractionOperator && attractionId == null)) {
+                    update(() => formError = 'Enter the course name and select the qualified attraction if required.');
+                    return;
+                  }
+                  update(() { busy = true; formError = null; });
+                  try {
+                    final id = widget.repository.db.collection('staffQualifications').doc().id;
+                    await widget.repository.saveQualification(
+                      qualificationId: id, staffUid: staff.uid,
+                      role: role, title: title.text.trim(),
+                      completedAt: completed, expiresAt: expiry, attractionId: attractionId,
+                    );
+                    if (dialogContext.mounted) Navigator.pop(dialogContext);
+                    if (mounted) setState(() => error = null);
+                  } catch (e) {
+                    if (dialogContext.mounted) update(() => formError = _message(e));
+                  } finally {
+                    if (dialogContext.mounted) update(() => busy = false);
+                  }
+                },
+                child: Text(busy ? 'Saving…' : 'Approve Training Record'),
+              ),
+            ],
+          ),
+        ),
+      );
+    } finally {
+      title.dispose();
+    }
+  }
+
+  Future<void> _revokeTraining(StaffQualification q) async {
+    final confirmed = await showDialog<bool>(context: context, builder: (ctx) => AlertDialog(
+      title: const Text('Revoke training qualification?'),
+      content: Text('This will mark "${q.title}" as revoked. The action is not an employee termination.'),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+        FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Revoke')),
+      ],
+    ));
+    if (confirmed != true) return;
+    try {
+      await widget.repository.revokeQualification(q.id);
+      if (mounted) setState(() => error = null);
+    } catch (e) {
+      if (mounted) setState(() => error = _message(e));
+    }
+  }
+
+  Widget _qualifications(StaffProfile person) => StreamBuilder<List<StaffQualification>>(
+    stream: widget.repository.watchQualifications(person.uid),
+    builder: (context, snapshot) {
+      if (snapshot.hasError) return Text(_message(snapshot.error!), style: const TextStyle(color: Colors.red));
+      if (!snapshot.hasData) return const Center(child: LinearProgressIndicator());
+      final items = snapshot.data!;
+      if (items.isEmpty) return const Padding(padding: EdgeInsets.symmetric(vertical: 12), child: Text('No training recorded yet.'));
+      return Column(children: items.map((q) {
+        final valid = q.validAt(DateTime.now());
+        return ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: Icon(valid ? Icons.verified_outlined : Icons.warning_amber_outlined, color: valid ? Colors.green : Colors.orange),
+          title: Text(q.title),
+          subtitle: Text('${q.role.label}${q.attractionId == null ? '' : ' · Attraction ID: ${q.attractionId}'}\n${valid ? 'Qualified' : (q.status == 'revoked' ? 'Revoked' : 'Expired / Not yet valid')}'),
+          trailing: q.status == 'approved' ? TextButton(onPressed: () => _revokeTraining(q), child: const Text('Revoke')) : null,
+        );
+      }).toList());
+    },
+  );
+
+  String statusFilter = 'all';
+
+  @override
+  Widget build(BuildContext context) => StreamBuilder<List<StaffProfile>>(
+    stream: widget.repository.watchStaffDirectory(),
+    builder: (context, snapshot) {
+      final people = snapshot.data ?? <StaffProfile>[];
+      final filtered = people.where((person) {
+        final term = search.trim().toLowerCase();
+        final matchesText = term.isEmpty ||
+            '${person.fullName} ${person.staffId} ${person.email} ${person.uid}'
+                .toLowerCase().contains(term);
+        final matchesStatus = statusFilter == 'all' || person.status == statusFilter;
+        return matchesText && matchesStatus;
+      }).toList();
+      final selected = people.where((p) => p.uid == selectedUid).firstOrNull;
+      return SingleChildScrollView(
+        child: Padding(
+          padding: const EdgeInsets.all(8),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            const AdminHeading(
+              'Staff Management',
+              'Manage employee accounts, roles and verified training records.',
+            ),
+            const SizedBox(height: 24),
+            if (notice != null) Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: AdminCard(color: const Color(0xFFF0F8F2), child: Row(children: [
+                const Icon(Icons.check_circle_outline, color: Color(0xFF278D52)),
+                const SizedBox(width: 10),
+                Expanded(child: Text(notice!, style: const TextStyle(fontSize: 13))),
+                IconButton(tooltip: 'Dismiss', onPressed: () => setState(() => notice = null),
+                  icon: const Icon(Icons.close, size: 18)),
+              ])),
+            ),
+            if (error != null || snapshot.hasError) Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: AdminCard(color: const Color(0xFFFFF0EE), child: Row(children: [
+                const Icon(Icons.error_outline, color: Color(0xFFB42318)),
+                const SizedBox(width: 10),
+                Expanded(child: Text(
+                  error ?? _message(snapshot.error!),
+                  style: const TextStyle(color: Color(0xFFB42318), fontSize: 13))),
+              ])),
+            ),
+            AdminCard(
+              padding: const EdgeInsets.all(16),
+              child: Wrap(
+                spacing: 12, runSpacing: 12,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  SizedBox(width: 300, child: TextField(
+                    key: const Key('staff-directory-search'),
+                    controller: searchController,
+                    onChanged: (v) => setState(() => search = v),
+                    decoration: const InputDecoration(
+                      prefixIcon: Icon(Icons.search, size: 20),
+                      hintText: 'Search name, email or Staff ID',
+                    ),
+                  )),
+                  SizedBox(width: 158, child: DropdownButtonFormField<String>(
+                    key: ValueKey(statusFilter),
+                    initialValue: statusFilter,
+                    isExpanded: true,
+                    decoration: const InputDecoration(labelText: 'Status'),
+                    items: const [
+                      DropdownMenuItem(value: 'all', child: Text('All statuses')),
+                      DropdownMenuItem(value: 'active', child: Text('Active')),
+                      DropdownMenuItem(value: 'inactive', child: Text('Inactive')),
+                      DropdownMenuItem(value: 'suspended', child: Text('Suspended')),
+                    ],
+                    onChanged: (v) => setState(() => statusFilter = v ?? 'all'),
+                  )),
+                  AdminButton('Create Staff Account',
+                    icon: Icons.person_add_alt_1, onPressed: _createStaff),
+                  Text('${people.length} staff',
+                    style: const TextStyle(color: adminMuted, fontSize: 13)),
+                ],
+              ),
+            ),
+            const SizedBox(height: 18),
+            if (snapshot.connectionState == ConnectionState.waiting)
+              const LinearProgressIndicator(color: adminRose),
+            if (snapshot.hasData && people.isEmpty)
+              const AdminCard(child: Padding(
+                padding: EdgeInsets.symmetric(vertical: 18),
+                child: Text('No staff records yet. Create the first employee account.'),
+              )),
+            if (snapshot.hasData && people.isNotEmpty) LayoutBuilder(
+              builder: (context, size) {
+                final wide = size.maxWidth >= 920;
+                final directory = AdminCard(
+                  padding: EdgeInsets.zero,
+                  child: Column(children: [
+                    for (var i = 0; i < filtered.length; i++) ...[
+                      if (i > 0) const Divider(height: 1, color: adminBorder),
+                      Builder(builder: (context) {
+                        final person = filtered[i];
+                        final selectedRow = selectedUid == person.uid;
+                        return Material(
+                          color: selectedRow ? const Color(0xFFFFF6F4) : Colors.transparent,
+                          child: InkWell(
+                            onTap: () => setState(() => selectedUid = person.uid),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 15),
+                              child: Row(children: [
+                                CircleAvatar(
+                                  backgroundColor: const Color(0xFFF4E6E4),
+                                  foregroundColor: adminRose,
+                                  radius: 20,
+                                  child: Text(person.fullName.isNotEmpty
+                                      ? person.fullName[0].toUpperCase() : '?'),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(person.fullName, maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        fontSize: 14, color: adminDark,
+                                        fontWeight: FontWeight.w600)),
+                                    const SizedBox(height: 3),
+                                    Text(person.email, maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        color: adminMuted, fontSize: 12)),
+                                    const SizedBox(height: 4),
+                                    Text(person.staffId.isNotEmpty ? person.staffId
+                                      : person.eligibleRoles.map((r) => r.label).join(', '),
+                                      maxLines: 1, overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(color: adminMuted, fontSize: 11)),
+                                  ],
+                                )),
+                                const SizedBox(width: 8),
+                                _statusControl(person),
+                              ]),
+                            ),
+                          ),
+                        );
+                      }),
+                    ],
+                    if (filtered.isEmpty) const Padding(
+                      padding: EdgeInsets.all(24),
+                      child: Text('No staff match these filters.',
+                        style: TextStyle(color: adminMuted)),
+                    ),
+                  ]),
+                );
+                final details = selected == null
+                    ? const AdminCard(child: Padding(
+                        padding: EdgeInsets.symmetric(vertical: 30),
+                        child: Center(child: Text('Select an employee to view their details.',
+                          style: TextStyle(color: adminMuted))),
+                      ))
+                    : AdminCard(child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(selected.fullName,
+                            style: const TextStyle(color: adminDark,
+                              fontSize: 22, fontWeight: FontWeight.w700)),
+                          const SizedBox(height: 6),
+                          Text(selected.email,
+                            style: const TextStyle(color: adminMuted, fontSize: 13)),
+                          const SizedBox(height: 12),
+                          Text('Staff ID  ${selected.staffId.isEmpty ? 'Not assigned' : selected.staffId}',
+                            style: const TextStyle(color: adminDark,
+                              fontWeight: FontWeight.w600, fontSize: 13)),
+                          const SizedBox(height: 10),
+                          if (selected.eligibleRoles.isNotEmpty) Wrap(
+                            spacing: 6, runSpacing: 6,
+                            children: selected.eligibleRoles.map((role) => Chip(
+                              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                              backgroundColor: const Color(0xFFF8F3F2),
+                              side: const BorderSide(color: adminBorder),
+                              label: Text(role.label, style: const TextStyle(fontSize: 12)),
+                            )).toList(),
+                          ),
+                          const SizedBox(height: 16),
+                          Wrap(spacing: 8, runSpacing: 8, children: [
+                            AdminButton('Edit Details / Roles',
+                              outlined: true, icon: Icons.edit_outlined,
+                              onPressed: () => _editStaff(selected)),
+                            AdminButton('Record Training',
+                              outlined: true, icon: Icons.school_outlined,
+                              onPressed: () => _addTraining(selected)),
+                            AdminButton('Resend Setup Email',
+                              outlined: true, icon: Icons.mark_email_unread_outlined,
+                              onPressed: () => _resendSetupEmail(selected)),
+                          ]),
+                          const Divider(height: 28, color: adminBorder),
+                          const Text('Training Qualifications', style: TextStyle(
+                            fontSize: 16, fontWeight: FontWeight.w700, color: adminDark)),
+                          const SizedBox(height: 6),
+                          _qualifications(selected),
+                          const SizedBox(height: 16),
+                          SelectableText('Firebase UID: ${selected.uid}',
+                            style: const TextStyle(color: adminMuted, fontSize: 11)),
+                        ],
+                      ));
+                if (!wide) return Column(children: [
+                  directory, const SizedBox(height: 14), details,
+                ]);
+                return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Expanded(flex: 5, child: directory),
+                  const SizedBox(width: 14),
+                  Expanded(flex: 6, child: details),
+                ]);
+              },
+            ),
+          ]),
+        ),
+      );
+    },
+  );
+}
+
+/// Compact, accessible multiselect controls grouped by department.
+class _StaffRolePicker extends StatelessWidget {
+  const _StaffRolePicker({
+    required this.roles,
+    required this.enabled,
+    required this.onToggle,
+  });
+  final Set<StaffRole> roles;
+  final bool enabled;
+  final void Function(StaffRole role, bool selected) onToggle;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      _group('Park operations', const [
+        StaffRole.operationsManager,
+        StaffRole.attractionOperator,
+        StaffRole.admissionStaff,
+      ]),
+      const SizedBox(height: 12),
+      _group('Photo & guest services', const [
+        StaffRole.photographer,
+        StaffRole.photoCounterStaff,
+        StaffRole.customerSupport,
+      ]),
+      const SizedBox(height: 12),
+      _group('Business', const [StaffRole.marketingStaff]),
+    ],
+  );
+
+  Widget _group(String label, List<StaffRole> options) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(label, style: const TextStyle(fontSize: 12,
+        fontWeight: FontWeight.w600, color: adminMuted)),
+      const SizedBox(height: 7),
+      Wrap(spacing: 8, runSpacing: 5, children: [
+        for (final role in options)
+          FilterChip(
+            key: Key('staff-role-${role.code}'),
+            label: Text(role.label,
+              style: TextStyle(fontSize: 12,
+                color: roles.contains(role) ? adminDark : adminMuted)),
+            selected: roles.contains(role),
+            onSelected: enabled ? (value) => onToggle(role, value) : null,
+            selectedColor: const Color(0xFFF7E9E8),
+            backgroundColor: Colors.white,
+            checkmarkColor: adminRose,
+            side: BorderSide(color: roles.contains(role)
+              ? adminRose : adminBorder),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(7)),
+            showCheckmark: true,
+            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            visualDensity: VisualDensity.compact,
+          ),
+      ]),
+    ],
+  );
+}

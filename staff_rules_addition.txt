@@ -1,0 +1,89 @@
+    // =====================================================
+    // STAFF WORKFORCE RECORDS — Step 4
+    // Only privileged root admins can change identities/qualifications.
+    // Restricted staff MUST NOT be given the legacy `admin: true` claim.
+    // This is only the record layer; shift-based operational authorization
+    // will be enforced in the later backend integration phase.
+    // =====================================================
+    function workforceSuperAdmin() {
+      return isAdmin();
+    }
+
+    function workforceProfileValid(data) {
+      return data.keys().hasOnly([
+          'fullName', 'email', 'status', 'eligibleRoles', 'updatedAt'
+        ])
+        && data.keys().hasAll([
+          'fullName', 'email', 'status', 'eligibleRoles', 'updatedAt'
+        ])
+        && data.fullName is string
+        && data.fullName.size() >= 2
+        && data.fullName.size() <= 120
+        && data.email is string
+        && data.email.size() >= 5
+        && data.email.size() <= 254
+        && data.email.matches('^[^@ ]+@[^@ ]+\\.[^@ ]+$')
+        && data.status in ['active', 'inactive', 'suspended']
+        && data.eligibleRoles is list
+        && data.eligibleRoles.size() <= 7
+        && data.eligibleRoles.toSet().size() == data.eligibleRoles.size()
+        && data.eligibleRoles.toSet().hasOnly([
+          'operations_manager', 'attraction_operator', 'admission_staff',
+          'photographer', 'photo_counter_staff', 'marketing_staff',
+          'customer_support'
+        ])
+        && data.updatedAt == request.time;
+    }
+
+    match /staffProfiles/{staffUid} {
+      allow get: if workforceSuperAdmin()
+        || (signedIn() && request.auth.uid == staffUid);
+      allow list: if workforceSuperAdmin();
+      allow create, update: if workforceSuperAdmin()
+        && workforceProfileValid(request.resource.data);
+      allow delete: if false;
+    }
+
+    function workforceQualificationValid(data) {
+      return data.keys().hasOnly([
+          'staffUid', 'roleCode', 'title', 'status', 'attractionId',
+          'completedAt', 'expiresAt', 'updatedAt'
+        ])
+        && data.keys().hasAll([
+          'staffUid', 'roleCode', 'title', 'status', 'attractionId',
+          'completedAt', 'expiresAt', 'updatedAt'
+        ])
+        && data.staffUid is string
+        && data.staffUid.size() >= 1
+        && data.staffUid.size() <= 128
+        && data.staffUid.matches('^[^/ ]+$')
+        && data.roleCode in [
+          'operations_manager', 'attraction_operator', 'admission_staff',
+          'photographer', 'photo_counter_staff', 'marketing_staff',
+          'customer_support'
+        ]
+        && data.title is string
+        && data.title.size() >= 3
+        && data.title.size() <= 160
+        && data.status in ['approved', 'revoked']
+        && data.attractionId is string
+        && data.attractionId.size() <= 128
+        && (data.roleCode != 'attraction_operator'
+          || data.attractionId.size() > 0)
+        && data.completedAt is timestamp
+        && (data.expiresAt == null ||
+          (data.expiresAt is timestamp && data.expiresAt > data.completedAt))
+        && data.updatedAt == request.time;
+    }
+
+    match /staffQualifications/{qualificationId} {
+      allow get, list: if workforceSuperAdmin()
+        || (signedIn() && resource.data.staffUid == request.auth.uid);
+      allow create: if workforceSuperAdmin()
+        && workforceQualificationValid(request.resource.data);
+      allow update: if workforceSuperAdmin()
+        && resource.data.staffUid == request.resource.data.staffUid
+        && workforceQualificationValid(request.resource.data);
+      allow delete: if false;
+    }
+

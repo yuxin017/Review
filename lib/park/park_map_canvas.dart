@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:latlong2/latlong.dart';
 
 import '../attractions/models/attraction.dart';
 import '../attractions/widgets/attraction_widgets.dart';
@@ -8,6 +9,7 @@ import '../attractions/widgets/queue_attraction_card.dart';
 import 'park_visit.dart';
 import 'venue_configuration.dart';
 import 'venue_map.dart';
+import 'visitor_map_types.dart';
 
 class ParkMapCanvas extends StatelessWidget {
   const ParkMapCanvas({
@@ -20,6 +22,11 @@ class ParkMapCanvas extends StatelessWidget {
     this.selectedId,
     this.heatmap = false,
     this.density,
+    this.currentPosition,
+    this.currentAccuracyMeters,
+    this.approximateCurrentPosition = false,
+    this.teammates = const [],
+    this.onTeammate,
   });
 
   final ParkVisit visit;
@@ -30,6 +37,11 @@ class ParkMapCanvas extends StatelessWidget {
   final String? selectedId;
   final bool heatmap;
   final Map<String, dynamic>? density;
+  final LatLng? currentPosition;
+  final double? currentAccuracyMeters;
+  final bool approximateCurrentPosition;
+  final List<VisitorTeammatePin> teammates;
+  final ValueChanged<VisitorTeammatePin>? onTeammate;
 
   @override
   Widget build(BuildContext context) => ClipRRect(
@@ -43,8 +55,12 @@ class ParkMapCanvas extends StatelessWidget {
             visible: visible,
             onPlace: onPlace,
             origin: origin,
-            destination: destination,
-            density: heatmap ? density : null,
+            destination: destination,             density: heatmap ? density : null,
+             currentPosition: currentPosition,
+              currentAccuracyMeters: currentAccuracyMeters,
+              approximateCurrentPosition: approximateCurrentPosition,
+              teammates: teammates,
+             onTeammate: onTeammate,
           )
         : LayoutBuilder(
             builder: (context, constraints) {

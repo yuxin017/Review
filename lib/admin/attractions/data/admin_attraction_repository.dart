@@ -3,9 +3,10 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../../attractions/data/attraction_repository.dart';
 import '../../../attractions/models/attraction.dart';
 import 'admin_attraction_store.dart';
+import 'attraction_training_store.dart';
 
 /// Portal-only writes. The customer entry point never imports this repository.
-class AdminAttractionRepository implements AdminAttractionStore {
+class AdminAttractionRepository implements AdminAttractionStore, AttractionTrainingStore {
   AdminAttractionRepository({required FirebaseFirestore firestore})
     : _firestore = firestore,
       _reader = AttractionRepository(firestore: firestore);
@@ -106,6 +107,110 @@ class AdminAttractionRepository implements AdminAttractionStore {
       transaction.update(ref, {
         'status': AttractionStatus.closed.name,
         'deletedAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+      return null;
+    });
+    if (conflict != null) throw AttractionConflict(conflict);
+  }
+
+  // Step 13: create the attraction and its required operator course atomically.
+  // Both documents are committed or neither is saved.
+  @override
+  Future<void> createAttractionWithTraining(
+    Attraction attraction, {
+    required String courseTitle,
+  }) async {
+    final title = courseTitle.trim();
+    final titleError = AttractionTrainingPolicy.validateTitle(title);
+    if (titleError != null) throw ArgumentError(titleError);
+    if (attraction.placeKind != ParkPlaceKind.attractions) {
+      throw ArgumentError('Select a ride.');
+    }
+    final rideRef = _firestore.collection('attractions').doc(attraction.id);
+    final courseRef = _firestore.collection('staffTrainingCourses')
+        .doc(AttractionTrainingPolicy.courseId(attraction.id));
+    final conflict = await _firestore.runTransaction<String?>((transaction) async {
+      final existingRide = await transaction.get(rideRef);
+      final existingCourse = await transaction.get(courseRef);
+      if (existingRide.exists) {
+        if (existingRide.data()?['deletedAt'] == null &&
+            existingCourse.exists &&
+            existingCourse.data()?['attractionId'] == attraction.id &&
+            existingCourse.data()?['title'] == title &&
+            _sameFields(
+              Attraction.fromMap(existingRide.id, existingRide.data()!),
+              attraction,
+            )) {
+          return null; // Safe retry after an uncertain network response.
+        }
+        return 'This attraction already exists.';
+      }
+      if (existingCourse.exists) return 'This course already exists.';
+      transaction.set(rideRef, {
+        ...attraction.toMap(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+      transaction.set(courseRef, {
+        'title': title,
+        'roleCode': 'attraction_operator',
+        'attractionId': attraction.id,
+        'active': true,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+      return null;
+    });
+    if (conflict != null) throw AttractionConflict(conflict);
+  }
+
+  @override
+  Stream<List<String>> watchRequiredTraining(String attractionId) =>
+      _firestore.collection('staffTrainingCourses')
+          .where('attractionId', isEqualTo: attractionId)
+          .snapshots()
+          .map((snapshot) => snapshot.docs
+              .where((doc) => doc.data()['roleCode'] == 'attraction_operator')
+              .map((doc) => doc.data()['active'] == true
+                  ? doc.data()['title']?.toString() ?? ''
+                  : '${doc.data()['title']?.toString() ?? ''} (Archived)')
+              .where((title) => title.isNotEmpty)
+              .toList()..sort());
+
+  // One-time migration for attractions created before Step 13.
+  @override
+  Future<void> addRequiredTrainingToExistingRide(
+    String attractionId, {
+    required String courseTitle,
+  }) async {
+    final title = courseTitle.trim();
+    final titleError = AttractionTrainingPolicy.validateTitle(title);
+    if (titleError != null) throw ArgumentError(titleError);
+    final existingLinked = await _firestore.collection('staffTrainingCourses')
+        .where('attractionId', isEqualTo: attractionId).limit(1).get();
+    if (existingLinked.docs.isNotEmpty) {
+      throw ArgumentError('This attraction already has a course.');
+    }
+    final otherOperatorCourses = await _firestore.collection('staffTrainingCourses')
+        .where('roleCode', isEqualTo: 'attraction_operator').get();
+    if (otherOperatorCourses.docs.any((doc) =>
+        doc.data()['title']?.toString().toLowerCase() == title.toLowerCase())) {
+      throw ArgumentError('A course with this name already exists. Link it first.');
+    }
+    final rideRef = _firestore.collection('attractions').doc(attractionId);
+    final courseRef = _firestore.collection('staffTrainingCourses')
+        .doc(AttractionTrainingPolicy.courseId(attractionId));
+    final conflict = await _firestore.runTransaction<String?>((transaction) async {
+      final ride = await transaction.get(rideRef);
+      final course = await transaction.get(courseRef);
+      if (!ride.exists || ride.data()?['deletedAt'] != null) {
+        return 'This attraction is no longer available.';
+      }
+      if (course.exists) return 'This attraction already has a course.';
+      transaction.set(courseRef, {
+        'title': title,
+        'roleCode': 'attraction_operator',
+        'attractionId': attractionId,
+        'active': true,
         'updatedAt': FieldValue.serverTimestamp(),
       });
       return null;

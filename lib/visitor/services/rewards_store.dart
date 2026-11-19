@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import '../models/rewards.dart';
+import '../models/membership_policy.dart';
 import '../models/tickets.dart';
 import 'rewards_repository.dart';
 import 'ticket_journey.dart' show bookingError;
@@ -9,6 +10,7 @@ class RewardsStore extends ChangeNotifier {
   final RewardsRepository repository;
   RewardsStore(this.repository);
   int balance = 0;
+  MembershipPolicy membershipPolicy = MembershipPolicy.defaults;
   List<ParkReward> catalogue = [];
   List<RewardVoucher> vouchers = [];
   List<LoyaltyEvent> events = [];
@@ -26,7 +28,7 @@ class RewardsStore extends ChangeNotifier {
             if (_disposed) return;
             apply(value);
             _ready.add(key);
-            loading = _ready.length < 5;
+            loading = _ready.length < 6;
             notifyListeners();
           },
           onError: (Object e) {
@@ -41,6 +43,8 @@ class RewardsStore extends ChangeNotifier {
     }
 
     listen('balance', repository.balance(), (v) => balance = v);
+    listen('membership', repository.membershipPolicy(),
+        (v) => membershipPolicy = v);
     listen('catalogue', repository.catalogue(), (v) => catalogue = v);
     listen('vouchers', repository.vouchers(), (v) => vouchers = v);
     listen('events', repository.events(), (v) => events = v);
@@ -49,7 +53,8 @@ class RewardsStore extends ChangeNotifier {
 
   int get lifetimeEarned =>
       events.where((e) => e.delta > 0).fold(0, (sum, e) => sum + e.delta);
-  RewardsTier get tier => RewardsTier.forEarned(lifetimeEarned);
+  RewardsTier get tier =>
+      RewardsTier.forEarned(lifetimeEarned, membershipPolicy);
   List<TicketOrder> get uncollected => orders
       .where(
         (o) =>

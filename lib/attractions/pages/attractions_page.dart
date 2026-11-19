@@ -11,6 +11,9 @@ import '../models/queue_policy.dart';
 import '../widgets/attraction_widgets.dart';
 import '../widgets/queue_attraction_card.dart';
 import 'attraction_details_page.dart';
+import '../../park/visitor_gps.dart';
+import '../../park/venue_map.dart';
+import 'package:geolocator/geolocator.dart';
 import 'attraction_times_page.dart';
 import '../../reservations/data/reservation_store.dart';
 import '../../reservations/pages/reserve_attraction_page.dart';
@@ -52,6 +55,8 @@ class _AttractionsPageState extends State<AttractionsPage> {
   final _search = TextEditingController();
   String _filter = 'Recommended';
   Attraction? _origin;
+  Position? _nearbyPosition;
+  String? _nearbyError;
   late DateTime _day;
   Timer? _clock;
   DateTime? _lastSlotUpdate;
@@ -146,51 +151,35 @@ class _AttractionsPageState extends State<AttractionsPage> {
   }
 
   Future<void> _chooseOrigin(List<Attraction> attractions) async {
-    final origin = await showModalBottomSheet<Attraction>(
-      context: context,
-      isScrollControlled: true,
-      builder: (context) => SafeArea(
-        child: SizedBox(
-          height: math.min(480, MediaQuery.sizeOf(context).height * .7),
-          child: Column(
-            children: [
-              const Padding(
-                padding: EdgeInsets.all(20),
-                child: Text(
-                  'Where are you in the park?',
-                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
-                ),
-              ),
-              const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 20),
-                child: Text(
-                  'Choose your starting attraction to sort nearby places.',
-                ),
-              ),
-              Expanded(
-                child: ListView(
-                  children: [
-                    for (final attraction in attractions)
-                      ListTile(
-                        leading: const Icon(
-                          Icons.place_outlined,
-                          color: queueRose,
-                        ),
-                        title: Text(attraction.name),
-                        onTap: () => Navigator.pop(context, attraction),
-                      ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-    if (origin != null && mounted) {
+    try {
+      final p = await VisitorGps.locate();
+      if (!mounted) return;
+      if (!VisitorGps.trusted(p)) {
+        setState(() {
+          _nearbyPosition = null;
+          _origin = null;
+          _nearbyError = VisitorGps.reason(p);
+          _filter = 'Nearby';
+        });
+        return;
+      }
+      if (attractions.isEmpty) return;
+      final closest = attractions.reduce((a,b) =>
+        VisitorGps.metres(p, venueCoordinate(a, attractions)) <=
+        VisitorGps.metres(p, venueCoordinate(b, attractions)) ? a : b);
       setState(() {
-        _origin = origin;
+        _origin = closest;
+        _nearbyPosition = p;
+        _nearbyError = null;
         _filter = 'Nearby';
+      });
+    } catch (e) {
+      if (mounted) setState(() {
+        _filter = 'Nearby';
+        _origin = null;
+        _nearbyPosition = null;
+        _nearbyError = e is StateError ? e.message :
+          'Current location unavailable. Try again when you are on campus.';
       });
     }
   }
@@ -392,9 +381,10 @@ class _AttractionsPageState extends State<AttractionsPage> {
                     .map((value) => value.toLowerCase())
                     .toSet();
                 final visible = all.where((a) {
-                  if (!a.name.toLowerCase().contains(query)) return false;
+                  if (!'${a.name} ${a.category}'.toLowerCase().contains(query)) return false;
                   if (_filter == 'Recommended') {
-                    return a.status == AttractionStatus.open &&
+                    return (!all.any((v) => v.status == AttractionStatus.open) ||
+                        a.status == AttractionStatus.open) &&
                         (widget.visitorHeightCm == null ||
                             widget.visitorHeightCm! >= a.minHeightCm);
                   }
@@ -404,13 +394,15 @@ class _AttractionsPageState extends State<AttractionsPage> {
                   }
                   return true;
                 }).toList();
-                if (_filter == 'Nearby' && _origin != null) {
-                  visible.sort((a, b) {
-                    double distance(Attraction a) =>
-                        math.pow(a.mapX - _origin!.mapX, 2).toDouble() +
-                        math.pow(a.mapY - _origin!.mapY, 2).toDouble();
-                    return distance(a).compareTo(distance(b));
-                  });
+                if (_filter == 'Nearby') {
+                  if (!VisitorGps.trusted(_nearbyPosition)) {
+                    visible.clear();
+                  } else {
+                    final p = _nearbyPosition!;
+                    visible.sort((a, b) =>
+                      VisitorGps.metres(p, venueCoordinate(a, all))
+                        .compareTo(VisitorGps.metres(p, venueCoordinate(b, all))));
+                  }
                 }
                 if (_filter == 'Recommended') {
                   visible.sort((a, b) {
@@ -605,7 +597,7 @@ class _AttractionsPageState extends State<AttractionsPage> {
                       Padding(
                         padding: const EdgeInsets.only(top: 8),
                         child: Text(
-                          'Starting at ${_origin!.name}',
+                          'Sorted by current position • distances are approximate',
                           style: const TextStyle(
                             fontSize: 11,
                             color: Color(0xFF7E7472),
@@ -613,6 +605,11 @@ class _AttractionsPageState extends State<AttractionsPage> {
                         ),
                       ),
                     const SizedBox(height: 12),
+                    if (_filter == 'Recommended' && all.isNotEmpty &&
+                        !all.any((p) => p.status == AttractionStatus.open))
+                      Padding(padding: const EdgeInsets.only(bottom: 10),
+                        child: Text('No rides are open right now. Showing rides for planning.',
+                          style: const TextStyle(color: queueRose, fontSize: 12))),
                     if (snapshot.hasError)
                       AttractionMessage(
                         icon: Icons.cloud_off_outlined,
@@ -633,6 +630,16 @@ class _AttractionsPageState extends State<AttractionsPage> {
                         title: 'No attractions available',
                         message:
                             'There are no attractions to display yet. Please check again later.',
+                      )
+                    else if (_filter == 'Nearby' &&
+                        !VisitorGps.trusted(_nearbyPosition))
+                      AttractionMessage(
+                        icon: Icons.location_off_outlined,
+                        title: 'Nearby is available on campus',
+                        message: _nearbyError ?? VisitorGps.reason(_nearbyPosition) ??
+                          'Use GPS when you reach TAR UMT Penang.',
+                        action: 'Check my location',
+                        onAction: () => _chooseOrigin(all),
                       )
                     else if (visible.isEmpty)
                       AttractionMessage(

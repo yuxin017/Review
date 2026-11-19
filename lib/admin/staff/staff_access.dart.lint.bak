@@ -1,0 +1,157 @@
+/// Staff access model for the Theme Park Management System.
+///
+/// IMPORTANT: This is a shared permission vocabulary and a UI-side access
+/// preview. It is NOT a security boundary. Every sensitive Firestore write,
+/// callable function, and backend endpoint must independently verify the
+/// authenticated staff member's role, active shift, assignment, and training.
+/// Never grant `admin: true` to restricted staff accounts as a workaround.
+
+enum StaffRole {
+  superAdmin('super_admin', 'Super Admin'),
+  operationsManager('operations_manager', 'Operations Manager'),
+  attractionOperator('attraction_operator', 'Attraction Operator'),
+  admissionStaff('admission_staff', 'Admission Staff'),
+  photographer('photographer', 'Photographer'),
+  photoCounterStaff('photo_counter_staff', 'Photo Counter Staff'),
+  marketingStaff('marketing_staff', 'Marketing Staff'),
+  customerSupport('customer_support', 'Customer Support');
+
+  const StaffRole(this.code, this.label);
+  final String code;
+  final String label;
+
+  static StaffRole? fromCode(String code) {
+    for (final role in StaffRole.values) {
+      if (role.code == code) return role;
+    }
+    return null;
+  }
+}
+
+enum StaffPermission {
+  manageStaff,
+  manageQualifications,
+  manageShifts,
+  approveLeave,
+  manageAttractions,
+  operateAssignedAttraction,
+  checkInAttraction,
+  validateAdmission,
+  uploadPhotos,
+  fulfillPhotoOrders,
+  managePromotions,
+  handleSupportCases,
+  viewCrowdMonitoring,
+  viewReports,
+  manageTicketPackages,
+  manageReservations,
+}
+
+/// Permissions associated with a JOB, not with a permanent account.
+/// The published shift and qualification checks still apply below.
+class StaffRolePermissions {
+  StaffRolePermissions._();
+
+  static const Map<StaffRole, Set<StaffPermission>> grants = {
+    StaffRole.operationsManager: {
+      StaffPermission.manageShifts,
+      StaffPermission.approveLeave,
+      StaffPermission.manageAttractions,
+      StaffPermission.manageReservations,
+      StaffPermission.viewCrowdMonitoring,
+      StaffPermission.viewReports,
+    },
+    StaffRole.attractionOperator: {
+      StaffPermission.operateAssignedAttraction,
+      StaffPermission.checkInAttraction,
+    },
+    StaffRole.admissionStaff: {StaffPermission.validateAdmission},
+    StaffRole.photographer: {StaffPermission.uploadPhotos},
+    StaffRole.photoCounterStaff: {StaffPermission.fulfillPhotoOrders},
+    StaffRole.marketingStaff: {StaffPermission.managePromotions},
+    StaffRole.customerSupport: {StaffPermission.handleSupportCases},
+  };
+}
+
+/// An approved/published assignment. Times must be timezone-aware in storage;
+/// Firestore Timestamp values can be converted to DateTime on the client.
+class StaffShift {
+  const StaffShift({
+    required this.id,
+    required this.role,
+    required this.startsAt,
+    required this.endsAt,
+    required this.published,
+    this.attractionIds = const {},
+  }) : assert(endsAt != startsAt);
+
+  final String id;
+  final StaffRole role;
+  final DateTime startsAt;
+  final DateTime endsAt;
+  final bool published;
+  final Set<String> attractionIds;
+
+  bool activeAt(DateTime when) =>
+      published &&
+      endsAt.isAfter(startsAt) &&
+      !when.isBefore(startsAt) &&
+      when.isBefore(endsAt);
+}
+
+/// UI-side representation of the permissions returned by trusted services.
+/// `eligibleRoles`, `qualifiedAttractionIds`, and `verifiedSuperAdmin` MUST
+/// originate from server-authorized records/claims, never user-editable forms.
+class StaffAccess {
+  const StaffAccess({
+    required this.accountActive,
+    required this.eligibleRoles,
+    required this.shifts,
+    this.qualifiedAttractionIds = const {},
+    this.verifiedSuperAdmin = false,
+  });
+
+  final bool accountActive;
+  final bool verifiedSuperAdmin;
+  final Set<StaffRole> eligibleRoles;
+  final Set<String> qualifiedAttractionIds;
+  final List<StaffShift> shifts;
+
+  bool can(
+    StaffPermission permission, {
+    String? attractionId,
+    DateTime? at,
+  }) {
+    if (!accountActive) return false;
+
+    final rideOperation =
+        permission == StaffPermission.operateAssignedAttraction ||
+        permission == StaffPermission.checkInAttraction;
+
+    // Even a Super Admin must be trained and assigned to operate a ride.
+    // Super Admin can administer records, but is not automatically a ride operator.
+    if (verifiedSuperAdmin && !rideOperation) return true;
+
+    if (rideOperation &&
+        (attractionId == null ||
+            attractionId.isEmpty ||
+            !qualifiedAttractionIds.contains(attractionId))) {
+      return false;
+    }
+
+    final now = at ?? DateTime.now();
+    for (final shift in shifts) {
+      if (!shift.activeAt(now)) continue;
+      if (!eligibleRoles.contains(shift.role)) continue;
+      if (!(StaffRolePermissions.grants[shift.role] ?? const {})
+          .contains(permission)) {
+        continue;
+      }
+      if (rideOperation && !shift.attractionIds.contains(attractionId)) {
+        continue;
+      }
+      return true;
+    }
+    return false;
+  }
+}

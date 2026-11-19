@@ -4,10 +4,13 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/rewards.dart';
+import '../models/membership_policy.dart';
 import '../models/tickets.dart';
 
 abstract class RewardsRepository {
   Stream<int> balance();
+  Stream<MembershipPolicy> membershipPolicy() =>
+      Stream.value(MembershipPolicy.defaults);
   Stream<List<ParkReward>> catalogue();
   Stream<List<RewardVoucher>> vouchers();
   Stream<List<LoyaltyEvent>> events();
@@ -23,6 +26,12 @@ class FirebaseRewardsRepository extends RewardsRepository {
   FirebaseRewardsRepository({FirebaseFirestore? firestore, String? userId})
     : db = firestore ?? FirebaseFirestore.instance,
       uid = userId ?? FirebaseAuth.instance.currentUser!.uid;
+  @override
+  Stream<MembershipPolicy> membershipPolicy() => db
+      .collection('parkSettings')
+      .doc('membership')
+      .snapshots()
+      .map((snapshot) => MembershipPolicy.fromMap(snapshot.data()));
   @override
   Stream<int> balance() => db
       .collection('visitors')

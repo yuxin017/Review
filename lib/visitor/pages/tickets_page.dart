@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import '../models/tickets.dart';
 import '../services/ticket_repository.dart';
@@ -20,7 +21,8 @@ class TicketsPage extends StatefulWidget {
   State<TicketsPage> createState() => TicketsPageState();
 }
 
-class TicketsPageState extends State<TicketsPage> {
+class TicketsPageState extends State<TicketsPage>
+    with WidgetsBindingObserver {
   late final currency = TicketDisplayCurrency(
     fetchRates: () => ApplicationApi().post('/v1/park/exchangeRates'),
   );
@@ -44,15 +46,31 @@ class TicketsPageState extends State<TicketsPage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     journey = TicketJourney(
       widget.repository ?? FirebaseTicketRepository(),
       widget.pendingStore ?? PendingTicketCheckoutStore(),
     );
-    journey.start();
+    unawaited(journey.start().then((_) {
+      if (!mounted) return;
+      if (journey.completed != null) {
+        showSection('success');
+      } else if (journey.pending != null) {
+        showSection('payment');
+      }
+    }));
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      journey.pruneUnavailableCartLines();
+    }
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     currency.dispose();
     journey.dispose();
     super.dispose();
@@ -60,6 +78,7 @@ class TicketsPageState extends State<TicketsPage> {
 
   void showSection(String screen) {
     if (!mounted) return;
+    if (screen == 'cart') journey.pruneUnavailableCartLines();
     setState(() {
       _history.clear();
       _screen = screen;
@@ -67,6 +86,19 @@ class TicketsPageState extends State<TicketsPage> {
   }
 
   void _go(String screen) {
+    if (screen == 'cart' || screen == 'guests') {
+      journey.pruneUnavailableCartLines();
+      if (screen == 'guests' &&
+          (journey.cart.isEmpty || journey.pending != null ||
+              journey.hasInvalidVisitDate)) {
+        if (journey.cart.isEmpty && journey.cartNotice == null) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('Choose a valid pass before checking out.'),
+          ));
+        }
+        return;
+      }
+    }
     setState(() {
       _history.add(_screen);
       _screen = screen;
@@ -122,7 +154,7 @@ class TicketsPageState extends State<TicketsPage> {
   }
 
   Future<void> _payment() async {
-    if (await journey.prepareCurrency(currency.selected) && mounted) {
+    if (await journey.prepareCurrency('MYR') && mounted) {
       _go('payment');
     }
   }

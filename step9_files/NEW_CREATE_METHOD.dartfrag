@@ -1,0 +1,190 @@
+  Future<void> _createStaff() async {
+    final formKey = GlobalKey<FormState>();
+    final name = TextEditingController();
+    final email = TextEditingController();
+    final roles = <StaffRole>{};
+    String? roleError;
+    String? formError;
+    var busy = false;
+    try {
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) => StatefulBuilder(
+          builder: (context, update) => Dialog(
+            backgroundColor: Colors.white,
+            surfaceTintColor: Colors.transparent,
+            insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+            child: SizedBox(
+              width: math.min(620.0, MediaQuery.sizeOf(context).width - 44.0),
+              height: math.min(650.0, MediaQuery.sizeOf(context).height - 48.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(28, 24, 28, 16),
+                    child: Row(children: [
+                      const Expanded(child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Create Staff Account', style: TextStyle(
+                            fontSize: 25, fontWeight: FontWeight.w700, color: adminDark)),
+                          SizedBox(height: 5),
+                          Text('Add an employee using an email they can access.',
+                            style: TextStyle(fontSize: 13, color: adminMuted)),
+                        ],
+                      )),
+                      IconButton(
+                        tooltip: 'Close',
+                        onPressed: busy ? null : () => Navigator.pop(dialogContext),
+                        icon: const Icon(Icons.close, color: adminMuted),
+                      ),
+                    ]),
+                  ),
+                  const Divider(height: 1, color: adminBorder),
+                  Expanded(
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.fromLTRB(28, 20, 28, 18),
+                      child: Form(
+                        key: formKey,
+                        autovalidateMode: AutovalidateMode.onUserInteraction,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            const Text('Full name *', style: TextStyle(
+                              fontWeight: FontWeight.w600, fontSize: 13, color: adminDark)),
+                            const SizedBox(height: 8),
+                            TextFormField(
+                              key: const Key('staff-create-name'),
+                              controller: name,
+                              enabled: !busy,
+                              textCapitalization: TextCapitalization.words,
+                              autofillHints: const [AutofillHints.name],
+                              decoration: const InputDecoration(
+                                hintText: 'e.g. Loo Chee Beng',
+                                prefixIcon: Icon(Icons.person_outline, size: 20)),
+                              validator: StaffFormValidation.fullName,
+                            ),
+                            const SizedBox(height: 16),
+                            const Text('Employee email *', style: TextStyle(
+                              fontWeight: FontWeight.w600, fontSize: 13, color: adminDark)),
+                            const SizedBox(height: 8),
+                            TextFormField(
+                              key: const Key('staff-create-email'),
+                              controller: email,
+                              enabled: !busy,
+                              keyboardType: TextInputType.emailAddress,
+                              autofillHints: const [AutofillHints.email],
+                              autocorrect: false,
+                              decoration: const InputDecoration(
+                                hintText: 'e.g. staff@gmail.com',
+                                prefixIcon: Icon(Icons.alternate_email, size: 20)),
+                              validator: StaffFormValidation.email,
+                            ),
+                            const SizedBox(height: 8),
+                            const Text('A password setup link will be sent to this inbox.',
+                              style: TextStyle(fontSize: 12, color: adminMuted)),
+                            const SizedBox(height: 22),
+                            const Divider(height: 1, color: adminBorder),
+                            const SizedBox(height: 18),
+                            const Row(children: [
+                              Expanded(child: Text('Eligible roles *', style: TextStyle(
+                                fontSize: 15, fontWeight: FontWeight.w700, color: adminDark))),
+                              Text('Select at least one', style: TextStyle(
+                                fontSize: 12, color: adminMuted)),
+                            ]),
+                            const SizedBox(height: 10),
+                            _StaffRolePicker(
+                              roles: roles,
+                              enabled: !busy,
+                              onToggle: (role, selected) => update(() {
+                                if (selected) { roles.add(role); } else { roles.remove(role); }
+                                roleError = null;
+                              }),
+                            ),
+                            if (roleError != null) Padding(
+                              padding: const EdgeInsets.only(top: 8),
+                              child: Text(roleError!, style: const TextStyle(
+                                fontSize: 12, color: Color(0xFFB42318))),
+                            ),
+                            const SizedBox(height: 14),
+                            const Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                              Icon(Icons.info_outline, color: adminMuted, size: 17),
+                              SizedBox(width: 9),
+                              Expanded(child: Text(
+                                'New staff start Inactive. A verified email, training and approved shift are required for operational access.',
+                                style: TextStyle(fontSize: 12, color: adminMuted, height: 1.4))),
+                            ]),
+                            if (formError != null) Padding(
+                              padding: const EdgeInsets.only(top: 12),
+                              child: Text(formError!, style: const TextStyle(
+                                fontSize: 12, color: Color(0xFFB42318))),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                  const Divider(height: 1, color: adminBorder),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(28, 16, 28, 18),
+                    child: Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+                      TextButton(
+                        onPressed: busy ? null : () => Navigator.pop(dialogContext),
+                        child: const Text('Cancel'),
+                      ),
+                      const SizedBox(width: 10),
+                      AdminButton(
+                        busy ? 'Creating...' : 'Create Staff',
+                        icon: Icons.person_add_alt_1,
+                        onPressed: busy ? null : () async {
+                          final fieldsValid = formKey.currentState?.validate() ?? false;
+                          if (roles.isEmpty) {
+                            update(() => roleError = 'Choose at least one eligible role.');
+                          }
+                          if (!fieldsValid || roles.isEmpty) return;
+                          update(() { busy = true; formError = null; });
+                          try {
+                            final created = await _onboarding.createStaff(
+                              fullName: name.text.trim(),
+                              email: email.text.trim().toLowerCase(),
+                              eligibleRoles: roles,
+                            );
+                            if (mounted) setState(() {
+                              selectedUid = created.uid;
+                              error = null;
+                              notice = 'Created ${created.staffId}. Staff account is Inactive.';
+                            });
+                            try {
+                              await _onboarding.sendPasswordSetupEmail(created.email);
+                              if (mounted) setState(() {
+                                notice = 'Created ${created.staffId}. Setup email requested for ${created.email}. Verify the inbox and email address before activation.';
+                              });
+                            } catch (mailError) {
+                              if (mounted) setState(() {
+                                error = 'Staff account ${created.staffId} WAS CREATED, but setup email failed: ${_message(mailError)}. Use Resend Setup Email; do not create a second account.';
+                              });
+                            }
+                            if (dialogContext.mounted) Navigator.pop(dialogContext);
+                          } catch (e) {
+                            if (dialogContext.mounted) update(() => formError = _message(e));
+                          } finally {
+                            if (dialogContext.mounted) update(() => busy = false);
+                          }
+                        },
+                      ),
+                    ]),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    } finally {
+      name.dispose();
+      email.dispose();
+    }
+  }
+

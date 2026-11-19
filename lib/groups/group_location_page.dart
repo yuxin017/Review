@@ -2,14 +2,15 @@ import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
-import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
-import 'package:url_launcher/url_launcher.dart';
 import '../attractions/widgets/queue_attraction_card.dart';
 import '../reservations/widgets/reservation_widgets.dart';
 import 'group_repository.dart';
 import 'group_pages.dart';
 import '../park/venue_map.dart';
+import '../park/visitor_gps.dart';
+import '../park/visitor_navigation_page.dart';
+import 'group_live_sharing.dart';
 
 class GroupLocationPage extends StatefulWidget {
   final GroupRepository repository;
@@ -27,143 +28,66 @@ class _GroupLocationPageState extends State<GroupLocationPage> {
   late final locations = widget.repository.locations(widget.group.id),
       members = widget.repository.members(widget.group.id);
   final map = MapController();
-  StreamSubscription<Position>? positions;
   Timer? timer;
-  bool sharing = false, busy = false, publishing = false;
-  DateTime? lastPublished;
+  bool busy = false;
   String? error;
+  bool get sharing => GroupLiveSharing.instance.activeGroupId.value == widget.group.id;
+
   @override
   void initState() {
     super.initState();
+    GroupLiveSharing.instance.activeGroupId.addListener(_changed);
     timer = Timer.periodic(const Duration(seconds: 20), (_) {
       if (mounted) setState(() {});
     });
   }
 
+  void _changed() {if (mounted) setState(() {});}
+
   @override
   void dispose() {
-    positions?.cancel();
     timer?.cancel();
+    GroupLiveSharing.instance.activeGroupId.removeListener(_changed);
     map.dispose();
-    if (sharing) {
-      unawaited(
-        widget.repository
-            .request('location', {'groupId': widget.group.id, 'sharing': false})
-            .then<void>((_) {})
-            .catchError((Object _) {}),
-      );
-    }
     super.dispose();
-  }
-
-  Future<void> publish(Position value) async {
-    if (publishing || !mounted) return;
-    if (lastPublished != null &&
-        DateTime.now().difference(lastPublished!) <
-            const Duration(seconds: 10)) {
-      return;
-    }
-    publishing = true;
-    try {
-      await widget.repository.request('location', {
-        'groupId': widget.group.id,
-        'latitude': value.latitude,
-        'longitude': value.longitude,
-        'accuracy': value.accuracy,
-      });
-      lastPublished = DateTime.now();
-      if (mounted) setState(() => error = null);
-    } catch (e) {
-      if (mounted) setState(() => error = e.toString());
-    } finally {
-      publishing = false;
-    }
   }
 
   Future<void> toggle(bool value) async {
     if (busy) return;
-    setState(() {
-      busy = true;
-      error = null;
-    });
+    setState(() {busy = true; error = null;});
     try {
       if (value) {
-        var permission = await Geolocator.checkPermission();
-        if (permission == LocationPermission.denied) {
-          permission = await Geolocator.requestPermission();
-        }
-        if (permission == LocationPermission.denied ||
-            permission == LocationPermission.deniedForever) {
-          throw StateError(
-            'Allow location access in your browser or device settings to share your location.',
-          );
-        }
-        final current = await Geolocator.getCurrentPosition(
-          locationSettings: const LocationSettings(
-            accuracy: LocationAccuracy.high,
-            timeLimit: Duration(seconds: 30),
-          ),
-        );
-        await widget.repository.request('location', {
-          'groupId': widget.group.id,
-          'latitude': current.latitude,
-          'longitude': current.longitude,
-          'accuracy': current.accuracy,
-        });
-        lastPublished = DateTime.now();
-        if (!mounted) {
-          await widget.repository.request('location', {
-            'groupId': widget.group.id,
-            'sharing': false,
-          });
-          return;
-        }
-        sharing = true;
-        positions =
-            Geolocator.getPositionStream(
-              locationSettings: const LocationSettings(
-                accuracy: LocationAccuracy.high,
-                distanceFilter: 5,
-              ),
-            ).listen(
-              publish,
-              onError: (Object e) {
-                if (mounted) {
-                  setState(
-                    () => error =
-                        'Your location could not be updated. Check location permission and your connection.',
-                  );
-                }
-              },
-            );
+        await GroupLiveSharing.instance.start(widget.group.id, widget.repository);
       } else {
-        await positions?.cancel();
-        positions = null;
-        await widget.repository.request('location', {
-          'groupId': widget.group.id,
-          'sharing': false,
-        });
-        sharing = false;
+        await GroupLiveSharing.instance.stop();
       }
     } catch (e) {
-      if (mounted) setState(() => error = e.toString());
+      if (mounted) setState(() => error = e is StateError
+          ? e.message : 'Could not update location sharing. Try again.');
     } finally {
       if (mounted) setState(() => busy = false);
     }
   }
 
   Future<void> navigate(GroupRecord location) async {
-    final uri = Uri.https('www.google.com', '/maps/dir/', {
-      'api': '1',
-      'destination':
-          '${location.data['latitude']},${location.data['longitude']}',
-      'travelmode': 'walking',
-    });
-    if (!await launchUrl(uri, mode: LaunchMode.externalApplication) &&
-        mounted) {
-      setState(
-        () => error = 'Unable to open walking directions. Please try again.',
-      );
+    try {
+      final p = await VisitorGps.locate();
+      if (!VisitorGps.trusted(p)) {
+        throw StateError(VisitorGps.reason(p) ?? 'You are outside the park.');
+      }
+      final lat = (location.data['latitude'] as num).toDouble();
+      final lon = (location.data['longitude'] as num).toDouble();
+      if (!VisitorGps.inside(lat, lon)) {
+        throw StateError('This teammate is not currently on the park map.');
+      }
+      if (!mounted) return;
+      await Navigator.push(context, MaterialPageRoute<void>(
+        builder: (_) => VisitorNavigationPage(
+          destinationName: 'My teammate', destination: LatLng(lat, lon)),
+      ));
+    } catch (e) {
+      if (mounted) setState(() => error = e is StateError ? e.message :
+          'Could not start walking directions. Try again.');
     }
   }
 
@@ -175,8 +99,13 @@ class _GroupLocationPageState extends State<GroupLocationPage> {
       builder: (context, snapshot) {
         final fresh = (snapshot.data ?? <GroupRecord>[]).where((record) {
           final expires = record.data['expiresAt'];
-          return expires is Timestamp &&
-              expires.toDate().isAfter(DateTime.now());
+          return expires is Timestamp &&               expires.toDate().isAfter(DateTime.now()) &&
+               record.data['latitude'] is num &&
+               record.data['longitude'] is num &&
+               record.data['accuracy'] is num &&
+               (record.data['accuracy'] as num) <= VisitorGps.maxAccuracyMeters &&
+               VisitorGps.inside((record.data['latitude'] as num).toDouble(),
+                 (record.data['longitude'] as num).toDouble());
         }).toList();
         return ListView(
           padding: const EdgeInsets.all(18),
@@ -189,7 +118,7 @@ class _GroupLocationPageState extends State<GroupLocationPage> {
                   style: TextStyle(fontWeight: FontWeight.w700),
                 ),
                 subtitle: const Text(
-                  'Visible to this group while this page is open. Updates expire after two minutes.',
+                  'Only this group can see your location. Sharing continues while the app is in the foreground. Stop anytime.',
                 ),
                 value: sharing,
                 onChanged: busy ? null : toggle,

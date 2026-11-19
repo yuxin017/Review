@@ -20,6 +20,7 @@ class FirebaseParkAdminRepository implements ParkAdminRepository {
     if (![
       'campaigns',
       'rewardCatalogue',
+      'rewardVouchers',
       'parkWeather',
       'landmarkReferences',
       'attractions',

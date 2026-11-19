@@ -4,6 +4,7 @@ import 'firebase_environment.dart';
 import 'splash_screen.dart';
 import 'auth/auth_gate.dart';
 import 'admin/admin_portal.dart';
+import 'admin/staff/staff_portal.dart';
 import 'admin/cameras/attraction_camera_store.dart';
 import 'admin/cameras/camera_station_page.dart';
 import 'kiosk/photo_kiosk.dart';
@@ -39,6 +40,7 @@ class ThemeParkApp extends StatelessWidget {
       initialRoute: initialRoute,
       routes: {
         '/admin': (context) => const AdminPortal(),
+        '/staff': (context) => const StaffPortal(),
         if (defaultTargetPlatform == TargetPlatform.android && !kIsWeb)
           '/camera': (context) => AdminPortal(
             staffBuilder: (firebase, user) => CameraStationPage(

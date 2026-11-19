@@ -1,0 +1,482 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+
+import '../../firebase_options.dart';
+import 'staff_records.dart';
+import 'staff_records_repository.dart';
+import 'staff_portal_policy.dart';
+
+/// Uses a DIFFERENT Firebase app than AdminPortal and the visitor app.
+/// Signing in as a restricted employee will not replace the Super Admin's
+/// Firebase session in the same browser. Restricted staff NEVER receive the
+/// legacy `admin:true` claim and do not navigate to AdminShell.
+class StaffPortal extends StatefulWidget {
+  const StaffPortal({super.key});
+
+  @override
+  State<StaffPortal> createState() => _StaffPortalState();
+}
+
+class _StaffSession {
+  const _StaffSession({required this.auth, required this.db});
+  final FirebaseAuth auth;
+  final FirebaseFirestore db;
+
+  static Future<_StaffSession> initialize() async {
+    FirebaseApp app;
+    try {
+      app = Firebase.app('ThemeParkStaff');
+    } catch (_) {
+      app = await Firebase.initializeApp(
+        name: 'ThemeParkStaff',
+        options: DefaultFirebaseOptions.currentPlatform,
+      );
+    }
+    return _StaffSession(
+      auth: FirebaseAuth.instanceFor(app: app),
+      db: FirebaseFirestore.instanceFor(app: app),
+    );
+  }
+}
+
+class _StaffPortalState extends State<StaffPortal> {
+  late final Future<_StaffSession> _session = _StaffSession.initialize();
+
+  @override
+  Widget build(BuildContext context) => FutureBuilder<_StaffSession>(
+    future: _session,
+    builder: (context, snapshot) {
+      if (snapshot.hasError) {
+        return const _StaffMessage(
+          title: 'Cannot open Staff Portal',
+          details: 'Firebase initialization failed. Check configuration and connection.',
+        );
+      }
+      if (!snapshot.hasData) {
+        return const Scaffold(body: Center(child: CircularProgressIndicator()));
+      }
+      final session = snapshot.data!;
+      return StreamBuilder<User?>(
+        stream: session.auth.idTokenChanges(),
+        initialData: session.auth.currentUser,
+        builder: (context, authSnapshot) {
+          if (authSnapshot.hasError) {
+            return _StaffMessage(
+              title: 'Staff session unavailable',
+              details: 'Please check your connection and sign in again.',
+              onSignOut: session.auth.signOut,
+            );
+          }
+          final user = authSnapshot.data;
+          if (user == null) {
+            return _StaffLogin(auth: session.auth);
+          }
+          return _StaffSignedIn(key: ValueKey(user.uid), user: user, session: session);
+        },
+      );
+    },
+  );
+}
+
+class _StaffLogin extends StatefulWidget {
+  const _StaffLogin({required this.auth});
+  final FirebaseAuth auth;
+
+  @override
+  State<_StaffLogin> createState() => _StaffLoginState();
+}
+
+class _StaffLoginState extends State<_StaffLogin> {
+  final _form = GlobalKey<FormState>();
+  final _email = TextEditingController();
+  final _password = TextEditingController();
+  bool _busy = false;
+  bool _hidePassword = true;
+  String? _error;
+  String? _notice;
+
+  @override
+  void dispose() {
+    _email.dispose();
+    _password.dispose();
+    super.dispose();
+  }
+
+  Future<void> _login() async {
+    if (_busy || !_form.currentState!.validate()) return;
+    setState(() { _busy = true; _error = null; _notice = null; });
+    try {
+      if (kIsWeb) await widget.auth.setPersistence(Persistence.LOCAL);
+      await widget.auth.signInWithEmailAndPassword(
+        email: _email.text.trim().toLowerCase(),
+        password: _password.text,
+      );
+    } on FirebaseAuthException catch (error) {
+      if (mounted) setState(() => _error = switch (error.code) {
+        'invalid-email' => 'Enter a valid email address.',
+        'user-disabled' => 'This login has been disabled. Contact your supervisor.',
+        'too-many-requests' => 'Too many attempts. Try again later.',
+        _ => 'Unable to sign in. Check your email and password.',
+      });
+    } catch (_) {
+      if (mounted) setState(() => _error = 'Connection error. Please retry.');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _forgot() async {
+    final email = _email.text.trim().toLowerCase();
+    if (!RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(email)) {
+      setState(() => _error = 'Enter your staff email first.');
+      return;
+    }
+    setState(() { _busy = true; _error = null; _notice = null; });
+    try {
+      await widget.auth.sendPasswordResetEmail(email: email);
+      if (mounted) setState(() => _notice =
+        'If the email is registered, password reset instructions will be sent to that inbox. Check spam too.');
+    } catch (_) {
+      if (mounted) setState(() => _error =
+        'Could not request a reset email. Check connection and try again.');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('Theme Park · Staff Portal')),
+    body: Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(20),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 460),
+          child: Card(
+            child: Padding(
+              padding: const EdgeInsets.all(25),
+              child: Form(
+                key: _form,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    const Icon(Icons.badge_outlined, size: 56, color: Color(0xFFAD7472)),
+                    const SizedBox(height: 12),
+                    const Text('Employee Sign In', textAlign: TextAlign.center,
+                      style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 8),
+                    const Text('Use the real email address linked to your Staff ID.',
+                      textAlign: TextAlign.center),
+                    const SizedBox(height: 24),
+                    TextFormField(
+                      controller: _email, enabled: !_busy,
+                      keyboardType: TextInputType.emailAddress,
+                      autofillHints: const [AutofillHints.email],
+                      decoration: const InputDecoration(labelText: 'Staff Email', prefixIcon: Icon(Icons.email_outlined)),
+                      validator: (value) => RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
+                        .hasMatch((value ?? '').trim()) ? null : 'Enter a valid email.',
+                    ),
+                    const SizedBox(height: 14),
+                    TextFormField(
+                      controller: _password, enabled: !_busy,
+                      obscureText: _hidePassword,
+                      autocorrect: false,
+                      enableSuggestions: false,
+                      autofillHints: const [AutofillHints.password],
+                      decoration: InputDecoration(
+                        labelText: 'Password', prefixIcon: const Icon(Icons.lock_outline),
+                        suffixIcon: IconButton(
+                          tooltip: _hidePassword ? 'Show password' : 'Hide password',
+                          onPressed: () => setState(() => _hidePassword = !_hidePassword),
+                          icon: Icon(_hidePassword ? Icons.visibility : Icons.visibility_off),
+                        ),
+                      ),
+                      validator: (value) => (value ?? '').isEmpty ? 'Enter your password.' : null,
+                      onFieldSubmitted: (_) => _login(),
+                    ),
+                    Align(alignment: Alignment.centerRight,
+                      child: TextButton(onPressed: _busy ? null : _forgot, child: const Text('Forgot password?'))),
+                    if (_error != null) _Feedback(_error!, isError: true),
+                    if (_notice != null) _Feedback(_notice!),
+                    const SizedBox(height: 12),
+                    FilledButton(
+                      onPressed: _busy ? null : _login,
+                      child: Text(_busy ? 'Signing in…' : 'Sign In'),
+                    ),
+                    const SizedBox(height: 12),
+                    const Text('New employee? Open the setup email from your supervisor first.',
+                      textAlign: TextAlign.center, style: TextStyle(fontSize: 12)),
+                    TextButton(
+                      onPressed: () => Navigator.pushNamed(context, '/admin'),
+                      child: const Text('Supervisor / Admin Login'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+class _StaffSignedIn extends StatefulWidget {
+  const _StaffSignedIn({super.key, required this.user, required this.session});
+  final User user;
+  final _StaffSession session;
+
+  @override
+  State<_StaffSignedIn> createState() => _StaffSignedInState();
+}
+
+class _StaffSignedInState extends State<_StaffSignedIn> {
+  late Future<IdTokenResult> _token = widget.user.getIdTokenResult();
+  bool _busy = false;
+  String? _error;
+  String? _notice;
+
+  // Spark-safe verification proof: only a verified Firebase ID token can
+  // create this record under the server-side Firestore Security Rules.
+  Future<void> _syncVerifiedEmail() async {
+    final user = widget.session.auth.currentUser;
+    if (user == null || !user.emailVerified || user.email == null) return;
+    final token = await user.getIdTokenResult(true);
+    if (token.claims?['email_verified'] != true) return;
+    await widget.session.db.collection('staffEmailVerifications').doc(user.uid).set({
+      'email': user.email!.trim().toLowerCase(),
+      'verifiedAt': FieldValue.serverTimestamp(),
+    });
+  }
+
+  Future<void> _refresh() async {
+    if (_busy) return;
+    setState(() { _busy = true; _error = null; _notice = null; });
+    try {
+      await widget.user.reload();
+      // This records the verification with a token verified by Firebase,
+      // not a checkbox or administrator-entered flag.
+      await _syncVerifiedEmail();
+      if (!mounted) return;
+      setState(() => _token = widget.session.auth.currentUser!.getIdTokenResult(true));
+    } on FirebaseAuthException catch (e) {
+      if (mounted) setState(() => _error = e.code == 'user-disabled'
+        ? 'Account disabled. Contact your supervisor.'
+        : 'Unable to refresh account. Try signing in again.');
+    } catch (_) {
+      if (mounted) setState(() => _error = 'Unable to refresh. Check connection.');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _verifyEmail() async {
+    if (_busy) return;
+    setState(() { _busy = true; _error = null; _notice = null; });
+    try {
+      await widget.user.sendEmailVerification();
+      if (mounted) setState(() => _notice =
+        'Verification email requested. Open it in your real inbox, then select Refresh Access to register verification with your supervisor.');
+    } on FirebaseAuthException catch (e) {
+      if (mounted) setState(() => _error = e.code == 'too-many-requests'
+        ? 'Too many requests. Try again later.' : 'Unable to send verification email.');
+    } catch (_) {
+      if (mounted) setState(() => _error = 'Unable to request email verification.');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => FutureBuilder<IdTokenResult>(
+    future: _token,
+    builder: (context, tokenSnapshot) {
+      if (tokenSnapshot.hasError) {
+        return _StaffMessage(title: 'Unable to verify your staff account',
+          details: 'Please refresh your access or sign in again.',
+          onRefresh: _refresh, onSignOut: widget.session.auth.signOut);
+      }
+      if (!tokenSnapshot.hasData) {
+        return const Scaffold(body: Center(child: CircularProgressIndicator()));
+      }
+      // Firebase Auth proves identity, while a rules-protected Staff Profile
+      // proves that a root administrator actually approved this employee.
+      // Ordinary visitor Auth accounts do not have a staff profile.
+      final verified = widget.session.auth.currentUser?.emailVerified == true;
+      final repo = StaffRecordsRepository(widget.session.db);
+      return StreamBuilder<StaffProfile?>(
+        stream: repo.watchStaffProfile(widget.user.uid),
+        builder: (context, snapshot) {
+          if (snapshot.hasError) {
+            return _StaffMessage(title: 'Cannot load your staff record',
+              details: 'Check Firestore security rules and connection. Ask your supervisor if the problem continues.',
+              onRefresh: _refresh, onSignOut: widget.session.auth.signOut);
+          }
+          if (!snapshot.hasData) {
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              return const Scaffold(body: Center(child: CircularProgressIndicator()));
+            }
+            return _StaffMessage(title: 'No linked Staff Profile',
+              details: 'Your login account does not have a matching employee record.',
+              onSignOut: widget.session.auth.signOut);
+          }
+          final profile = snapshot.data!;
+          // Refuse to proceed if an unexpected account/profile mismatch occurs.
+          if (profile.email.trim().toLowerCase() != widget.user.email?.trim().toLowerCase()) {
+            return _StaffMessage(title: 'Account mismatch',
+              details: 'The staff email does not match the Firebase login. Contact your supervisor.',
+              onSignOut: widget.session.auth.signOut);
+          }
+          final access = StaffPortalPolicy.evaluate(
+            signedIn: true, hasStaffProfile: true, emailVerified: verified,
+            profileStatus: profile.status,
+          );
+          if (access == StaffPortalStage.verifyEmail) {
+            return _StaffMessage(title: 'Verify Your Email',
+              details: 'Your password is set, but your email still needs verification. Send a verification message to ${widget.user.email ?? 'your inbox'}, open the link, then refresh.',
+              onPrimary: _verifyEmail, primaryLabel: 'Send Verification Email',
+              onRefresh: _refresh, onSignOut: widget.session.auth.signOut,
+              error: _error, notice: _notice, busy: _busy);
+          }
+          if (access == StaffPortalStage.suspended) {
+            return _StaffMessage(title: 'Staff Account Suspended',
+              details: 'Contact your supervisor. You cannot access employee tools.',
+              onSignOut: widget.session.auth.signOut);
+          }
+          if (access == StaffPortalStage.pendingApproval) {
+            return _StaffMessage(title: 'Account Awaiting Activation',
+              details: 'Your email is verified and the verification was submitted when you pressed Refresh Access. Your supervisor must activate Staff ID ${profile.staffId.isEmpty ? profile.uid : profile.staffId}.',
+              onRefresh: _refresh, onSignOut: widget.session.auth.signOut);
+          }
+          if (access != StaffPortalStage.ready) {
+            return _StaffMessage(title: 'Staff access unavailable',
+              details: 'Your account is not ready. Please contact your supervisor.',
+              onSignOut: widget.session.auth.signOut);
+          }
+          return _StaffReadOnlyHome(profile: profile, repository: repo,
+            onSignOut: widget.session.auth.signOut);
+        },
+      );
+    },
+  );
+}
+
+class _StaffReadOnlyHome extends StatelessWidget {
+  const _StaffReadOnlyHome({required this.profile, required this.repository,
+    required this.onSignOut});
+  final StaffProfile profile;
+  final StaffRecordsRepository repository;
+  final Future<void> Function() onSignOut;
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(
+      title: const Text('Staff Portal'),
+      actions: [IconButton(onPressed: onSignOut, tooltip: 'Sign out',
+        icon: const Icon(Icons.logout))],
+    ),
+    body: ListView(padding: const EdgeInsets.all(20), children: [
+      Text('Welcome, ${profile.fullName}', style: Theme.of(context).textTheme.headlineMedium),
+      const SizedBox(height: 8),
+      Text('Staff ID: ${profile.staffId.isEmpty ? 'Not assigned' : profile.staffId}'),
+      Text('Email: ${profile.email}'),
+      const SizedBox(height: 18),
+      const Card(child: Padding(padding: EdgeInsets.all(16), child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Account Activated', style: TextStyle(fontWeight: FontWeight.bold)),
+          SizedBox(height: 6),
+          Text('Your identity is active. Operational tools remain locked until the approved shift, role, attraction assignment and training are verified by the backend. This screen is read-only.'),
+        ],
+      ))),
+      const SizedBox(height: 16),
+      Text('Eligible Roles', style: Theme.of(context).textTheme.titleLarge),
+      const SizedBox(height: 8),
+      if (profile.eligibleRoles.isEmpty) const Text('No roles assigned.'),
+      ...profile.eligibleRoles.map((role) => ListTile(
+        leading: const Icon(Icons.badge_outlined), title: Text(role.label),
+      )),
+      const Divider(height: 32),
+      Text('Training Records', style: Theme.of(context).textTheme.titleLarge),
+      StreamBuilder<List<StaffQualification>>(
+        stream: repository.watchQualifications(profile.uid),
+        builder: (context, snapshot) {
+          if (snapshot.hasError) return const _Feedback('Training records unavailable.', isError: true);
+          if (!snapshot.hasData) return const LinearProgressIndicator();
+          if (snapshot.data!.isEmpty) return const Text('No training records yet.');
+          return Column(children: snapshot.data!.map((q) => ListTile(
+            leading: Icon(q.validAt(DateTime.now())
+              ? Icons.verified_outlined : Icons.error_outline),
+            title: Text(q.title),
+            subtitle: Text('${q.role.label} · ${q.validAt(DateTime.now()) ? 'Valid' : 'Expired or revoked'}'),
+          )).toList());
+        },
+      ),
+    ]),
+  );
+}
+
+class _StaffMessage extends StatelessWidget {
+  const _StaffMessage({required this.title, required this.details,
+    this.onSignOut, this.onRefresh, this.onPrimary, this.primaryLabel,
+    this.error, this.notice, this.busy = false});
+  final String title;
+  final String details;
+  final Future<void> Function()? onSignOut;
+  final Future<void> Function()? onRefresh;
+  final Future<void> Function()? onPrimary;
+  final String? primaryLabel;
+  final String? error;
+  final String? notice;
+  final bool busy;
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('Staff Portal')),
+    body: Center(child: SingleChildScrollView(
+      padding: const EdgeInsets.all(20),
+      child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 540),
+        child: Card(child: Padding(padding: const EdgeInsets.all(25), child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Icon(Icons.verified_user_outlined, size: 48, color: Color(0xFFAD7472)),
+            const SizedBox(height: 12),
+            Text(title, style: Theme.of(context).textTheme.headlineSmall, textAlign: TextAlign.center),
+            const SizedBox(height: 12),
+            Text(details, textAlign: TextAlign.center),
+            if (error != null) Padding(padding: const EdgeInsets.only(top: 14),
+              child: _Feedback(error!, isError: true)),
+            if (notice != null) Padding(padding: const EdgeInsets.only(top: 14),
+              child: _Feedback(notice!)),
+            const SizedBox(height: 20),
+            if (onPrimary != null) FilledButton(onPressed: busy ? null : onPrimary,
+              child: Text(primaryLabel ?? 'Continue')),
+            if (onRefresh != null) OutlinedButton(onPressed: busy ? null : onRefresh,
+              child: const Text('Refresh Access')),
+            if (onSignOut != null) TextButton(onPressed: busy ? null : onSignOut,
+              child: const Text('Sign Out')),
+          ],
+        ))),
+      ),
+    )),
+  );
+}
+
+class _Feedback extends StatelessWidget {
+  const _Feedback(this.message, {this.isError = false});
+  final String message;
+  final bool isError;
+
+  @override
+  Widget build(BuildContext context) => Card(
+    color: isError ? const Color(0xFFFFEAEA) : const Color(0xFFEAF7EE),
+    child: Padding(padding: const EdgeInsets.all(12),
+      child: Text(message, style: TextStyle(
+        color: isError ? const Color(0xFFB3261E) : const Color(0xFF1B5E20)))),
+  );
+}

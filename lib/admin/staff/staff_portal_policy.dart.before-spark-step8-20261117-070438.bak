@@ -1,0 +1,30 @@
+/// Display-only access gate for the separate employee portal.
+/// This is NOT a security boundary. The Firestore Rules and every sensitive
+/// server operation must independently authorize staff and their active shift.
+enum StaffPortalStage {
+  signIn,
+  notStaff,
+  verifyEmail,
+  pendingApproval,
+  suspended,
+  ready,
+}
+
+class StaffPortalPolicy {
+  const StaffPortalPolicy._();
+
+  static StaffPortalStage evaluate({
+    required bool signedIn,
+    required bool hasStaffClaim,
+    required bool emailVerified,
+    required String? profileStatus,
+  }) {
+    if (!signedIn) return StaffPortalStage.signIn;
+    if (!hasStaffClaim) return StaffPortalStage.notStaff;
+    if (!emailVerified) return StaffPortalStage.verifyEmail;
+    if (profileStatus == 'suspended') return StaffPortalStage.suspended;
+    if (profileStatus == 'inactive') return StaffPortalStage.pendingApproval;
+    if (profileStatus == 'active') return StaffPortalStage.ready;
+    return StaffPortalStage.notStaff;
+  }
+}

@@ -29,8 +29,8 @@ class _AnomalyReviewPageState extends State<AnomalyReviewPage> {
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
       AdminHeading(
-        'Unusual Activity Review',
-        'Review activity signals and open a visitor record before taking action.',
+        'Visitor Risk Review',
+        'Prioritise accounts for human review using recorded activity.',
         action: AdminButton(
           'Refresh Analysis',
           icon: Icons.refresh,
@@ -45,7 +45,7 @@ class _AnomalyReviewPageState extends State<AnomalyReviewPage> {
             const SizedBox(width: 18),
             const Expanded(
               child: Text(
-                'Signals highlight patterns for staff review. Family bookings and busy visitors can produce unusual activity. Review the actual history before changing account access.',
+                'Flagged accounts need review, not automatic suspension. Compare the recorded reasons with the visitor’s actual reservations and order history.',
                 style: TextStyle(color: adminMuted, height: 1.6),
               ),
             ),
@@ -100,16 +100,16 @@ class _AnomalyReviewPageState extends State<AnomalyReviewPage> {
                     Icons.groups_outlined,
                   ),
                   AdminStat(
-                    'Review Signals',
+                    'Accounts Flagged',
                     '${flags.length}',
                     'Accounts to review',
                     Icons.policy_outlined,
                   ),
                   AdminStat(
-                    'Review Window',
-                    '$days days',
-                    'Updated from Firebase activity',
-                    Icons.history,
+                    'Flagged Missed Visits',
+                    '${flags.fold<int>(0, (n, f) => n + (((f['metrics'] as Map?)?['missed'] as num?)?.toInt() ?? 0))}',
+                    'Missed reservations among flagged visitors',
+                    Icons.event_busy_outlined,
                   ),
                 ],
               ),
@@ -188,29 +188,34 @@ class _AnomalyReviewPageState extends State<AnomalyReviewPage> {
                               ],
                             ),
                             const Divider(height: 30),
-                            for (final reason
-                                in (flag['reasons'] as List).cast<String>())
-                              Padding(
-                                padding: const EdgeInsets.only(bottom: 9),
-                                child: Text(
-                                  '• $reason',
-                                  style: const TextStyle(fontSize: 13),
-                                ),
-                              ),
+                            Text('WHY THIS ACCOUNT WAS FLAGGED',
+                              style: const TextStyle(color: adminRose,
+                                fontWeight: FontWeight.w700, letterSpacing: .4, fontSize: 12)),
+                            const SizedBox(height: 9),
+                            for (final reason in (flag['reasons'] as List).cast<String>())
+                              Padding(padding: const EdgeInsets.only(bottom: 8),
+                                child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                  const Icon(Icons.report_problem_outlined,
+                                    size: 17, color: adminRose),
+                                  const SizedBox(width: 9),
+                                  Expanded(child: Text(reason, style: const TextStyle(fontSize: 13))),
+                                ])),
                             const SizedBox(height: 10),
-                            Wrap(
-                              spacing: 20,
-                              runSpacing: 10,
-                              children: [
-                                Text('${metrics['reservations']} reservations'),
-                                Text(
-                                  '${metrics['cancellations']} cancellations',
-                                ),
-                                Text('${metrics['missed']} missed visits'),
-                                Text('${metrics['orders']} orders'),
-                                Text('${metrics['sessions']} device sessions'),
-                              ],
-                            ),
+                            Wrap(spacing: 9, runSpacing: 9, children: [
+                              Chip(label: Text('${metrics['reservations'] ?? 0} reservations'),
+                                avatar: const Icon(Icons.event_available_outlined, size: 16)),
+                              Chip(label: Text('${metrics['missed'] ?? 0} missed'),
+                                avatar: const Icon(Icons.event_busy_outlined, size: 16)),
+                              Chip(label: Text('${metrics['cancellations'] ?? 0} cancellations'),
+                                avatar: const Icon(Icons.cancel_outlined, size: 16)),
+                              Chip(label: Text('${metrics['orders'] ?? 0} orders'),
+                                avatar: const Icon(Icons.receipt_long_outlined, size: 16)),
+                              Chip(label: Text('${metrics['sessions'] ?? 0} sessions'),
+                                avatar: const Icon(Icons.devices_outlined, size: 16)),
+                            ]),
+                            const SizedBox(height: 8),
+                            const Text('These are review signals, not security violations. Open the visitor record to verify source events.',
+                              style: TextStyle(color: adminMuted, fontSize: 12)),
                           ],
                         ),
                       ),

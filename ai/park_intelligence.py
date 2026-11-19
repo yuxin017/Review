@@ -10,7 +10,12 @@ from sklearn.ensemble import IsolationForest
 
 
 def recommendations(data):
-    places = data.get('places', [])[:1000]
+    places = [p for p in data.get('places', [])[:1000]
+              if p.get('kind', 'attractions') == 'attractions'
+              and not any(x in p.get('category', '').lower()
+                          for x in ('dining', 'restaurant', 'café', 'cafe',
+                                    'shop', 'retail', 'facilit', 'restroom',
+                                    'first aid'))]
     if not places:
         return {'recommendations': [], 'method': 'TF-IDF cosine neighbours'}
     documents = [' '.join(str(p.get(k, '')) for k in ['name', 'category', 'description']) for p in places]

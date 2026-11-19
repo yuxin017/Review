@@ -1,0 +1,102 @@
+'use strict';
+// Firebase Auth + Firestore emulators ONLY. Real projects are rejected.
+const {test, before, after} = require('node:test');
+const assert = require('node:assert/strict');
+const {randomUUID} = require('node:crypto');
+const project = process.env.GCLOUD_PROJECT;
+const fh = process.env.FIRESTORE_EMULATOR_HOST;
+const ah = process.env.FIREBASE_AUTH_EMULATOR_HOST;
+if (!project?.startsWith('demo-') ||
+  !/^(127\.0\.0\.1|localhost):\d+$/.test(fh || '') ||
+  !/^(127\.0\.0\.1|localhost):\d+$/.test(ah || '')) {
+  throw Error('Refusing to run outside an isolated demo-* Auth/Firestore emulator.');
+}
+const root = `http://${fh}/v1/projects/${project}/databases/(default)/documents`;
+const auth = `http://${ah}/identitytoolkit.googleapis.com/v1`;
+const prefix = `sw4-${randomUUID()}`;
+async function request(url, method='GET', body, token) {
+  const r = await fetch(url, {
+    method,
+    headers: {'Content-Type':'application/json', ...(token ? {Authorization:`Bearer ${token}`} : {})},
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  return {status:r.status, data:r.status===204?null:await r.json()};
+}
+async function signup(claims) {
+  const a = await request(`${auth}/accounts:signUp?key=local-test`, 'POST', {returnSecureToken:true});
+  assert.equal(a.status, 200, JSON.stringify(a.data));
+  const acc = a.data;
+  if (!claims) return acc;
+  const c = await request(`${auth}/projects/${project}/accounts:update`, 'POST', {
+    localId:acc.localId, customAttributes:JSON.stringify(claims)}, 'owner');
+  assert.equal(c.status, 200, JSON.stringify(c.data));
+  const r = await fetch(`http://${ah}/securetoken.googleapis.com/v1/token?key=local-test`, {
+    method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:new URLSearchParams({grant_type:'refresh_token', refresh_token:acc.refreshToken}),
+  });
+  const refresh = await r.json();
+  assert.equal(r.status, 200, JSON.stringify(refresh));
+  acc.idToken = refresh.id_token;
+  return acc;
+}
+const str = x => ({stringValue:x});
+const arr = xs => ({arrayValue:{values:xs.map(str)}});
+const timestamp = x => ({timestampValue:x});
+const path = (collection,id) => `projects/${project}/databases/(default)/documents/${collection}/${id}`;
+const profile = (overrides={}) => ({fullName:str('Park Photographer'), email:str('staff@example.com'),
+  status:str('active'),eligibleRoles:arr(['photographer']),...overrides});
+const qualification = (staffUid,overrides={}) => ({staffUid:str(staffUid),roleCode:str('photographer'),
+  title:str('Photo Privacy Training'),status:str('approved'),attractionId:str(''),
+  completedAt:timestamp('2026-01-01T00:00:00Z'),expiresAt:{nullValue:'NULL_VALUE'},...overrides});
+async function save(collection,id,fields,token) {
+  return request(`${root}:commit`, 'POST', {writes:[{
+    update:{name:path(collection,id),fields},
+    updateTransforms:[{fieldPath:'updatedAt',setToServerValue:'REQUEST_TIME'}],
+  }]}, token);
+}
+const get = (collection,id,token) => request(`${root}/${collection}/${id}`, 'GET', undefined, token);
+const remove = (collection,id) => request(`${root}/${collection}/${id}`, 'DELETE', undefined, 'owner');
+let admin, photographer, visitor, profileId, qualificationId;
+before(async () => {
+  admin = await signup({admin:true});
+  photographer = await signup({staff:true,role:'photographer'});
+  visitor = await signup();
+  profileId = photographer.localId;
+  qualificationId = `${prefix}-q`;
+});
+after(async () => {
+  if(profileId) await remove('staffProfiles',profileId);
+  if(qualificationId) await remove('staffQualifications',qualificationId);
+});
+test('only root admin can create staff profile; staff sees only own',async () => {
+  const saved = await save('staffProfiles',profileId,profile(),admin.idToken);
+  assert.equal(saved.status,200,JSON.stringify(saved.data));
+  assert.equal((await get('staffProfiles',profileId,photographer.idToken)).status,200);
+  assert.equal((await get('staffProfiles',profileId,visitor.idToken)).status,403);
+  assert.equal((await get('staffProfiles',profileId,admin.idToken)).status,200);
+});
+test('regular staff cannot assign or modify staff roles, including their own',async () => {
+  assert.equal((await save('staffProfiles',profileId,profile({status:str('suspended')}),photographer.idToken)).status,403);
+  assert.equal((await save('staffProfiles',`${prefix}-fake`,profile(),visitor.idToken)).status,403);
+});
+test('root admin cannot elevate a profile to super_admin or use invalid status',async () => {
+  assert.equal((await save('staffProfiles',`${prefix}-super`,profile({eligibleRoles:arr(['super_admin'])}),admin.idToken)).status,403);
+  assert.equal((await save('staffProfiles',`${prefix}-bad`,profile({status:str('on_leave')}),admin.idToken)).status,403);
+});
+test('approved qualification is private to owner; regular staff cannot forge it',async () => {
+  const saved = await save('staffQualifications',qualificationId,qualification(profileId),admin.idToken);
+  assert.equal(saved.status,200,JSON.stringify(saved.data));
+  assert.equal((await get('staffQualifications',qualificationId,photographer.idToken)).status,200);
+  assert.equal((await get('staffQualifications',qualificationId,visitor.idToken)).status,403);
+  assert.equal((await save('staffQualifications',`${prefix}-forge`,qualification(profileId),photographer.idToken)).status,403);
+});
+test('a qualification cannot be reassigned or made into super_admin qualification',async () => {
+  assert.equal((await save('staffQualifications',qualificationId,qualification(visitor.localId),admin.idToken)).status,403);
+  assert.equal((await save('staffQualifications',`${prefix}-super-q`,qualification(profileId,{roleCode:str('super_admin')}),admin.idToken)).status,403);
+});
+test('admin may revoke training, but neither collection is client-deletable',async () => {
+  const r=await save('staffQualifications',qualificationId,qualification(profileId,{status:str('revoked')}),admin.idToken);
+  assert.equal(r.status,200,JSON.stringify(r.data));
+  assert.equal((await request(`${root}/staffQualifications/${qualificationId}`,'DELETE',undefined,admin.idToken)).status,403);
+  assert.equal((await request(`${root}/staffProfiles/${profileId}`,'DELETE',undefined,admin.idToken)).status,403);
+});

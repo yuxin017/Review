@@ -1,0 +1,91 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
+
+import 'staff_access.dart';
+
+/// Park-controlled course catalogue. A course is defined ONCE and then selected
+/// when staff training is recorded. No ad-hoc qualification titles are entered
+/// on an individual employee's training form.
+class StaffTrainingCourse {
+  const StaffTrainingCourse({
+    required this.id,
+    required this.title,
+    required this.role,
+    required this.active,
+  });
+
+  final String id;
+  final String title;
+  final StaffRole role;
+  final bool active;
+
+  factory StaffTrainingCourse.fromDocument(
+    QueryDocumentSnapshot<Map<String, dynamic>> doc,
+  ) {
+    final data = doc.data();
+    final role = StaffRole.fromCode(data['roleCode']?.toString() ?? '');
+    if (role == null || role == StaffRole.superAdmin) {
+      throw const FormatException('Select a valid role.');
+    }
+    return StaffTrainingCourse(
+      id: doc.id,
+      title: data['title']?.toString() ?? '',
+      role: role,
+      active: data['active'] == true,
+    );
+  }
+}
+
+class StaffTrainingCatalogRepository {
+  const StaffTrainingCatalogRepository(this.db);
+  final FirebaseFirestore db;
+
+  CollectionReference<Map<String, dynamic>> get _collection =>
+      db.collection('staffTrainingCourses');
+
+  Stream<List<StaffTrainingCourse>> watchCourses() =>
+      _collection.snapshots().map((snapshot) {
+        final courses = snapshot.docs
+            .map(StaffTrainingCourse.fromDocument)
+            .toList();
+        courses.sort((a, b) => a.title.compareTo(b.title));
+        return courses;
+      });
+
+  Future<List<StaffTrainingCourse>> activeCourses() async {
+    final snapshot = await _collection.where('active', isEqualTo: true).get();
+    final courses = snapshot.docs.map(StaffTrainingCourse.fromDocument).toList();
+    courses.sort((a, b) => a.title.compareTo(b.title));
+    return courses;
+  }
+
+  Future<void> createCourse({
+    required String title,
+    required StaffRole role,
+  }) async {
+    final cleaned = title.trim();
+    if (cleaned.length < 4 || cleaned.length > 120) {
+      throw ArgumentError('Enter a valid course name.');
+    }
+    if (role == StaffRole.superAdmin) {
+      throw ArgumentError('Select a different role.');
+    }
+    final matching = await _collection.where('roleCode', isEqualTo: role.code).get();
+    if (matching.docs.any((doc) =>
+        (doc.data()['title']?.toString().toLowerCase() ?? '') ==
+        cleaned.toLowerCase())) {
+      throw ArgumentError('This course already exists.');
+    }
+    await _collection.add({
+      'title': cleaned,
+      'roleCode': role.code,
+      'active': true,
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+  }
+
+  Future<void> setActive(StaffTrainingCourse course, bool active) =>
+      _collection.doc(course.id).update({
+        'active': active,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+}

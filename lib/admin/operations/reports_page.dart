@@ -111,7 +111,8 @@ Future<Uint8List> buildParkReportPdf(Map<String, dynamic> report) async {
 
 class ParkReportsPage extends StatefulWidget {
   final ParkAdminRepository repository;
-  const ParkReportsPage({super.key, required this.repository});
+  const ParkReportsPage({super.key, required this.repository, this.embedded = false});
+  final bool embedded;
   @override
   State<ParkReportsPage> createState() => _ParkReportsPageState();
 }
@@ -132,18 +133,86 @@ class _ParkReportsPageState extends State<ParkReportsPage> {
     'end': period.end.add(const Duration(days: 1)).toUtc().toIso8601String(),
   });
   Future<void> dates() async {
-    final result = await showDateRangePicker(
+    DateTime from = period.start;
+    DateTime to = period.end;
+    final picked = await showDialog<DateTimeRange>(
       context: context,
-      initialDateRange: period,
-      firstDate: DateTime(2020),
-      lastDate: DateTime.now(),
-      helpText: 'Report period (up to 93 days)',
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, update) => Dialog(
+          elevation: 22,
+          shadowColor: const Color(0x600D1420),
+          backgroundColor: const Color(0xFFF6EBE9),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 460),
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                Row(children: [
+                  const Icon(Icons.date_range_outlined, color: adminRose),
+                  const SizedBox(width: 12),
+                  const Expanded(child: Text('Report period',
+                    style: TextStyle(fontSize: 21, fontWeight: FontWeight.w700))),
+                  IconButton(onPressed: () => Navigator.pop(dialogContext),
+                    icon: const Icon(Icons.close_rounded)),
+                ]),
+                const SizedBox(height: 18),
+                Wrap(spacing: 7, runSpacing: 7, children: [
+                  for (final days in [7, 30, 90]) OutlinedButton(
+                    onPressed: () => update(() {
+                      to = DateTime.now();
+                      from = DateTime(to.year, to.month, to.day)
+                          .subtract(Duration(days: days - 1));
+                    }),
+                    child: Text('Last $days days')),
+                ]),
+                const SizedBox(height: 18),
+                Row(children: [
+                  Expanded(child: OutlinedButton.icon(
+                    icon: const Icon(Icons.calendar_today_outlined, size: 17),
+                    label: Text(adminDateLabel(from)),
+                    onPressed: () async {
+                      final pickedDate = await showDatePicker(
+                        context: dialogContext, initialDate: from,
+                        firstDate: DateTime(2020), lastDate: DateTime.now());
+                      if (pickedDate != null) update(() { from = pickedDate;
+                        if (to.isBefore(from)) to = from; });
+                    })),
+                  const SizedBox(width: 12),
+                  Expanded(child: OutlinedButton.icon(
+                    icon: const Icon(Icons.event_outlined, size: 17),
+                    label: Text(adminDateLabel(to)),
+                    onPressed: () async {
+                      final pickedDate = await showDatePicker(
+                        context: dialogContext,
+                        initialDate: to.isBefore(from) ? from : to,
+                        firstDate: from, lastDate: DateTime.now());
+                      if (pickedDate != null) update(() => to = pickedDate);
+                    })),
+                ]),
+                const SizedBox(height: 8),
+                if (to.difference(from).inDays > 92)
+                  const Text('Select up to 93 days.',
+                    style: TextStyle(color: Colors.red)),
+                const SizedBox(height: 16),
+                Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+                  TextButton(onPressed: () => Navigator.pop(dialogContext),
+                    child: const Text('Cancel')),
+                  const SizedBox(width: 12),
+                  FilledButton(onPressed: to.isBefore(from) ||
+                    to.difference(from).inDays > 92 ? null : () =>
+                      Navigator.pop(dialogContext, DateTimeRange(start: from, end: to)),
+                    child: const Text('Apply')),
+                ]),
+              ]),
+            ),
+          ),
+        ),
+      ),
     );
-    if (result != null && mounted) {
-      setState(() {
-        period = result;
-        report = load();
-      });
+    if (picked != null && mounted) {
+      setState(() { period = picked; report = load(); });
     }
   }
 
@@ -175,40 +244,22 @@ class _ParkReportsPageState extends State<ParkReportsPage> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         AdminHeading(
-          'Reports & Analytics',
-          'Sales, park attendance and popular experiences.',
-          action: Wrap(
-            spacing: 12,
-            runSpacing: 12,
-            children: [
-              AdminButton(
-                'Date Range',
-                outlined: true,
-                icon: Icons.date_range,
-                onPressed: dates,
-              ),
-              AdminButton(
-                exporting ? 'Exporting…' : 'Export PDF',
-                icon: Icons.download_outlined,
-                onPressed: s.hasData && !exporting
-                    ? () => export(s.data!)
-                    : null,
-              ),
-            ],
-          ),
+          widget.embedded ? 'Sales Performance' : 'Reports & Analytics',
+          'Sales trends and best-selling products.',
         ),
         const SizedBox(height: 18),
         Row(
           children: [
-            Expanded(
-              child: Text(
-                '${adminDateLabel(period.start)} – ${adminDateLabel(period.end)}',
-                style: const TextStyle(
-                  color: adminMuted,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
+            const Icon(Icons.calendar_month_outlined, color: adminRose, size: 18),
+            const SizedBox(width: 8),
+            Text('${adminDateLabel(period.start)} – ${adminDateLabel(period.end)}',
+              style: const TextStyle(color: adminMuted, fontWeight: FontWeight.w600)),
+            const SizedBox(width: 12),
+            OutlinedButton.icon(
+              onPressed: dates, icon: const Icon(Icons.tune, size: 16),
+              label: const Text('Change period'),
             ),
+            const Spacer(),
             IconButton(
               tooltip: 'Refresh reports',
               onPressed: () => setState(() => report = load()),
@@ -248,59 +299,25 @@ class _ParkReportsPageState extends State<ParkReportsPage> {
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  AdminStats(
-                    children: [
-                      AdminStat(
-                        'Confirmed Purchase Value',
-                        photoMoney(summary['revenueMinor']),
-                        'Selected period',
-                        Icons.payments_outlined,
-                      ),
-                      AdminStat(
-                        'Ticket / Photo Orders',
-                        '${summary['ticketOrders']} / ${summary['photoOrders']}',
-                        'Confirmed orders',
-                        Icons.receipt_long_outlined,
-                      ),
-                      AdminStat(
-                        'Park / Ride Admissions',
-                        '${summary['parkAdmissions']} / ${summary['rideAdmissions']}',
-                        'Completed check-ins',
-                        Icons.groups_outlined,
-                      ),
-                      AdminStat(
-                        'Reservations / Cancellations',
-                        '${summary['reservations']} / ${summary['cancellations']}',
-                        'Created in this period',
-                        Icons.event_available_outlined,
-                      ),
-                      AdminStat(
-                        'Vouchers Issued',
-                        '${summary['vouchersIssued'] ?? 0}',
-                        'Issued during this period',
-                        Icons.card_giftcard,
-                      ),
-                      AdminStat(
-                        'Issued Vouchers Redeemed',
-                        '${summary['vouchersRedeemed'] ?? 0}',
-                        'Used to date',
-                        Icons.redeem_outlined,
-                      ),
-                      AdminStat(
-                        'Voucher Redemption Rate',
-                        '${summary['voucherRedemptionRate'] ?? 0}%',
-                        'Of vouchers issued in this period',
-                        Icons.percent,
-                      ),
-                      AdminStat(
-                        'Voucher Uses',
-                        '${summary['voucherUseEvents'] ?? 0}',
-                        'Use events during this period',
-                        Icons.check_circle_outline,
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 23),
+                  AdminStats(children: [
+                    AdminStat('Confirmed Sales',
+                      photoMoney(summary['revenueMinor']),
+                      'Recorded sales',
+                      Icons.payments_outlined),
+                    AdminStat('Paid Orders',
+                      '${((summary['ticketOrders'] as num? ?? 0) + (summary['photoOrders'] as num? ?? 0)).toInt()}',
+                      'Paid transactions', Icons.receipt_long_outlined),
+                    AdminStat('Average Order Value',
+                      photoMoney(((summary['ticketOrders'] as num? ?? 0) + (summary['photoOrders'] as num? ?? 0)) > 0
+                          ? (((summary['revenueMinor'] as num? ?? 0) /
+                              ((summary['ticketOrders'] as num? ?? 0) + (summary['photoOrders'] as num? ?? 0))).round()) : 0),
+                      'Per transaction', Icons.trending_up_outlined),
+                    AdminStat('Top Selling Product',
+                      (d['topProducts'] as List?)?.isNotEmpty == true
+                          ? '${(d['topProducts'] as List).first['name']}' : 'No sales yet',
+                      'Highest sales value', Icons.local_offer_outlined),
+                  ]),
+                  const SizedBox(height: 20),
                   AdminCard(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -313,11 +330,7 @@ class _ParkReportsPageState extends State<ParkReportsPage> {
                           ),
                         ),
                         const SizedBox(height: 8),
-                        const Text(
-                          'Confirmed ticket and photo orders • MYR',
-                          style: TextStyle(color: adminMuted),
-                        ),
-                        const SizedBox(height: 25),
+                        const SizedBox(height: 14),
                         if (daily.isEmpty)
                           const Padding(
                             padding: EdgeInsets.all(40),
@@ -335,25 +348,29 @@ class _ParkReportsPageState extends State<ParkReportsPage> {
                             ),
                           ),
                           const SizedBox(height: 14),
-                          Wrap(
-                            spacing: 18,
-                            runSpacing: 8,
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
-                              for (final day in daily)
-                                Text(
-                                  '${day['day']}: ${photoMoney(day['revenueMinor'])}',
-                                  style: const TextStyle(
-                                    fontSize: 11,
-                                    color: adminMuted,
-                                  ),
-                                ),
+                              Text('${daily.first['day']}',
+                                style: const TextStyle(fontSize: 11, color: adminMuted)),
+                              if (daily.length > 2) Text('${daily[daily.length ~/ 2]['day']}',
+                                style: const TextStyle(fontSize: 11, color: adminMuted)),
+                              if (daily.length > 1) Text('${daily.last['day']}',
+                                style: const TextStyle(fontSize: 11, color: adminMuted)),
                             ],
                           ),
                         ],
                       ],
                     ),
                   ),
-                  const SizedBox(height: 23),
+                  const SizedBox(height: 16),
+                  Wrap(spacing: 10, runSpacing: 10, children: [
+                    AdminButton(exporting ? 'Exporting…' : 'Download Sales Report (PDF)',
+                      icon: Icons.picture_as_pdf_outlined,
+                      onPressed: !exporting ? () => export(d) : null),
+
+                  ]),
+                  const SizedBox(height: 20),
                   _table(
                     'Top 10 Products',
                     ['Product', 'Quantity', 'Purchase Value'],
@@ -389,34 +406,29 @@ class _ParkReportsPageState extends State<ParkReportsPage> {
     List<String> headers,
     List<List<dynamic>> rows,
   ) => AdminCard(
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
+    padding: EdgeInsets.zero,
+    child: ExpansionTile(
+      initiallyExpanded: false,
+      iconColor: adminRose,
+      collapsedIconColor: adminRose,
+      tilePadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
+      title: Text(title,
+        style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
+
       children: [
-        Text(
-          title,
-          style: const TextStyle(fontSize: 21, fontWeight: FontWeight.w700),
-        ),
-        const SizedBox(height: 19),
         if (rows.isEmpty)
           const Padding(
-            padding: EdgeInsets.all(30),
-            child: Text(
-              'No records in this period.',
-              textAlign: TextAlign.center,
-            ),
+            padding: EdgeInsets.all(24),
+            child: Text('No records in this period.'),
           )
         else
           SingleChildScrollView(
             scrollDirection: Axis.horizontal,
             child: DataTable(
-              columns: [
-                for (final header in headers) DataColumn(label: Text(header)),
-              ],
+              columns: [for (final header in headers) DataColumn(label: Text(header))],
               rows: [
                 for (final row in rows)
-                  DataRow(
-                    cells: [for (final cell in row) DataCell(Text('$cell'))],
-                  ),
+                  DataRow(cells: [for (final cell in row) DataCell(Text('$cell'))]),
               ],
             ),
           ),

@@ -4,10 +4,14 @@ import 'package:firebase_core/firebase_core.dart';
 import '../firebase_options.dart';
 import '../visits/visit_repository.dart';
 import 'photos/photo_admin_repository.dart';
+import 'staff/staff_records_repository.dart';
 import 'operations/park_admin_repository.dart';
 import '../visitor/models/tickets.dart';
 import '../visitor/services/ticket_journey.dart';
 import 'admin_models.dart';
+import '../visitor/models/membership_policy.dart';
+import 'staff/staff_records.dart';
+import 'staff/staff_access.dart';
 import 'cameras/attraction_camera_store.dart';
 import '../support/support_repository.dart';
 import 'package:flutter/foundation.dart';
@@ -44,6 +48,7 @@ abstract class AdminRepository {
   AttractionCameraStore? get cameraStore => null;
   ParkAdminRepository? get parkRepository => null;
   PhotoAdminRepository? get photoRepository => null;
+  StaffRecordsRepository? get staffRecordsRepository => null;
   VisitRepository? get visitRepository => null;
   AdminAttractionStore? get facilityStore => null;
   SlotReader? get facilitySlots => null;
@@ -61,6 +66,11 @@ abstract class AdminRepository {
   Stream<List<AdminActivity>> sessions() => Stream.value([]);
   Stream<List<AdminActivity>> audit() => Stream.value([]);
   Stream<List<AdminActivity>> admissions() => Stream.value([]);
+  Stream<MembershipPolicy> membershipPolicy() =>
+      Stream.value(MembershipPolicy.defaults);
+  Stream<Map<String, int>> lifetimeEarnedPoints() => Stream.value({});
+  Future<void> saveMembershipPolicy(MembershipPolicy value) =>
+      Future.error(StateError('Membership settings are not available.'));
   Future<void> saveVisitor(
     AdminVisitor visitor,
     Map<String, dynamic> fields,
@@ -83,6 +93,9 @@ class FirebaseAdminRepository extends AdminRepository {
   @override
   PhotoAdminRepository get photoRepository =>
       FirebasePhotoAdminRepository(db: _db, auth: firebase.auth);
+  @override
+  StaffRecordsRepository get staffRecordsRepository =>
+      StaffRecordsRepository(_db);
   @override
   VisitRepository get visitRepository =>
       FirebaseVisitRepository(firestore: _db, authentication: firebase.auth);
@@ -125,6 +138,38 @@ class FirebaseAdminRepository extends AdminRepository {
       .collection(collection)
       .snapshots()
       .map((s) => {for (final d in s.docs) d.id: d.data()});
+  @override
+  Stream<MembershipPolicy> membershipPolicy() => _db
+      .collection('parkSettings')
+      .doc('membership')
+      .snapshots()
+      .map((doc) => MembershipPolicy.fromMap(doc.data()));
+  @override
+  Stream<Map<String, int>> lifetimeEarnedPoints() => _db
+      .collection('loyaltyEvents')
+      .snapshots()
+      .map((snapshot) {
+        final amounts = <String, int>{};
+        for (final doc in snapshot.docs) {
+          final event = doc.data();
+          final uid = event['ownerUid'];
+          final delta = event['delta'];
+          if (uid is String && uid.isNotEmpty && delta is num && delta > 0) {
+            amounts[uid] = (amounts[uid] ?? 0) + delta.toInt();
+          }
+        }
+        return amounts;
+      });
+  @override
+  Future<void> saveMembershipPolicy(MembershipPolicy policy) async {
+    final error = MembershipPolicy.validationError(policy.levels);
+    if (error != null) throw StateError(error);
+    await _db.collection('parkSettings').doc('membership').set({
+      'levels': policy.levels.map((level) => level.toMap()).toList(),
+      'updatedBy': userId,
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+  }
   @override
   Stream<Map<String, Map<String, dynamic>>> metadata() => _maps('visitorAdmin');
   @override
@@ -405,4 +450,77 @@ class FirebaseAdminRepository extends AdminRepository {
       );
     });
   }
+}
+
+
+/// Restricted accounts use the SAME AdminShell but cannot download the
+/// administrator's visitor, order, ticket or audit datasets.
+class StaffScopedAdminRepository extends AdminRepository {
+  StaffScopedAdminRepository({
+    required this.auth,
+    required this.db,
+    required this.profile,
+  });
+
+  final FirebaseAuth auth;
+  final FirebaseFirestore db;
+  final StaffProfile profile;
+
+  @override
+  String get userId => auth.currentUser!.uid;
+
+  @override
+  PhotoAdminRepository? get photoRepository =>
+      profile.eligibleRoles.contains(StaffRole.photographer)
+          ? FirebasePhotoAdminRepository(
+              db: db,
+              auth: auth,
+              staffPhotographerUid: profile.uid,
+            )
+          : null;
+
+  // Never open administrator-wide subscriptions from a restricted session.
+  @override
+  Stream<List<AdminVisitor>> visitors() => Stream.value(const []);
+  @override
+  Stream<List<AdminPackage>> packages() => Stream.value(const []);
+  @override
+  Stream<List<ParkTicket>> tickets() => Stream.value(const []);
+  @override
+  Stream<List<TicketOrder>> orders() => Stream.value(const []);
+  @override
+  Stream<List<AdminActivity>> sessions() => Stream.value(const []);
+  @override
+  Stream<List<AdminActivity>> audit() => Stream.value(const []);
+  @override
+  Stream<List<AdminActivity>> admissions() => Stream.value(const []);
+
+  @override
+  Future<void> saveVisitor(
+    AdminVisitor visitor,
+    Map<String, dynamic> fields,
+    Map<String, dynamic> metadata,
+  ) => Future.error(StateError('This action requires an administrator.'));
+
+  @override
+  Future<void> setVisitorStatus(
+    List<String> ids, String status, String reason,
+  ) => Future.error(StateError('This action requires an administrator.'));
+
+  @override
+  Future<void> setWatchlist(
+    List<AdminVisitor> visitors, bool enabled,
+  ) => Future.error(StateError('This action requires an administrator.'));
+
+  @override
+  Future<void> savePackage(String? id, PackageDraft draft) =>
+      Future.error(StateError('This action requires an administrator.'));
+
+  @override
+  Future<ParkTicket> findTicket(String code) =>
+      Future.error(StateError('Ticket validation requires authorized operations access.'));
+
+  @override
+  Future<AdmissionResult> admit(String ticketId, String requestId) =>
+      Future.error(StateError('Ticket validation requires authorized operations access.'));
 }

@@ -15,6 +15,13 @@ import 'reservations/reservations_admin_page.dart';
 import 'portal/admin_theme.dart';
 import 'ride_entry_page.dart';
 import 'photos/photo_management.dart';
+import 'staff/staff_workforce_hub.dart';
+import 'staff/staff_my_work_page.dart';
+import 'staff/staff_records.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'products/park_commerce_page.dart';
+import 'staff/staff_portal_navigation.dart';
+import 'staff/staff_workspace_ui.dart';
 import 'operations/park_management_page.dart';
 import 'operations/reports_page.dart';
 import 'operations/landmark_management_page.dart';
@@ -25,12 +32,18 @@ class AdminShell extends StatefulWidget {
   final AdminRepository repository;
   final String adminName, adminEmail;
   final Future<void> Function() onSignOut;
+  final StaffPortalNavigation portalNavigation;
+  final FirebaseFirestore? staffWorkDb;
+  final StaffProfile? staffWorkProfile;
   const AdminShell({
     super.key,
     required this.repository,
     required this.adminName,
     required this.adminEmail,
     required this.onSignOut,
+    this.portalNavigation = const StaffPortalNavigation.superAdmin(),
+    this.staffWorkDb,
+    this.staffWorkProfile,
   });
   @override
   State<AdminShell> createState() => _AdminShellState();
@@ -51,12 +64,24 @@ class _AdminShellState extends State<AdminShell> {
       facilitySlots = repository.facilitySlots,
       facilityAccess = repository.facilityAccess;
   String page = 'visitors', query = '';
+  bool get restricted => widget.portalNavigation.isRestricted;
+  bool allowed(String menu) => widget.portalNavigation.allows(menu);
   String? visitorId;
   ParkTicket? scanTicket;
   @override
   void initState() {
     super.initState();
+    if (restricted) page = 'dashboard';
     store.start();
+  }
+
+  @override
+  void didUpdateWidget(covariant AdminShell oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!allowed(page)) {
+      page = 'dashboard';
+      visitorId = null;
+    }
   }
 
   @override
@@ -69,6 +94,8 @@ class _AdminShellState extends State<AdminShell> {
   }
 
   void open(String value) {
+    // A direct callback or deep navigation must not bypass sidebar visibility.
+    if (!allowed(value)) return;
     if (page == 'facilities' &&
         (facilityNavigator.currentState?.canPop() ?? false)) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -80,7 +107,7 @@ class _AdminShellState extends State<AdminShell> {
       );
       return;
     }
-    if (value == 'photo-kiosk') {
+    if (value == 'photo-kiosk' && !restricted) {
       Navigator.pushNamed(context, '/kiosk');
       return;
     }
@@ -93,12 +120,15 @@ class _AdminShellState extends State<AdminShell> {
     scaffold.currentState?.closeDrawer();
   }
 
-  void validate(ParkTicket t) => setState(() {
+  void validate(ParkTicket t) {
+    if (!allowed('validation')) return;
+    setState(() {
     scanTicket = t;
     page = 'validation';
-  });
+    });
+  }
   void search(String value) {
-    if (value.trim().isEmpty) return;
+    if (!allowed('visitors') || value.trim().isEmpty) return;
     setState(() {
       query = value.trim();
       visitorId = null;
@@ -140,6 +170,9 @@ class _AdminShellState extends State<AdminShell> {
                   for (final item in [
                     ('dashboard', 'Dashboard', Icons.dashboard_outlined),
                     ('visitors', 'Visitors', Icons.people_outline),
+                    ('staff', 'Staff Management', Icons.badge_outlined),
+                    ('staff-my-work', 'My Work', Icons.calendar_month_outlined),
+                    ('commerce', 'Products & Sales', Icons.storefront_outlined),
                     (
                       'tickets',
                       'Tickets & Orders',
@@ -158,12 +191,7 @@ class _AdminShellState extends State<AdminShell> {
                     ),
                     ('reports', 'Reports & Analytics', Icons.insights_outlined),
                     ('crowd', 'Crowd Monitoring', Icons.hub_outlined),
-                    (
-                      'landmarks',
-                      'Landmark References',
-                      Icons.location_searching,
-                    ),
-                    ('anomalies', 'Unusual Activity', Icons.policy_outlined),
+                    ('anomalies', 'Visitor Risk Review', Icons.policy_outlined),
                     (
                       'photo-kiosk',
                       'Photo Kiosk',
@@ -173,6 +201,11 @@ class _AdminShellState extends State<AdminShell> {
                       'facilities',
                       'Park Facilities',
                       Icons.attractions_outlined,
+                    ),
+                    (
+                      'landmarks',
+                      'Navigation Landmarks',
+                      Icons.location_searching,
                     ),
                     (
                       'reservations',
@@ -185,13 +218,10 @@ class _AdminShellState extends State<AdminShell> {
                       'Attraction Check-in',
                       Icons.sensor_door_outlined,
                     ),
-                    (
-                      'activity',
-                      'Activity Monitoring',
-                      Icons.monitor_heart_outlined,
-                    ),
                     ('support', 'Feedback & Complaints', Icons.forum_outlined),
                   ])
+                    if (allowed(item.$1) && (restricted ||
+                        (item.$1 != 'tickets' && item.$1 != 'packages')))
                     Padding(
                       padding: const EdgeInsets.symmetric(
                         horizontal: 12,
@@ -281,12 +311,29 @@ class _AdminShellState extends State<AdminShell> {
         final wide = c.maxWidth >= 1050;
         Widget body;
         var sectionScrolls = false;
-        if (store.loading) {
+        if (!allowed(page)) {
+          body = const AdminCard(child: Text('You do not have access to this page.'));
+        } else if (store.loading) {
           body = const Center(
             child: Padding(
               padding: EdgeInsets.all(70),
               child: CircularProgressIndicator(color: adminRose),
             ),
+          );
+        } else if (page == 'staff-my-work' && restricted &&
+            widget.staffWorkDb != null && widget.staffWorkProfile != null) {
+          body = StaffMyWorkPage(db: widget.staffWorkDb!, profile: widget.staffWorkProfile!);
+        } else if (restricted &&
+            (page == 'dashboard' ||
+             (page != 'photos') ||
+             photos == null)) {
+          // Staff and Super Admin share AdminShell, styles and sidebar.
+          // Other modules remain UI-only until their backend role scopes exist.
+          body = StaffWorkspaceUi(
+            navigation: widget.portalNavigation,
+            staffName: widget.adminName,
+            page: page,
+            onOpen: open,
           );
         } else if (page == 'visitors') {
           body = visitorId == null
@@ -332,6 +379,16 @@ class _AdminShellState extends State<AdminShell> {
             data: AdminTheme.data,
             child: ReservationsAdminPage(watchDay: repository.reservations),
           );
+        } else if (page == 'staff') {
+          body = repository.staffRecordsRepository == null
+              ? const AdminCard(child: Text('Staff Management is unavailable. Sign in with an authorized administrator account.'))
+              : StaffWorkforceHub(repository: repository.staffRecordsRepository!);
+        } else if (page == 'commerce') {
+          body = ParkCommercePage(
+            store: store, onValidate: validate,
+            db: repository.staffRecordsRepository?.db,
+            reportsRepository: park,
+          );
         } else if (page == 'tickets') {
           body = TicketManagement(store: store, onValidate: validate);
         } else if (page == 'ride-entry') {
@@ -351,7 +408,8 @@ class _AdminShellState extends State<AdminShell> {
                     'Unable to load photo management. Please reopen the portal.',
                   ),
                 )
-              : PhotoManagement(repository: photos!, visitors: store.visitors);
+              : PhotoManagement(repository: photos!, visitors: store.visitors,
+                staffMode: restricted, parkSettingsRepository: restricted ? null : park);
         } else if (page == 'anomalies') {
           body = park == null
               ? const AdminEmpty(
@@ -471,12 +529,12 @@ class _AdminShellState extends State<AdminShell> {
                         children: [
                           if (!wide)
                             IconButton(
-                              tooltip: 'Open admin navigation',
+                              tooltip: 'Open navigation',
                               onPressed: () =>
                                   scaffold.currentState?.openDrawer(),
                               icon: const Icon(Icons.menu),
                             ),
-                          Expanded(
+                          if (!restricted) Expanded(
                             child: ConstrainedBox(
                               constraints: const BoxConstraints(maxWidth: 560),
                               child: TextField(
@@ -505,8 +563,8 @@ class _AdminShellState extends State<AdminShell> {
                               ),
                             ),
                           ),
-                          const SizedBox(width: 18),
-                          IconButton(
+                          if (!restricted) const SizedBox(width: 18),
+                          if (!restricted) IconButton(
                             tooltip: 'Recent account activity',
                             onPressed: () => open('activity'),
                             icon: Badge(
@@ -519,6 +577,7 @@ class _AdminShellState extends State<AdminShell> {
                               ),
                             ),
                           ),
+                          const Spacer(),
                           const SizedBox(width: 18),
                           AdminAvatar(widget.adminName, radius: 20),
                           if (c.maxWidth >= 650) ...[
@@ -535,8 +594,8 @@ class _AdminShellState extends State<AdminShell> {
                                   ),
                                 ),
                                 const SizedBox(height: 4),
-                                const Text(
-                                  'Administrator',
+                                Text(
+                                  widget.portalNavigation.roleLabel,
                                   style: TextStyle(
                                     fontSize: 11,
                                     color: adminMuted,
@@ -546,7 +605,7 @@ class _AdminShellState extends State<AdminShell> {
                             ),
                           ],
                           PopupMenuButton<String>(
-                            tooltip: 'Administrator account',
+                            tooltip: 'Account options',
                             onSelected: (value) {
                               if (value == 'signout') {
                                 widget.onSignOut();
@@ -607,144 +666,126 @@ class AdminDashboard extends StatelessWidget {
   final AdminStore store;
   final ValueChanged<String> onOpen;
   const AdminDashboard({super.key, required this.store, required this.onOpen});
+
   @override
-  Widget build(BuildContext context) => Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      const AdminHeading(
-        'Park Operations Overview',
-        'Visitor accounts, ticket bookings and park admissions',
-      ),
-      const SizedBox(height: 26),
-      AdminStats(
-        children: [
-          AdminStat(
-            'Registered Visitors',
-            '${store.visitors.length}',
-            'All visitor accounts',
-            Icons.people_outline,
-          ),
-          AdminStat(
-            'Active Today',
-            '${store.activeToday}',
-            'Visitor app sessions today',
-            Icons.person_outline,
-            color: Colors.green,
-          ),
-          AdminStat(
-            'Confirmed Bookings',
-            '${store.orders.length}',
-            'Saved ticket orders',
-            Icons.receipt_long_outlined,
-            color: Colors.blue,
-          ),
-          AdminStat(
-            'Park Admissions',
-            '${store.admissions.where((a) => adminDateLabel(a.at) == displayParkDate(visitDateString(parkToday()))).length}',
-            'Successful admissions today',
-            Icons.verified_outlined,
-            color: Colors.orange,
-          ),
-        ],
-      ),
-      const SizedBox(height: 24),
-      AdminCard(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                const Expanded(
-                  child: Text(
-                    'Recent Bookings',
-                    style: TextStyle(fontSize: 19, fontWeight: FontWeight.w600),
-                  ),
-                ),
-                TextButton(
-                  onPressed: () => onOpen('tickets'),
-                  child: const Text(
-                    'View All',
-                    style: TextStyle(color: adminRose),
-                  ),
-                ),
-              ],
-            ),
+  Widget build(BuildContext context) {
+    final today = visitDateString(parkToday());
+    final todaysTickets = store.tickets.where((t) => t.visitDate == today).toList();
+    final enteredToday = store.admissions.where((a) =>
+      adminDateLabel(a.at) == displayParkDate(today)).length;
+    final awaiting = todaysTickets.where((t) => !t.admittedToday &&
+        t.filter == 'Upcoming').length;
+    final review = store.flagged;
+    final nextDays = List.generate(7, (index) {
+      final day = visitDateString(parkToday().add(Duration(days: index)));
+      return MapEntry(day, store.tickets.where((t) => t.visitDate == day).length);
+    });
+    final peak = nextDays.fold<int>(1, (max, entry) =>
+      entry.value > max ? entry.value : max);
+    final recent = [...store.orders]..sort((a, b) =>
+      (b.createdAt ?? DateTime(1970)).compareTo(a.createdAt ?? DateTime(1970)));
+
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      AdminHeading('Park Overview', 'Admissions, demand and issues requiring attention',
+        action: AdminButton('View Orders', icon: Icons.receipt_long_outlined,
+          onPressed: () => onOpen('commerce'))),
+      const SizedBox(height: 22),
+      AdminStats(children: [
+        AdminStat('Tickets for Today', '${todaysTickets.length}',
+          '', Icons.confirmation_number_outlined),
+        AdminStat('Admissions Today', '$enteredToday',
+          '', Icons.how_to_reg_outlined, color: const Color(0xFF328A62)),
+        AdminStat('Still to Arrive', '$awaiting',
+          '', Icons.access_time_outlined, color: const Color(0xFFC08A35)),
+        AdminStat('Visitor Reviews', '$review',
+          '', Icons.policy_outlined, color: const Color(0xFFC97679)),
+      ]),
+      const SizedBox(height: 23),
+      LayoutBuilder(builder: (context, c) {
+        final compact = c.maxWidth < 820;
+        final demand = AdminCard(child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Row(children: [Icon(Icons.insights_outlined, color: adminRose),
+            SizedBox(width: 10), Text('Expected Visits · Next 7 Days',
+              style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800))]),
+          const SizedBox(height: 20),
+          for (final entry in nextDays) ...[
+            Row(children: [
+              SizedBox(width: 75, child: Text(entry.key.substring(5),
+                style: const TextStyle(color: adminMuted))),
+              Expanded(child: ClipRRect(borderRadius: BorderRadius.circular(8),
+                child: LinearProgressIndicator(value: entry.value / peak,
+                  minHeight: 12, color: adminRose,
+                  backgroundColor: const Color(0xFFF3E6E3)))),
+              const SizedBox(width: 12),
+              SizedBox(width: 35, child: Text('${entry.value}',
+                textAlign: TextAlign.end,
+                style: const TextStyle(fontWeight: FontWeight.w800))),
+            ]),
             const SizedBox(height: 12),
-            if (store.orders.isEmpty)
-              const AdminEmpty(
-                'No bookings yet',
-                'Completed visitor bookings will appear here.',
-              ),
-            for (final o in store.orders.take(5))
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 13),
-                child: Row(
-                  children: [
-                    const Icon(
-                      Icons.confirmation_number_outlined,
-                      color: adminRose,
-                    ),
-                    const SizedBox(width: 15),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            o.packageName,
-                            style: const TextStyle(
-                              fontWeight: FontWeight.w600,
-                              fontSize: 14,
-                            ),
-                          ),
-                          const SizedBox(height: 5),
-                          Text(
-                            '${o.reference} · ${displayParkDate(o.visitDate)}',
-                            style: const TextStyle(
-                              color: adminMuted,
-                              fontSize: 12,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    Text(
-                      money(o.totalMinor),
-                      style: const TextStyle(fontWeight: FontWeight.w600),
-                    ),
-                  ],
-                ),
-              ),
           ],
-        ),
-      ),
-      const SizedBox(height: 20),
-      AdminCard(
-        child: Wrap(
-          spacing: 18,
-          runSpacing: 16,
-          children: [
-            AdminButton(
-              'View Visitors',
-              icon: Icons.people_outline,
-              onPressed: () => onOpen('visitors'),
-            ),
-            AdminButton(
-              'Manage Passes',
-              icon: Icons.local_activity_outlined,
-              outlined: true,
-              onPressed: () => onOpen('packages'),
-            ),
-            AdminButton(
-              'Validate Ticket',
-              icon: Icons.qr_code_scanner,
-              outlined: true,
-              onPressed: () => onOpen('validation'),
-            ),
-          ],
-        ),
-      ),
-    ],
-  );
+          const Text('Based on ticket visit dates; not a live crowd estimate.',
+            style: TextStyle(fontSize: 11, color: adminMuted)),
+        ]));
+        final attention = AdminCard(child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Row(children: [Icon(Icons.notification_important_outlined,
+            color: adminRose), SizedBox(width: 10),
+            Text('Needs Attention',
+              style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800))]),
+          const SizedBox(height: 16),
+          ListTile(contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.policy_outlined, color: adminRose),
+            title: Text('$review visitor accounts to review'),
+            subtitle: const Text('Check evidence before any account action'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => onOpen('anomalies')),
+          const Divider(),
+          ListTile(contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.verified_user_outlined,
+              color: Color(0xFFB58336)),
+            title: Text('$awaiting tickets not yet scanned today'),
+            subtitle: const Text('Arrivals may be scheduled for later'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => onOpen('validation')),
+          const Divider(),
+          ListTile(contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.receipt_long_outlined,
+              color: adminRose),
+            title: Text('${store.orders.length} recorded bookings'),
+            subtitle: const Text('Review orders and sales performance'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => onOpen('commerce')),
+        ]));
+        return compact ? Column(children: [demand, const SizedBox(height: 16), attention])
+          : Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Expanded(child: demand), const SizedBox(width: 16),
+            Expanded(child: attention)]);
+      }),
+      const SizedBox(height: 23),
+      AdminCard(child: Column(crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(children: [const Expanded(child: Text('Recent Bookings',
+            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800))),
+            TextButton(onPressed: () => onOpen('commerce'),
+              child: const Text('View All'))]),
+          const Divider(),
+          if (recent.isEmpty)
+            const Padding(padding: EdgeInsets.all(18),
+              child: Text('No bookings recorded.')),
+          for (final item in recent.take(5))
+            ListTile(contentPadding: EdgeInsets.zero,
+              title: Text(item.packageName,
+                maxLines: 1, overflow: TextOverflow.ellipsis),
+              subtitle: Text('${item.reference}  •  ${displayParkDate(item.visitDate)}',
+                style: const TextStyle(color: adminMuted, fontSize: 12)),
+              trailing: Text(money(item.totalMinor),
+                style: const TextStyle(fontWeight: FontWeight.w700))),
+          const Text('Figures include any seeded demonstration records.',
+            style: TextStyle(fontSize: 11, color: adminMuted)),
+        ])),
+    ]);
+  }
 }
 
 class AdminActivityScreen extends StatefulWidget {

@@ -9,6 +9,8 @@ import '../admin_widgets.dart';
 import 'attraction_camera_store.dart';
 import 'camera_heatmap.dart';
 import 'camera_peer.dart';
+import 'crowdsense_engine.dart';
+import 'crowdsense_lab.dart';
 
 class LiveCamerasPanel extends StatefulWidget {
   const LiveCamerasPanel({super.key, required this.store});
@@ -24,6 +26,22 @@ class _LiveCamerasPanelState extends State<LiveCamerasPanel> {
   String? _selected;
   bool _saving = false;
   String? _error;
+  final ValueNotifier<Map<String, CrowdSensorReading>> _sensorReadings =
+      ValueNotifier(<String, CrowdSensorReading>{});
+
+  void _onCameraCount(String attractionId, int count) {
+    if (!mounted) return;
+    _sensorReadings.value = {
+      ..._sensorReadings.value,
+      attractionId: CrowdSensorReading(count, DateTime.now()),
+    };
+  }
+
+  @override
+  void dispose() {
+    _sensorReadings.dispose();
+    super.dispose();
+  }
 
   Future<void> _save(String id, bool enabled) async {
     if (_saving) return;
@@ -135,6 +153,14 @@ class _LiveCamerasPanelState extends State<LiveCamerasPanel> {
                   ),
                 ),
                 const SizedBox(height: 16),
+                CrowdSenseLab(
+                  attractions: [
+                    ...rides.where((ride) => enabled.contains(ride.id)),
+                    ...rides.where((ride) => !enabled.contains(ride.id)),
+                  ],
+                  readings: _sensorReadings,
+                ),
+                const SizedBox(height: 16),
                 if (assigned.isEmpty)
                   const AdminEmpty(
                     'No attraction cameras assigned',
@@ -156,6 +182,7 @@ class _LiveCamerasPanelState extends State<LiveCamerasPanel> {
                             child: _CameraTile(
                               place: place,
                               store: widget.store,
+                              onCameraCount: _onCameraCount,
                               onRemove: _saving
                                   ? null
                                   : () => _save(place.id, false),
@@ -177,10 +204,12 @@ class _CameraTile extends StatefulWidget {
     required this.place,
     required this.store,
     required this.onRemove,
+    required this.onCameraCount,
   });
   final Attraction place;
   final AttractionCameraStore store;
   final VoidCallback? onRemove;
+  final void Function(String attractionId, int count) onCameraCount;
   @override
   State<_CameraTile> createState() => _CameraTileState();
 }
@@ -252,6 +281,7 @@ class _CameraTileState extends State<_CameraTile> {
                     store: widget.store,
                     attractionId: widget.place.id,
                     session: session,
+                    onCameraCount: widget.onCameraCount,
                   ),
                 if (online)
                   Align(
@@ -280,9 +310,11 @@ class _CameraViewer extends StatefulWidget {
     required this.store,
     required this.attractionId,
     required this.session,
+    required this.onCameraCount,
   });
   final AttractionCameraStore store;
   final String attractionId, session;
+  final void Function(String attractionId, int count) onCameraCount;
   @override
   State<_CameraViewer> createState() => _CameraViewerState();
 }
@@ -296,6 +328,7 @@ class _CameraViewerState extends State<_CameraViewer> {
   String? _view, _error;
   CameraHeatmap? _heat;
   bool _showHeat = true, _connected = false;
+  DateTime? _lastCrowdReport;
 
   @override
   void initState() {
@@ -355,6 +388,13 @@ class _CameraViewerState extends State<_CameraViewer> {
         final heat = CameraHeatmap.decode(message.text);
         if (heat == null) return;
         setState(() => _heat = heat);
+        final now = DateTime.now();
+        if (_lastCrowdReport == null ||
+            now.difference(_lastCrowdReport!) >=
+                const Duration(milliseconds: 1200)) {
+          _lastCrowdReport = now;
+          widget.onCameraCount(widget.attractionId, heat.count);
+        }
         _heatExpiry?.cancel();
         _heatExpiry = Timer(const Duration(seconds: 4), () {
           if (mounted && _view == view) setState(() => _heat = null);
@@ -497,3 +537,4 @@ class _CameraViewerState extends State<_CameraViewer> {
     );
   }
 }
+

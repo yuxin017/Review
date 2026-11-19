@@ -1,0 +1,131 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
+
+import 'staff_access.dart';
+import 'staff_form_validation.dart';
+import 'staff_records.dart';
+
+/// Firebase storage for staff records. Must be created with the STAFF/ADMIN
+/// FirebaseFirestore instance from the existing AdminFirebase service.
+///
+/// Security: these methods are only a client wrapper. Firestore Security Rules
+/// must authorize every read/write. Until rules are deployed, writes should
+/// fail with permission-denied. Do not weaken the rules to make them work.
+class StaffRecordsRepository {
+  const StaffRecordsRepository(this.db);
+  final FirebaseFirestore db;
+
+  Stream<List<StaffProfile>> watchStaffDirectory() => db
+      .collection('staffProfiles')
+      .snapshots()
+      .map((snap) => snap.docs
+          .map((doc) => StaffProfile.fromMap(doc.id, doc.data()))
+          .toList()
+        ..sort((a, b) => a.fullName.compareTo(b.fullName)));
+
+  Stream<StaffProfile?> watchStaffProfile(String uid) {
+    _validateUid(uid);
+    return db.collection('staffProfiles').doc(uid).snapshots().map((doc) =>
+        doc.exists ? StaffProfile.fromMap(doc.id, doc.data()!) : null);
+  }
+
+  Stream<List<StaffQualification>> watchQualifications(String uid) {
+    _validateUid(uid);
+    return db
+        .collection('staffQualifications')
+        .where('staffUid', isEqualTo: uid)
+        .snapshots()
+        .map((snapshot) => snapshot.docs
+            .map((doc) => StaffQualification.fromMap(doc.id, doc.data()))
+            .toList());
+  }
+
+  /// Admin-only operation, to be enabled after secure Firestore rules.
+  Future<void> saveStaffProfile({
+    required String uid,
+    required String fullName,
+    required String email,
+    required String status,
+    required Set<StaffRole> eligibleRoles,
+  }) async {
+    _validateUid(uid);
+    final name = fullName.trim();
+    final address = email.trim().toLowerCase();
+    final nameError = StaffFormValidation.fullName(name);
+    if (nameError != null) throw ArgumentError(nameError);
+    final emailError = StaffFormValidation.email(address);
+    if (emailError != null) throw ArgumentError(emailError);
+    if (!{'active', 'inactive', 'suspended'}.contains(status)) {
+      throw ArgumentError('Invalid staff account status.');
+    }
+    if (eligibleRoles.contains(StaffRole.superAdmin)) {
+      throw ArgumentError(
+          'Super Admin access must be granted through trusted Firebase claims.');
+    }
+    await db.collection('staffProfiles').doc(uid).set({
+      'fullName': name,
+      'email': address,
+      'status': status,
+      'eligibleRoles': eligibleRoles.map((role) => role.code).toList()..sort(),
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
+  /// Admin-only qualification approval. The caller's identity must be checked
+  /// by Firestore Rules or a callable; this method cannot establish authority.
+  Future<void> saveQualification({
+    required String qualificationId,
+    required String staffUid,
+    required StaffRole role,
+    required String title,
+    required DateTime completedAt,
+    DateTime? expiresAt,
+    String? attractionId,
+    String? courseId,
+  }) async {
+    _validateUid(staffUid);
+    _validateUid(qualificationId);
+    if (role == StaffRole.superAdmin) {
+      throw ArgumentError('Super Admin is not a training qualification.');
+    }
+    if (title.trim().length < 3) {
+      throw ArgumentError('Enter the training course name.');
+    }
+    if (courseId != null && (courseId.isEmpty || courseId.contains('/'))) {
+      throw ArgumentError('Select a valid course from the training catalogue.');
+    }
+    if (role == StaffRole.attractionOperator &&
+        (attractionId == null || attractionId.isEmpty)) {
+      throw ArgumentError('Specify the attraction covered by this training.');
+    }
+    if (expiresAt != null && !expiresAt.isAfter(completedAt)) {
+      throw ArgumentError('Training expiry must follow the completion date.');
+    }
+    await db.collection('staffQualifications').doc(qualificationId).set({
+      'staffUid': staffUid,
+      'roleCode': role.code,
+      'title': title.trim(),
+      if (courseId != null) 'courseId': courseId,
+      'status': 'approved',
+      'attractionId': attractionId ?? '',
+      'completedAt': Timestamp.fromDate(completedAt.toUtc()),
+      'expiresAt': expiresAt == null
+          ? null
+          : Timestamp.fromDate(expiresAt.toUtc()),
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
+  Future<void> revokeQualification(String qualificationId) async {
+    _validateUid(qualificationId);
+    await db.collection('staffQualifications').doc(qualificationId).update({
+      'status': 'revoked',
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+  }
+
+  void _validateUid(String uid) {
+    if (uid.trim().isEmpty || uid.contains('/') || uid != uid.trim()) {
+      throw ArgumentError('Invalid Firebase document ID.');
+    }
+  }
+}

@@ -3,8 +3,11 @@ import 'dart:convert';
 import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import '../models/tickets.dart';
 import 'ticket_repository.dart';
+import 'rewards_repository.dart';
 import '../../services/application_api.dart';
 
 /// State shared by the separate Figma booking screens. Card credentials never enter it.
@@ -23,6 +26,8 @@ class TicketJourney extends ChangeNotifier {
   TicketCheckout? pending, completed;
   String? error;
   bool loading = true, busy = false;
+  bool _catalogLoaded = false, _cartRestored = false;
+  String? cartNotice;
   bool _disposed = false;
   @override
   void notifyListeners() {
@@ -66,6 +71,8 @@ class TicketJourney extends ChangeNotifier {
       repository.packages().listen((value) {
         packages = [...value]
           ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+        _catalogLoaded = true;
+        if (_cartRestored) pruneUnavailableCartLines();
         loading = false;
         notifyListeners();
       }, onError: failed),
@@ -112,8 +119,14 @@ class TicketJourney extends ChangeNotifier {
         promoCode = pending!.promoCode;
         discountMinor = pending!.discountMinor;
         termsAccepted = true;
+        if (repository is FirebaseTicketRepository) {
+          await verifyHostedPayment();
+        }
       }
+      _cartRestored = true;
+      pruneUnavailableCartLines();
     } catch (_) {
+      _cartRestored = true;
       error =
           'Your saved cart could not be restored. Please choose your tickets again.';
     }
@@ -121,6 +134,9 @@ class TicketJourney extends ChangeNotifier {
   }
 
   void add(TicketCartLine line) {
+    if (!validVisitDate(line.visitDate)) {
+      throw StateError('Select a valid visit date before adding this pass.');
+    }
     if (pending != null) {
       throw StateError(
         'Finish the pending checkout before changing your cart.',
@@ -133,12 +149,14 @@ class TicketJourney extends ChangeNotifier {
       throw StateError('You can add up to five passes in one order.');
     }
     cart = [...cart, line];
+    cartNotice = null;
     _syncGuests();
     _changed();
   }
 
   void remove(String id) {
-    if (pending != null) return;
+    if (pending != null || busy) return;
+    cartNotice = null;
     cart = cart.where((line) => line.id != id).toList();
     _syncGuests();
     _changed();
@@ -158,6 +176,141 @@ class TicketJourney extends ChangeNotifier {
         .toList();
     _syncGuests();
     _changed();
+  }
+
+
+  /// Mirror the server's Malaysia-time 365-day booking window.
+  static bool validVisitDate(String value, {DateTime? today}) {
+    final date = DateTime.tryParse(value);
+    final start = today ?? parkToday();
+    if (date == null || visitDateString(date) != value) return false;
+    return !date.isBefore(start) &&
+        !date.isAfter(start.add(const Duration(days: 365)));
+  }
+
+  bool get hasInvalidVisitDate =>
+      cart.any((line) => !validVisitDate(line.visitDate));
+
+  /// Only cart entries are removed. A Stripe payment already in progress is
+  /// intentionally untouched so there is no chance of losing a paid ticket.
+  int pruneUnavailableCartLines({DateTime? today}) {
+    if (pending != null || busy || cart.isEmpty) return 0;
+    final start = today ?? parkToday();
+    final availableIds = _catalogLoaded
+        ? packages.map((pack) => pack.id).toSet()
+        : null;
+    final kept = <TicketCartLine>[];
+    var expired = 0;
+    var unavailable = 0;
+    for (final line in cart) {
+      if (!validVisitDate(line.visitDate, today: start)) {
+        expired++;
+      } else if (availableIds != null &&
+          !availableIds.contains(line.packageId)) {
+        unavailable++;
+      } else {
+        kept.add(line);
+      }
+    }
+    if (expired + unavailable == 0) return 0;
+    cart = kept;
+    _syncGuests();
+    cartNotice = [
+      if (expired > 0)
+        '$expired expired ${expired == 1 ? 'pass was' : 'passes were'} removed',
+      if (unavailable > 0)
+        '$unavailable unavailable ${unavailable == 1 ? 'pass was' : 'passes were'} removed',
+    ].join('. ') + ' from your cart.';
+    _changed();
+    return expired + unavailable;
+  }
+
+  /// Update date and guest counts together, keeping one consistent cart state.
+  void updateCartLine(String lineId, DateTime visitDate, int adults, int children) {
+    if (pending != null || busy) {
+      throw StateError('Please finish or verify your pending payment first.');
+    }
+    final index = cart.indexWhere((line) => line.id == lineId);
+    if (index < 0) throw StateError('This pass is no longer in your cart.');
+    final old = cart[index];
+    if (!validVisitDate(visitDateString(visitDate))) {
+      throw StateError('Choose a visit date within the next 365 days.');
+    }
+    if (adults < 0 || children < 0 || adults + children < 1 ||
+        quantity - old.quantity + adults + children > 10) {
+      throw StateError('Select 1 to 10 guests per order.');
+    }
+    final updated = TicketCartLine(
+      id: old.id,
+      packageId: old.packageId,
+      packageName: old.packageName,
+      visitDate: visitDateString(visitDate),
+      adults: adults,
+      children: children,
+      adultPriceMinor: old.adultPriceMinor,
+      childPriceMinor: old.childPriceMinor,
+      durationDays: old.durationDays,
+      imageAsset: old.imageAsset,
+      category: old.category,
+    );
+    final updatedCart = [...cart];
+    updatedCart[index] = updated;
+    cart = updatedCart;
+    currencyQuote = null;
+    _syncGuests();
+    cartNotice = null;
+    _changed();
+  }
+
+  void updateVisitDate(String lineId, DateTime date) {
+    final old = cart.where((line) => line.id == lineId).firstOrNull;
+    if (old == null) return;
+    try {
+      updateCartLine(lineId, date, old.adults, old.children);
+    } catch (e) {
+      error = bookingError(e);
+      notifyListeners();
+    }
+  }
+
+  /// A failed date validation occurs before a Stripe Checkout session is
+  /// created. Do not discard a checkout that the server still recognises.
+  Future<bool> recoverRejectedVisitDate() async {
+    if (busy) return false;
+    final request = pending;
+    if (request == null) {
+      error = null;
+      notifyListeners();
+      return true;
+    }
+    busy = true;
+    notifyListeners();
+    try {
+      final status = await repository.hostedPaymentStatus(request.requestId);
+      error = status == 'paid'
+          ? 'Payment has already succeeded. Check payment status first.'
+          : 'A payment session may already exist. Check payment status before changing your booking.';
+      return false;
+    } catch (e) {
+      // The server returns this exact message when no payment record exists.
+      // A transient/network/permission error must NOT erase pending checkout.
+      if (bookingError(e) != 'This payment is not linked to your account.') {
+        error = bookingError(e);
+        return false;
+      }
+      final uid = repository.userId;
+      if (uid == null) {
+        error = 'Please sign in again to change your booking.';
+        return false;
+      }
+      await pendingStore.clear(uid);
+      pending = null;
+      error = null;
+      return true;
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
   }
 
   void _syncGuests() {
@@ -293,19 +446,65 @@ class TicketJourney extends ChangeNotifier {
     }
   }
 
+  Future<bool> verifyHostedPayment() async {
+    final request = pending;
+    if (busy || request == null) return false;
+    busy = true;
+    error = null;
+    notifyListeners();
+    try {
+      final status = await repository.hostedPaymentStatus(request.requestId);
+      if (status == 'paid') {
+        final uid = repository.userId;
+        completed = request;
+        if (uid != null) await pendingStore.clear(uid);
+        pending = null;
+        cart = [];
+        guests = [];
+        pointsUsed = 0;
+        promoCode = '';
+        discountMinor = 0;
+        promotionAllowsPoints = true;
+        termsAccepted = false;
+        await _saveCart();
+        try {
+          await FirebaseRewardsRepository().collectOrder(request.requestId);
+        } catch (_) {
+          // Ticket payment is already verified; rewards can be collected later.
+        }
+        return true;
+      }
+      error = status == 'manual_review'
+          ? 'Your payment was received but needs staff review. Please contact support; do not pay again.'
+          : 'Payment has not been confirmed yet. Complete Stripe Checkout or check again.';
+      return false;
+    } catch (e) {
+      error = bookingError(e);
+      return false;
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
+  }
+
   Future<bool> pay(String method, {String cardLast4 = ''}) async {
     if (busy) return false;
-    if (pending == null && (!guestsComplete || !termsAccepted)) {
-      error = 'Complete the guest details and agree to the ticket terms first.';
+    if (pending != null) {
+      if (await verifyHostedPayment()) return true;
+      if (error?.contains('staff review') == true) return false;
+    }
+    if (pending == null && hasInvalidVisitDate) {
+      error = 'Choose a valid visit date within the next year.';
       notifyListeners();
       return false;
     }
-    if (pending == null &&
-        paymentCurrency != 'MYR' &&
-        (currencyQuote == null ||
-            currencyQuote!.baseMinor != total ||
-            currencyQuote!.expiresAt?.isBefore(DateTime.now()) == true)) {
-      error = 'Refresh your currency quote before confirming.';
+    if (pending == null && (!guestsComplete || !termsAccepted)) {
+      error = 'Complete the guest details and accept the ticket terms first.';
+      notifyListeners();
+      return false;
+    }
+    if (pending == null && paymentCurrency != 'MYR') {
+      error = 'Stripe Checkout currently accepts MYR. Select MYR before paying.';
       notifyListeners();
       return false;
     }
@@ -313,38 +512,45 @@ class TicketJourney extends ChangeNotifier {
     error = null;
     notifyListeners();
     try {
-      final request =
-          pending ??
-          TicketCheckout.journey(
-            requestId: newId(),
-            lines: cart,
-            guests: guests,
-            pointsUsed: pointsUsed,
-            paymentMethod: method,
-            cardLast4: cardLast4,
-            promoCode: promoCode,
-            discountMinor: discountMinor,
-            currencyQuote: currencyQuote,
-          );
+      final request = pending ?? TicketCheckout.journey(
+        requestId: newId(),
+        lines: cart,
+        guests: guests,
+        pointsUsed: pointsUsed,
+        paymentMethod: 'card',
+        promoCode: promoCode,
+        discountMinor: discountMinor,
+      );
       final uid = repository.userId;
-      if (uid == null) throw StateError('Please sign in before checkout.');
+      if (uid == null) throw StateError('Please sign in before payment.');
       await pendingStore.save(uid, request);
       pending = request;
-      await repository.checkout(request);
-      completed = request;
-      await pendingStore.clear(uid);
-      pending = null;
-      cart = [];
-      guests = [];
-      pointsUsed = 0;
-      promoCode = '';
-      discountMinor = 0;
-      promotionAllowsPoints = true;
-      termsAccepted = false;
-      await _saveCart();
-      return true;
+      final url = await repository.startHostedPayment(request);
+      if (url == 'paid') {
+        busy = false;
+        return await verifyHostedPayment();
+      }
+      final uri = Uri.tryParse(url);
+      if (uri == null || uri.scheme != 'https' ||
+          uri.host != 'checkout.stripe.com') {
+        throw StateError('The secure payment page is unavailable. Please retry.');
+      }
+      if (!await launchUrl(uri, webOnlyWindowName: '_self')) {
+        throw StateError('Could not open Stripe Checkout. Please retry.');
+      }
+      return false; // Success is confirmed only by the verified server response.
     } catch (e) {
       error = bookingError(e);
+      // Date validation rejects the request before any Stripe session/record.
+      // Release the locally saved pending checkout so the date can be edited.
+      if (error == 'Choose a valid visit date within the next year.' &&
+          pending != null) {
+        final uid = repository.userId;
+        if (uid != null) {
+          await pendingStore.clear(uid);
+          pending = null;
+        }
+      }
       return false;
     } finally {
       busy = false;
@@ -368,6 +574,10 @@ class TicketJourney extends ChangeNotifier {
     error = null;
     notifyListeners();
     try {
+      if (repository is FirebaseTicketRepository) {
+        error = 'This payment may still be processing. Verify its status before starting a new booking. Contact support if Stripe Checkout has expired.';
+        return false;
+      }
       if (await repository.orderExists(pending!.requestId)) {
         error =
             'This booking is already confirmed. Retry checkout to open your tickets.';
@@ -398,6 +608,13 @@ class TicketJourney extends ChangeNotifier {
 
 String bookingError(Object error) {
   if (error is ApplicationApiException) return error.message;
+  if (error is FirebaseFunctionsException) {
+    if (error.code == 'unauthenticated') {
+      return 'Please sign in with your verified email and try again.';
+    }
+    if (error.message?.isNotEmpty == true) return error.message!;
+    return 'Unable to complete the payment request. Please try again.';
+  }
   final text = error.toString();
   if (text.contains('permission-denied')) {
     return 'This action could not be authorised. Check that your email is verified, then try again.';

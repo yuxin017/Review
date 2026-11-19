@@ -104,8 +104,10 @@ class _RewardsPageState extends State<RewardsPage> {
               style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 8),
-            const Text(
-              'Rewards membership is based on total points earned: Normal below 500, Silver from 500, Gold from 1,500 and Platinum from 3,000. Spending points does not reduce your level.',
+            Text(
+              'Membership uses lifetime earned points: '
+              '${store.membershipPolicy.levels.map((level) => '${level.name} from ${level.minPoints}').join(', ')} points. '
+              'Redeeming points does not lower your level.',
             ),
             const SizedBox(height: 18),
             const Text(
@@ -362,6 +364,14 @@ class _RewardsPageState extends State<RewardsPage> {
 
   Widget points() {
     final tier = store.tier;
+    final currentLevel = store.membershipPolicy.forEarned(tier.earned);
+    final tierColour = switch (currentLevel.colorKey) {
+      'slate' => const Color(0xFF687E94),
+      'gold' => const Color(0xFFA67B30),
+      'violet' => const Color(0xFF8271A0),
+      'teal' => const Color(0xFF3B887B),
+      _ => const Color(0xFFB47778),
+    };
     final rows = store.activity
         .where(
           (e) =>
@@ -376,8 +386,8 @@ class _RewardsPageState extends State<RewardsPage> {
         Container(
           padding: const EdgeInsets.all(20),
           decoration: BoxDecoration(
-            gradient: const LinearGradient(
-              colors: [Color(0xFFB67D7C), Color(0xFF9F6465)],
+            gradient: LinearGradient(
+              colors: [tierColour, Color.lerp(tierColour, Colors.black, .16)!],
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
             ),
@@ -456,7 +466,7 @@ class _RewardsPageState extends State<RewardsPage> {
               const SizedBox(height: 26),
               Text(
                 tier.next == null
-                    ? 'Platinum membership unlocked'
+                    ? 'Highest membership level unlocked'
                     : '${groupedPoints(tier.remaining)} pts to ${tier.next}',
                 style: const TextStyle(color: Colors.white, fontSize: 14),
               ),
@@ -474,6 +484,34 @@ class _RewardsPageState extends State<RewardsPage> {
             ],
           ),
         ),
+        if (currentLevel.description.isNotEmpty || currentLevel.highlights.isNotEmpty) ...[
+          const SizedBox(height: 14),
+          RewardCard(child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Your ${currentLevel.name} membership',
+                style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+              if (currentLevel.description.isNotEmpty) ...[
+                const SizedBox(height: 6),
+                Text(currentLevel.description,
+                  style: const TextStyle(fontSize: 12, color: rewardMuted)),
+              ],
+              for (final item in currentLevel.highlights) ...[
+                const SizedBox(height: 7),
+                Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  const Icon(Icons.check_circle_outline, color: rewardRose, size: 16),
+                  const SizedBox(width: 7),
+                  Expanded(child: Text(item, style: const TextStyle(fontSize: 12))),
+                ]),
+              ],
+              if (currentLevel.highlights.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                const Text('Check each offer for its availability and terms.',
+                  style: TextStyle(fontSize: 10, color: rewardMuted)),
+              ],
+            ],
+          )),
+        ],
         const SizedBox(height: 20),
         Row(
           children: [

@@ -9,10 +9,12 @@ import 'admin_widgets.dart';
 class TicketManagement extends StatefulWidget {
   final AdminStore store;
   final ValueChanged<ParkTicket> onValidate;
+  final bool embedded;
   const TicketManagement({
     super.key,
     required this.store,
     required this.onValidate,
+    this.embedded = false,
   });
   @override
   State<TicketManagement> createState() => _TicketManagementState();
@@ -20,6 +22,15 @@ class TicketManagement extends StatefulWidget {
 
 class _TicketManagementState extends State<TicketManagement> {
   String query = '', tab = 'Bookings', status = 'all';
+  int bookingSort = 2, ticketSort = 3;
+  bool bookingAsc = false, ticketAsc = false;
+  void _sortBookings(int index, bool asc) => setState(() {
+    bookingSort = index; bookingAsc = asc;
+  });
+  void _sortTickets(int index, bool asc) => setState(() {
+    ticketSort = index; ticketAsc = asc;
+  });
+
   @override
   Widget build(BuildContext context) {
     final s = widget.store;
@@ -43,15 +54,38 @@ class _TicketManagementState extends State<TicketManagement> {
                   .contains(text),
         )
         .toList();
+    // Sorting is display-only: source orders and tickets are not mutated.
+    orders.sort((a, b) {
+      final result = switch (bookingSort) {
+        0 => a.reference.compareTo(b.reference),
+        1 => a.packageName.compareTo(b.packageName),
+        2 => a.visitDate.compareTo(b.visitDate),
+        3 => a.quantity.compareTo(b.quantity),
+        4 => a.totalMinor.compareTo(b.totalMinor),
+        _ => a.reference.compareTo(b.reference),
+      };
+      return bookingAsc ? result : -result;
+    });
+    tickets.sort((a, b) {
+      final result = switch (ticketSort) {
+        0 => a.reference.compareTo(b.reference),
+        1 => a.packageName.compareTo(b.packageName),
+        2 => a.guestEmail.compareTo(b.guestEmail),
+        3 => a.visitDate.compareTo(b.visitDate),
+        4 => a.filter.compareTo(b.filter),
+        _ => a.reference.compareTo(b.reference),
+      };
+      return ticketAsc ? result : -result;
+    });
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const AdminHeading(
-          'Tickets & Orders',
-          'Manage booking records and digital park tickets',
-        ),
-        const SizedBox(height: 26),
-        AdminStats(
+        if (!widget.embedded) ...[
+          const AdminHeading('Tickets & Orders',
+              'Manage booking records and digital park tickets'),
+          const SizedBox(height: 26),
+        ],
+        if (!widget.embedded) AdminStats(
           children: [
             AdminStat(
               'Total Bookings',
@@ -117,58 +151,6 @@ class _TicketManagementState extends State<TicketManagement> {
                   },
                   onChanged: (v) => setState(() => status = v),
                 ),
-              AdminButton(
-                'Export CSV',
-                icon: Icons.download_outlined,
-                onPressed: () => exportAdminCsv(
-                  context,
-                  tab == 'Bookings' ? 'park-bookings.csv' : 'park-tickets.csv',
-                  tab == 'Bookings'
-                      ? [
-                          'Booking ID',
-                          'Pass',
-                          'Visit Date',
-                          'Guests',
-                          'Subtotal',
-                          'Points',
-                          'Total',
-                        ]
-                      : [
-                          'Ticket ID',
-                          'Pass',
-                          'Guest',
-                          'Email',
-                          'Visit Date',
-                          'Status',
-                        ],
-                  tab == 'Bookings'
-                      ? orders
-                            .map(
-                              (o) => [
-                                o.reference,
-                                o.packageName,
-                                o.visitDate,
-                                o.quantity,
-                                money(o.subtotal),
-                                o.pointsUsed,
-                                money(o.totalMinor),
-                              ],
-                            )
-                            .toList()
-                      : tickets
-                            .map(
-                              (t) => [
-                                t.reference,
-                                t.packageName,
-                                t.guestName,
-                                t.guestEmail,
-                                t.visitDate,
-                                t.filter,
-                              ],
-                            )
-                            .toList(),
-                ),
-              ),
             ],
           ),
         ),
@@ -182,14 +164,16 @@ class _TicketManagementState extends State<TicketManagement> {
                         'Confirmed visitor bookings will appear here.',
                       )
                     : AdminTable(
-                        columns: const [
-                          DataColumn(label: Text('Booking ID')),
-                          DataColumn(label: Text('Pass')),
-                          DataColumn(label: Text('Visit Date')),
-                          DataColumn(label: Text('Guests')),
-                          DataColumn(label: Text('Amount')),
-                          DataColumn(label: Text('Status')),
-                          DataColumn(label: Text('Actions')),
+                        sortColumnIndex: bookingSort,
+                        sortAscending: bookingAsc,
+                        columns: [
+                          DataColumn(label: const Text('Booking ID'), onSort: _sortBookings),
+                          DataColumn(label: const Text('Pass'), onSort: _sortBookings),
+                          DataColumn(label: const Text('Visit Date'), onSort: _sortBookings),
+                          DataColumn(label: const Text('Guests'), numeric: true, onSort: _sortBookings),
+                          DataColumn(label: const Text('Amount'), numeric: true, onSort: _sortBookings),
+                          const DataColumn(label: Text('Status')),
+                          const DataColumn(label: Text('Actions')),
                         ],
                         rows: [
                           for (final o in orders)
@@ -236,13 +220,15 @@ class _TicketManagementState extends State<TicketManagement> {
                   'Try another status or search for a ticket ID.',
                 )
               : AdminTable(
-                  columns: const [
-                    DataColumn(label: Text('Ticket ID')),
-                    DataColumn(label: Text('Pass / Guest')),
-                    DataColumn(label: Text('Email')),
-                    DataColumn(label: Text('Visit Date')),
-                    DataColumn(label: Text('Status')),
-                    DataColumn(label: Text('Actions')),
+                  sortColumnIndex: ticketSort,
+                  sortAscending: ticketAsc,
+                  columns: [
+                    DataColumn(label: const Text('Ticket ID'), onSort: _sortTickets),
+                    DataColumn(label: const Text('Pass / Guest'), onSort: _sortTickets),
+                    DataColumn(label: const Text('Email'), onSort: _sortTickets),
+                    DataColumn(label: const Text('Visit Date'), onSort: _sortTickets),
+                    DataColumn(label: const Text('Status'), onSort: _sortTickets),
+                    const DataColumn(label: Text('Actions')),
                   ],
                   rows: [
                     for (final t in tickets)
@@ -322,7 +308,15 @@ Future<void> showAdminTicket(
 ) => showDialog<void>(
   context: context,
   builder: (context) => AlertDialog(
-    title: const Text('Ticket Details'),
+    backgroundColor: const Color(0xFFF4EAE9),
+    elevation: 20,
+    shadowColor: const Color(0x550F151C),
+    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(26)),
+    title: const Row(children: [
+      Icon(Icons.confirmation_number_outlined, color: adminRose),
+      SizedBox(width: 12),
+      Text('Ticket Details', style: TextStyle(fontWeight: FontWeight.w700)),
+    ]),
     content: SizedBox(
       width: 390,
       child: SingleChildScrollView(

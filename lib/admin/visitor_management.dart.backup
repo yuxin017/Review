@@ -1,0 +1,804 @@
+import 'package:flutter/material.dart';
+import '../visitor/models/tickets.dart';
+import 'admin_models.dart';
+import 'admin_store.dart';
+import 'admin_widgets.dart';
+import 'visitor_profile.dart';
+import 'visitor_insights.dart';
+import '../visitor/models/membership_policy.dart';
+import 'membership_rules_dialog.dart';
+import 'visitor_business_report.dart';
+
+class _VisitorKpiCard extends StatelessWidget {
+  final String title, value, detail, helper;
+  final IconData icon;
+  final Color accent;
+  const _VisitorKpiCard({
+    required this.title,
+    required this.value,
+    required this.detail,
+    required this.helper,
+    required this.icon,
+    required this.accent,
+  });
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.all(17),
+    decoration: BoxDecoration(
+      color: Color.lerp(const Color(0xFFF3E7E2), accent, .035),
+      borderRadius: BorderRadius.circular(14),
+      border: Border.all(color: const Color(0xFFE5D8D4)),
+    ),
+    child: SizedBox(height: 128, child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(children: [
+          Expanded(child: Text(title,
+            maxLines: 2, overflow: TextOverflow.ellipsis,
+            style: const TextStyle(color: Color(0xFF625450),
+              fontSize: 15, fontWeight: FontWeight.w700))),
+          const SizedBox(width: 7),
+          Container(width: 38, height: 38,
+            decoration: BoxDecoration(color: accent.withValues(alpha: .13),
+              borderRadius: BorderRadius.circular(11)),
+            child: Icon(icon, color: accent, size: 21)),
+        ]),
+        const SizedBox(height: 8),
+        FittedBox(fit: BoxFit.scaleDown, alignment: Alignment.centerLeft,
+          child: Text(value, maxLines: 1,
+            style: const TextStyle(fontSize: 32, fontWeight: FontWeight.w800,
+              color: Color(0xFF312B2D)))),
+        const Spacer(),
+        Text(detail, maxLines: 2, overflow: TextOverflow.ellipsis,
+          style: const TextStyle(color: Color(0xFF4A3738),
+            fontSize: 12, fontWeight: FontWeight.w600)),
+        const SizedBox(height: 3),
+        Text(helper, maxLines: 1, overflow: TextOverflow.ellipsis,
+          style: const TextStyle(color: Color(0xFF7C6D6A), fontSize: 11)),
+      ],
+    )),
+  );
+}
+
+class VisitorManagement extends StatefulWidget {
+  final AdminStore store;
+  final ValueChanged<AdminVisitor> onOpen;
+  final String initialQuery;
+  const VisitorManagement({
+    super.key,
+    required this.store,
+    required this.onOpen,
+    this.initialQuery = '',
+  });
+  @override
+  State<VisitorManagement> createState() => _VisitorManagementState();
+}
+
+class _VisitorManagementState extends State<VisitorManagement> {
+  late final searchText = TextEditingController(text: widget.initialQuery);
+  @override
+  void dispose() {
+    searchText.dispose();
+    super.dispose();
+  }
+
+  late String query = widget.initialQuery;
+  String status = 'all', membership = 'all';
+  int page = 0, perPage = 10;
+  bool ascending = true;
+  String sort = 'name';
+  final Set<String> selected = {};
+  List<AdminVisitor> get filtered {
+    final list = widget.store.visitors.where((v) {
+      if (status == 'all' && v.status == 'archived') return false;
+      if (status != 'all' && v.status != status) return false;
+      if (membership != 'all' && v.displayMembershipKey != membership) {
+        return false;
+      }
+      final text =
+          '${v.name} ${v.email} ${v.phone} ${v.id} ${visitorReference(v.id)}'
+              .toLowerCase();
+      return text.contains(query.toLowerCase().trim());
+    }).toList();
+    list.sort((a, b) {
+      final result = switch (sort) {
+        'joined' => (a.joined ?? DateTime(1970)).compareTo(
+            b.joined ?? DateTime(1970)),
+        'membership' => (a.lifetimeEarnedPoints ?? -1).compareTo(
+            b.lifetimeEarnedPoints ?? -1),
+        'spent' => _visitorSpend(a).compareTo(_visitorSpend(b)),
+        _ => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+      };
+      return ascending ? result : -result;
+    });
+    return list;
+  }
+
+  void _change(VoidCallback action) => setState(() {
+    action();
+    page = 0;
+  });
+
+  List<TicketOrder> _completedOrders(AdminVisitor v) => widget.store.orders
+      .where((order) => order.status == 'completed' && order.ownerUid == v.id)
+      .toList();
+
+  int _visitorSpend(AdminVisitor v) => _completedOrders(v)
+      .fold<int>(0, (sum, order) => sum + order.totalMinor);
+
+  Future<void> _editMembershipRules() async {
+    var foodRewards = <Map<String, dynamic>>[];
+    try {
+      final repository = widget.store.repository.parkRepository;
+      if (repository != null) {
+        final rewards = await repository.records('rewardCatalogue').first.timeout(const Duration(seconds: 5));
+        foodRewards = rewards.where((r) =>
+            r['active'] == true && r['category'] == 'dining' &&
+            r['id'] is String).toList();
+      }
+    } catch (_) {
+      // Keep membership configuration available if the catalogue cannot load.
+    }
+    if (!mounted) return;
+    final policy = await showDialog<MembershipPolicy>(
+      context: context,
+      builder: (_) => MembershipRulesDialog(
+        current: widget.store.membershipPolicy, availableFoodRewards: foodRewards),
+    );
+    if (policy == null || !mounted) return;
+    final success = await widget.store.perform(
+      () => widget.store.repository.saveMembershipPolicy(policy),
+    );
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(success
+          ? 'Membership settings saved. Visitor accounts will update automatically.'
+          : (widget.store.error?.toLowerCase().contains('permission') == true
+              ? 'Membership settings are blocked by Firestore security rules. Your role may be correct; the live membership rules must be updated.'
+              : widget.store.error ?? 'Could not save membership settings. Please try again.')),
+    ));
+  }
+
+  Future<void> _status(List<String> ids, String next) async {
+    final reason = TextEditingController();
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(
+          next == 'active'
+              ? 'Activate visitor accounts'
+              : next == 'archived'
+              ? 'Archive visitor accounts'
+              : 'Suspend visitor accounts',
+        ),
+        content: SizedBox(
+          width: 430,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                next == 'archived'
+                    ? 'Archive ${ids.length} selected account(s)? Records and bookings are kept. You can restore access from the Archived filter.'
+                    : next == 'active'
+                    ? 'Restore visitor-app access for ${ids.length} selected account(s)?'
+                    : 'Suspend visitor-app access for ${ids.length} selected account(s)? Existing records and bookings are kept.',
+              ),
+              const SizedBox(height: 18),
+              TextField(
+                controller: reason,
+                maxLength: 300,
+                maxLines: 3,
+                decoration: const InputDecoration(
+                  labelText: 'Reason',
+                  hintText: 'Add an account-management reason',
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          AdminButton(
+            next == 'active'
+                ? 'Activate'
+                : next == 'archived'
+                ? 'Archive'
+                : 'Suspend',
+            onPressed: () => Navigator.pop(context, true),
+          ),
+        ],
+      ),
+    );
+    final text = reason.text;
+    reason.dispose();
+    if (result != true || !mounted) return;
+    final success = await widget.store.perform(
+      () => widget.store.repository.setVisitorStatus(ids, next, text),
+    );
+    if (success && mounted) {
+      setState(() => selected.clear());
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Visitor account status updated.')),
+      );
+    }
+  }
+
+  Future<void> _watchlist(List<AdminVisitor> visitors, bool enabled) async {
+    final done = await widget.store.perform(
+      () => widget.store.repository.setWatchlist(visitors, enabled),
+    );
+    if (done && mounted) {
+      setState(() => selected.clear());
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            enabled
+                ? 'Visitors added to the watchlist.'
+                : 'Visitors removed from the watchlist.',
+          ),
+        ),
+      );
+    }
+  }
+
+  void _openBusinessReport() {
+    final report = VisitorSalesReport.fromOrders(
+      widget.store.orders, parkToday(),
+    );
+    showDialog<void>(
+      context: context,
+      builder: (_) => VisitorBusinessReportDialog(report: report),
+    );
+  }
+
+  String _comparison(num current, num previous) {
+    if (previous == 0) return 'No ticket purchases recorded last month';
+    final difference = (current - previous) * 100 / previous;
+    final sign = difference > 0 ? '+' : '';
+    return '$sign${difference.toStringAsFixed(1)}% vs last month';
+  }
+
+  String _rateComparison(double current, double previous, bool hadBuyers) {
+    if (!hadBuyers) return 'Not enough buyers to compare last month';
+    final difference = current - previous;
+    final sign = difference > 0 ? '+' : '';
+    return '$sign${difference.toStringAsFixed(1)} percentage points vs last month';
+  }
+
+  String _moneyWithCommas(int minor) {
+    final whole = (minor ~/ 100).toString().replaceAllMapped(
+      RegExp(r'(\d)(?=(\d{3})+(?!\d))'),
+      (match) => '${match[1]},',
+    );
+    final cents = (minor.abs() % 100).toString().padLeft(2, '0');
+    return 'RM $whole.$cents';
+  }
+
+  Widget _insightCards(VisitorInsights insight) {
+    final cards = <Widget>[
+      _VisitorKpiCard(
+        title: 'Ticket Sales This Month',
+        value: _moneyWithCommas(insight.salesMinor),
+        detail: _comparison(insight.salesMinor, insight.priorSalesMinor),
+        helper: 'Value of completed ticket orders',
+        icon: Icons.payments_outlined,
+        accent: const Color(0xFFB47778),
+      ),
+      _VisitorKpiCard(
+        title: 'Visitors Who Bought',
+        value: '${insight.buyers}',
+        detail: _comparison(insight.buyers, insight.priorBuyers),
+        helper: 'Unique ticket buyers this month',
+        icon: Icons.shopping_bag_outlined,
+        accent: const Color(0xFF4F78B6),
+      ),
+      _VisitorKpiCard(
+        title: 'Repeat Buyers',
+        value: '${insight.returningRate.toStringAsFixed(1)}%',
+        detail: _rateComparison(insight.returningRate, insight.priorReturningRate, insight.priorBuyers > 0),
+        helper: '${insight.returningBuyers} of ${insight.buyers} buyers purchased before',
+        icon: Icons.repeat_outlined,
+        accent: const Color(0xFF4F9268),
+      ),
+      _VisitorKpiCard(
+        title: 'New Visitors Who Bought',
+        value: '${insight.newConversionRate.toStringAsFixed(1)}%',
+        detail: _rateComparison(insight.newConversionRate, insight.priorConversionRate, insight.priorNewSignups > 0),
+        helper: '${insight.convertedSignups} of ${insight.newSignups} new sign-ups purchased tickets',
+        icon: Icons.person_add_alt_outlined,
+        accent: const Color(0xFFB28640),
+      ),
+    ];
+    return LayoutBuilder(builder: (context, constraints) {
+      final columns = constraints.maxWidth >= 1080 ? 4 :
+          constraints.maxWidth >= 585 ? 2 : 1;
+      const spacing = 14.0;
+      final width = (constraints.maxWidth - (columns - 1) * spacing) / columns;
+      return Wrap(
+        spacing: spacing,
+        runSpacing: spacing,
+        children: [for (final card in cards) SizedBox(width: width, child: card)],
+      );
+    });
+  }
+
+  Widget _businessInsight(VisitorInsights insight) {
+    final message = insight.buyers == 0
+        ? 'No ticket purchases have been completed this month. Check ticket availability and make sure visitors can complete checkout.'
+        : insight.priorSalesMinor == 0
+            ? 'This month has recorded ticket purchases, but last month has none for the same dates. Keep monitoring sales to identify a trend.'
+            : insight.salesMinor < insight.priorSalesMinor
+                ? 'Completed ticket order value is lower than the same days last month. Review ticket packages and current promotions.'
+                : 'Completed ticket order value is holding steady or growing. Review which packages encourage visitors to buy again.';
+    return AdminCard(
+      color: const Color(0xFFEBDDD8),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Icon(Icons.lightbulb_outline, color: Color(0xFF945B62), size: 22),
+        const SizedBox(width: 12),
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Text('What you can do next', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800)),
+          const SizedBox(height: 5),
+          Text(message, style: const TextStyle(fontSize: 13, height: 1.45)),
+          const SizedBox(height: 5),
+          const Text('Suggested next step based on completed orders. Confirm the actual money received separately in Stripe.',
+            style: TextStyle(color: adminMuted, fontSize: 11, height: 1.4)),
+        ])),
+      ]),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final store = widget.store, list = filtered;
+    final lastPage = list.isEmpty ? 0 : (list.length - 1) ~/ perPage;
+    final current = page.clamp(0, lastPage);
+    final visible = list.skip(current * perPage).take(perPage).toList();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const AdminHeading(
+          'Visitor Accounts',
+          'Understand purchase behaviour, membership and visitor growth',
+        ),
+        const SizedBox(height: 17),
+        Builder(builder: (context) {
+          final insight = VisitorInsights.calculate(
+            store.visitors, store.orders, parkToday(),
+          );
+          final trend = VisitorSalesReport.fromOrders(store.orders, parkToday());
+          return Container(
+            padding: const EdgeInsets.all(15),
+            decoration: BoxDecoration(color: const Color(0xFFFAF3F0),
+              borderRadius: BorderRadius.circular(17),
+              border: Border.all(color: const Color(0xFFE9DCD7))),
+            child: Column(children: [
+              _insightCards(insight),
+              const SizedBox(height: 14),
+              VisitorSalesTrendChart(data: trend),
+              const SizedBox(height: 12),
+              _businessInsight(insight),
+            ]),
+          );
+        }),
+        const SizedBox(height: 24),
+        AdminCard(
+          padding: const EdgeInsets.all(15),
+          child: LayoutBuilder(builder: (context, c) {
+            // Keep one neat toolbar row; smaller windows can scroll sideways.
+            final searchWidth = (c.maxWidth - 620).clamp(250.0, 450.0).toDouble();
+            return SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(children: [
+                SizedBox(
+                  width: searchWidth,
+                  child: TextField(
+                    key: const Key('visitor-search'),
+                    controller: searchText,
+                    onChanged: (v) => _change(() => query = v),
+                    decoration: const InputDecoration(
+                      prefixIcon: Icon(Icons.search, size: 20),
+                      hintText: 'Search visitor name, email or ID',
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                AdminSelect(
+                  value: status,
+                  options: const {
+                    'all': 'All Status',
+                    'active': 'Active',
+                    'suspended': 'Suspended',
+                    'archived': 'Archived',
+                  },
+                  onChanged: (v) => _change(() => status = v),
+                  width: 132,
+                ),
+                const SizedBox(width: 10),
+                AdminSelect(
+                  value: membership,
+                  options: {
+                    'all': 'All Memberships',
+                    for (final tier in store.membershipPolicy.levels)
+                      tier.key: '${tier.name} Member',
+                  },
+                  onChanged: (v) => _change(() => membership = v),
+                  width: 160,
+                ),
+
+                const SizedBox(width: 10),
+                AdminButton(
+                  'Manage Tiers',
+                  outlined: true,
+                  icon: Icons.workspace_premium_outlined,
+                  onPressed: store.busy ? null : _editMembershipRules,
+                ),
+                const SizedBox(width: 10),
+                Tooltip(
+                  message: 'Open a six-month ticket sales report with charts and a PDF export. No visitor names or contacts.',
+                  child: AdminButton(
+                    'View Business Report',
+                    icon: Icons.analytics_outlined,
+                    outlined: true,
+                    onPressed: _openBusinessReport,
+                  ),
+                ),
+              ]),
+            );
+          }),
+        ),
+        const SizedBox(height: 18),
+        if (selected.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: AdminCard(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              child: Wrap(
+                spacing: 10,
+                runSpacing: 8,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  Text(
+                    '${selected.length} selected',
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                  AdminButton(
+                    'Activate',
+                    outlined: true,
+                    onPressed: store.busy
+                        ? null
+                        : () => _status(selected.toList(), 'active'),
+                  ),
+                  AdminButton(
+                    'Suspend',
+                    outlined: true,
+                    onPressed: store.busy
+                        ? null
+                        : () => _status(selected.toList(), 'suspended'),
+                  ),
+                  AdminButton(
+                    'Add to Watchlist',
+                    outlined: true,
+                    onPressed: store.busy
+                        ? null
+                        : () => _watchlist(
+                            store.visitors
+                                .where((v) => selected.contains(v.id))
+                                .toList(),
+                            true,
+                          ),
+                  ),
+                  AdminButton(
+                    'Remove',
+                    outlined: true,
+                    onPressed: store.busy
+                        ? null
+                        : () => _status(selected.toList(), 'archived'),
+                  ),
+                  TextButton(
+                    onPressed: () => setState(() => selected.clear()),
+                    child: const Text(
+                      'Clear Selection',
+                      style: TextStyle(color: adminRose, fontSize: 12),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        Theme(
+          data: Theme.of(context).copyWith(
+            dataTableTheme: const DataTableThemeData(
+              headingRowColor: WidgetStatePropertyAll(Color(0xFFF7F3F1)),
+            ),
+          ),
+          child: AdminCard(
+          padding: EdgeInsets.zero,
+          child: list.isEmpty
+              ? const AdminEmpty(
+                  'No matching visitors',
+                  'Try changing your search or filters.',
+                  icon: Icons.people_outline,
+                )
+              : AdminTable(
+                  minWidth: 1110,
+                  sortColumnIndex: sort == 'membership'
+                      ? 3
+                      : sort == 'spent'
+                      ? 5
+                      : sort == 'joined'
+                      ? 6
+                      : 1,
+                  sortAscending: ascending,
+                  columns: [
+                    DataColumn(
+                      label: Checkbox(
+                        value:
+                            visible.isNotEmpty &&
+                            visible.every((v) => selected.contains(v.id)),
+                        onChanged: (value) => setState(() {
+                          if (value == true) {
+                            selected.addAll(visible.map((v) => v.id));
+                          } else {
+                            selected.removeAll(visible.map((v) => v.id));
+                          }
+                        }),
+                      ),
+                    ),
+                    DataColumn(
+                      label: const Text('Visitor'),
+                      onSort: (_, value) => setState(() {
+                        sort = 'name';
+                        ascending = value;
+                      }),
+                    ),
+                    const DataColumn(label: Text('Visitor ID')),
+                    DataColumn(
+                      label: const Text('Membership'),
+                      onSort: (_, value) => setState(() {
+                        sort = 'membership';
+                        ascending = value;
+                      }),
+                    ),
+                    const DataColumn(label: Text('Orders')),
+                    DataColumn(
+                      label: const Text('Total Spent'),
+                      onSort: (_, value) => setState(() {
+                        sort = 'spent';
+                        ascending = value;
+                      }),
+                    ),
+                    DataColumn(
+                      label: const Text('Date Joined'),
+                      onSort: (_, value) => setState(() {
+                        sort = 'joined';
+                        ascending = value;
+                      }),
+                    ),
+                    const DataColumn(label: Text('Status')),
+                    const DataColumn(label: Text('Actions')),
+                  ],
+                  rows: [
+                    for (final v in visible)
+                      DataRow(
+                        cells: [
+                          DataCell(
+                            Checkbox(
+                              value: selected.contains(v.id),
+                              onChanged: store.busy
+                                  ? null
+                                  : (value) => setState(() {
+                                      if (value == true) {
+                                        selected.add(v.id);
+                                      } else {
+                                        selected.remove(v.id);
+                                      }
+                                    }),
+                            ),
+                          ),
+                          DataCell(
+                            InkWell(
+                              onTap: () => widget.onOpen(v),
+                              child: Row(
+                                children: [
+                                  AdminAvatar(v.name, photo: v.photo),
+                                  const SizedBox(width: 10),
+                                  SizedBox(
+                                    width: 195,
+                                    child: Column(
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Row(children: [
+                                          Flexible(child: Text(
+                                            v.name,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: const TextStyle(fontWeight: FontWeight.w600),
+                                          )),
+                                          if (v.watchlisted || v.risk != 'normal') ...[
+                                            const SizedBox(width: 4),
+                                            const Icon(Icons.flag_outlined, color: Colors.orange, size: 14),
+                                          ],
+                                        ]),
+                                        const SizedBox(height: 4),
+                                        Text(
+                                          v.email,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(color: adminMuted, fontSize: 11),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                          DataCell(
+                            Text(
+                              visitorReference(v.id),
+                              style: const TextStyle(
+                                color: adminMuted,
+                                fontSize: 11,
+                              ),
+                            ),
+                          ),
+                          DataCell(Builder(builder: (context) {
+                            final level = store.membershipPolicy.levels.firstWhere(
+                              (level) => level.key == v.displayMembershipKey,
+                              orElse: () => store.membershipPolicy.levels.first,
+                            );
+                            final color = membershipAccent(level.colorKey);
+                            return Container(
+                              decoration: BoxDecoration(
+                                color: color.withValues(alpha: .10),
+                                border: Border.all(color: color.withValues(alpha: .18)),
+                                borderRadius: BorderRadius.circular(5),
+                              ),
+                              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+                              child: Text(v.membershipLabel,
+                                style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.w600)),
+                            );
+                          })),
+                          DataCell(Text('${_completedOrders(v).length}')),
+                          DataCell(Text(money(_visitorSpend(v)))),
+                          DataCell(Text(
+                            adminDateLabel(v.joined),
+                            style: const TextStyle(fontSize: 11, color: adminMuted),
+                          )),
+                          DataCell(AdminBadge(titleCase(v.status))),
+                          DataCell(
+                            PopupMenuButton<String>(
+                              tooltip: 'Actions for ${v.name}',
+                              onSelected: (action) {
+                                if (action == 'view') widget.onOpen(v);
+                                if (action == 'edit') {
+                                  editVisitor(context, store, v);
+                                }
+                                if (action == 'active' ||
+                                    action == 'suspended' ||
+                                    action == 'archived') {
+                                  _status([v.id], action);
+                                }
+                                if (action == 'watch') {
+                                  _watchlist([v], !v.watchlisted);
+                                }
+                              },
+                              itemBuilder: (_) => [
+                                const PopupMenuItem(
+                                  value: 'view',
+                                  child: Text('View Details'),
+                                ),
+                                const PopupMenuItem(
+                                  value: 'edit',
+                                  child: Text('Edit Profile'),
+                                ),
+                                PopupMenuItem(
+                                  value: v.status == 'active'
+                                      ? 'suspended'
+                                      : 'active',
+                                  child: Text(
+                                    v.status == 'active'
+                                        ? 'Suspend Account'
+                                        : 'Activate Account',
+                                  ),
+                                ),
+                                PopupMenuItem(
+                                  value: 'watch',
+                                  child: Text(
+                                    v.watchlisted
+                                        ? 'Remove from Watchlist'
+                                        : 'Add to Watchlist',
+                                  ),
+                                ),
+                                if (v.status != 'archived')
+                                  const PopupMenuItem(
+                                    value: 'archived',
+                                    child: Text('Archive Account'),
+                                  ),
+                              ],
+                              icon: const Icon(Icons.more_vert, size: 20),
+                            ),
+                          ),
+                        ],
+                      ),
+                  ],
+                ),
+          ),
+        ),
+        const SizedBox(height: 16),
+        AdminCard(
+          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+          child: Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            runSpacing: 12,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              Text(
+                list.isEmpty
+                    ? 'Showing 0 results'
+                    : 'Showing ${current * perPage + 1} to ${(current + 1) * perPage > list.length ? list.length : (current + 1) * perPage} of ${list.length} results',
+                style: const TextStyle(color: adminMuted, fontSize: 12),
+              ),
+              AdminSelect(
+                value: '$perPage',
+                options: const {
+                  '5': '5 per page',
+                  '10': '10 per page',
+                  '25': '25 per page',
+                  '50': '50 per page',
+                },
+                onChanged: (v) => _change(() => perPage = int.parse(v)),
+                width: 125,
+              ),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(
+                    tooltip: 'Previous page',
+                    onPressed: current > 0
+                        ? () => setState(() => page = current - 1)
+                        : null,
+                    icon: const Icon(Icons.chevron_left),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 9,
+                    ),
+                    decoration: BoxDecoration(
+                      color: adminRose,
+                      borderRadius: BorderRadius.circular(5),
+                    ),
+                    child: Text(
+                      '${current + 1}',
+                      style: const TextStyle(color: Colors.white),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Text(
+                    'of ${lastPage + 1}',
+                    style: const TextStyle(color: adminMuted, fontSize: 12),
+                  ),
+                  IconButton(
+                    tooltip: 'Next page',
+                    onPressed: current < lastPage
+                        ? () => setState(() => page = current + 1)
+                        : null,
+                    icon: const Icon(Icons.chevron_right),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
