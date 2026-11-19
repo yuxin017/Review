@@ -35,7 +35,11 @@ class VisitorNavigationPage extends StatefulWidget {
 }
 
 class _VisitorNavigationPageState extends State<VisitorNavigationPage> {
+  static const _navigationAccuracy = 15.0;
+  static const _radiansPerDegree = 0.017453292519943295;
+
   final _tts = FlutterTts();
+  final _mapController = MapController();
 
   Position? _here;
   RouteStart? _landmark;
@@ -45,8 +49,14 @@ class _VisitorNavigationPageState extends State<VisitorNavigationPage> {
 
   List<LatLng> _path = const [];
   List<String> _steps = const [];
-  List<Marker?> _stepArrows = const [];
+  List<LatLng?> _maneuvers = const [];
+  List<double?> _bearings = const [];
+  int _offRouteFixes = 0;
+  DateTime? _lastReroute;
   int _instruction = 0;
+  int _liveInstruction = 0;
+  bool _arrived = false;
+  bool _mapReady = false;
   double? _walkingMetres;
   bool _approximateStart = false;
   bool _loading = true;
@@ -63,10 +73,10 @@ class _VisitorNavigationPageState extends State<VisitorNavigationPage> {
 
   bool _usable(Position position) =>
       position.accuracy.isFinite &&
-          position.accuracy >= 0 &&
-          DateTime.now().difference(position.timestamp).abs() <=
-              VisitorGps.maxAge &&
-          VisitorGps.inside(position.latitude, position.longitude);
+      position.accuracy >= 0 &&
+      DateTime.now().difference(position.timestamp).abs() <=
+          VisitorGps.maxAge &&
+      VisitorGps.inside(position.latitude, position.longitude);
 
   Future<void> _load({Position? initialPosition, RouteStart? landmark}) async {
     try {
@@ -98,20 +108,23 @@ class _VisitorNavigationPageState extends State<VisitorNavigationPage> {
       final coordinates =
           '${start.longitude},${start.latitude};'
           '${widget.destination.longitude},${widget.destination.latitude}';
-      final url = Uri.parse(
-        'https://api.mapbox.com/directions/v5/mapbox/walking/$coordinates',
-      ).replace(
-        queryParameters: {
-          'access_token': VenueConfiguration.mapboxToken,
-          'steps': 'true',
-          'overview': 'full',
-          'geometries': 'geojson',
-        },
-      );
+      final url =
+          Uri.parse(
+            'https://api.mapbox.com/directions/v5/mapbox/walking/$coordinates',
+          ).replace(
+            queryParameters: {
+              'access_token': VenueConfiguration.mapboxToken,
+              'steps': 'true',
+              'overview': 'full',
+              'geometries': 'geojson',
+            },
+          );
 
       final response = await http.get(url).timeout(const Duration(seconds: 20));
       if (response.statusCode != 200) {
-        throw StateError('The walking route service is unavailable. Try again.');
+        throw StateError(
+          'The walking route service is unavailable. Try again.',
+        );
       }
 
       final body = jsonDecode(response.body) as Map<String, dynamic>;
@@ -133,67 +146,67 @@ class _VisitorNavigationPageState extends State<VisitorNavigationPage> {
           path.any((p) => !VisitorGps.inside(p.latitude, p.longitude))) {
         throw StateError(
           'No on-campus walking route is currently mapped. '
-              'Follow campus signs instead.',
+          'Follow campus signs instead.',
         );
       }
 
       final legs = route['legs'] as List? ?? [];
       final instructions = <String>[];
-      final stepArrows = <Marker?>[];
+      final maneuvers = <LatLng?>[];
+      final bearings = <double?>[];
 
-      if (legs.isNotEmpty) {
-        for (final step in (legs.first['steps'] as List? ?? [])) {
+      for (final leg in legs) {
+        for (final step in (leg['steps'] as List? ?? [])) {
           final maneuver = (step as Map)['maneuver'];
-          if (maneuver is Map && maneuver['instruction'] is String) {
-            instructions.add(maneuver['instruction'] as String);
-            final location = maneuver['location'];
-            final bearing = maneuver['bearing_after'];
+          if (maneuver is! Map || maneuver['instruction'] is! String) continue;
 
-            stepArrows.add(
-              maneuver['type'] != 'arrive' &&
-                  location is List &&
-                  location.length >= 2 &&
-                  location[0] is num &&
-                  location[1] is num &&
-                  bearing is num
-                  ? Marker(
-                point: LatLng(
-                  (location[1] as num).toDouble(),
-                  (location[0] as num).toDouble(),
-                ),
-                width: 36,
-                height: 36,
-                child: Transform.rotate(
-                  angle: bearing.toDouble() * 0.017453292519943295,
-                  child: const Icon(
-                    Icons.navigation,
-                    color: Colors.indigo,
-                    size: 32,
-                  ),
-                ),
-              )
-                  : null,
-            );
-          }
+          instructions.add(maneuver['instruction'] as String);
+          final location = maneuver['location'];
+          final bearing = maneuver['bearing_after'];
+          maneuvers.add(
+            location is List &&
+                    location.length >= 2 &&
+                    location[0] is num &&
+                    location[1] is num
+                ? LatLng(
+                    (location[1] as num).toDouble(),
+                    (location[0] as num).toDouble(),
+                  )
+                : null,
+          );
+          bearings.add(
+            maneuver['type'] != 'arrive' && bearing is num
+                ? bearing.toDouble()
+                : null,
+          );
         }
       }
 
       if (!mounted) return;
       if (here != null && !_usable(here)) {
-        throw StateError('Your location has expired. Refresh GPS to try again.');
+        throw StateError(
+          'Your location has expired. Refresh GPS to try again.',
+        );
       }
 
-      final approximate = here != null && !VisitorGps.trusted(here);
+      final approximate = here != null && !_canGuide(here);
       setState(() {
         _here = here;
         _path = path;
         _steps = instructions;
-        _stepArrows = stepArrows;
+        _maneuvers = maneuvers;
+        _bearings = bearings;
+        _offRouteFixes = 0;
         _instruction = 0;
+        _liveInstruction = 0;
+        _arrived = false;
         _approximateStart = approximate;
         _walkingMetres = (route['distance'] as num?)?.toDouble();
         _loading = false;
         _error = null;
+      });
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _mapReady && identical(_path, path)) _fitRoute();
       });
       if (here != null || widget.initialPosition != null) _trackPosition();
     } catch (e) {
@@ -208,31 +221,130 @@ class _VisitorNavigationPageState extends State<VisitorNavigationPage> {
   }
 
   void _trackPosition() {
-    _liveLocation ??= Geolocator.getPositionStream(
-      locationSettings: const LocationSettings(
-        accuracy: LocationAccuracy.high,
-      ),
-    ).listen(
+    _liveLocation ??=
+        Geolocator.getPositionStream(
+          locationSettings: const LocationSettings(
+            accuracy: LocationAccuracy.high,
+          ),
+        ).listen(
           (fix) {
-        if (!mounted) return;
-        _liveExpiry?.cancel();
-        if (!_usable(fix)) {
-          _clearLiveFix();
-          return;
-        }
+            if (!mounted) return;
+            _liveExpiry?.cancel();
+            if (!_usable(fix)) {
+              _clearLiveFix();
+              return;
+            }
 
-        setState(() => _liveFix = fix);
-        _liveExpiry = Timer(
-          VisitorGps.maxAge - DateTime.now().difference(fix.timestamp).abs(),
-          _clearLiveFix,
+            final guiding = _canGuide(fix) && !_loading && _path.isNotEmpty;
+            setState(() {
+              _liveFix = fix;
+              if (guiding && !_arrived) {
+                if (_liveInstruction + 1 < _maneuvers.length) {
+                  final next = _maneuvers[_liveInstruction + 1];
+                  if (next != null && VisitorGps.metres(fix, next) <= 15) {
+                    _liveInstruction++;
+                  }
+                }
+                _instruction = _liveInstruction;
+                _arrived =
+                    _liveInstruction + 1 >= _maneuvers.length &&
+                    VisitorGps.metres(fix, _path.last) <= 12;
+              }
+            });
+            if (guiding && !_arrived) {
+              _follow(fix);
+              _checkForReroute(fix);
+            } else {
+              _offRouteFixes = 0;
+            }
+            _liveExpiry = Timer(
+              VisitorGps.maxAge -
+                  DateTime.now().difference(fix.timestamp).abs(),
+              _clearLiveFix,
+            );
+          },
+          onError: (Object error) => _clearLiveFix(),
+          onDone: () {
+            _liveLocation = null;
+            _clearLiveFix();
+          },
         );
-      },
-      onError: (Object error) => _clearLiveFix(),
-      onDone: () {
-        _liveLocation = null;
-        _clearLiveFix();
-      },
+  }
+
+  bool _canGuide(Position? fix) =>
+      fix != null &&
+      VisitorGps.trusted(fix) &&
+      fix.accuracy <= _navigationAccuracy;
+
+  void _fitRoute() {
+    if (_path.isEmpty) return;
+    final fix = _liveFix ?? _here;
+    _mapController.fitCamera(
+      CameraFit.bounds(
+        bounds: LatLngBounds.fromPoints([
+          ..._path,
+          widget.destination,
+          if (_landmark case final landmark?) landmark.point,
+          if (fix != null) LatLng(fix.latitude, fix.longitude),
+        ]),
+        padding: const EdgeInsets.all(32),
+        maxZoom: 19,
+      ),
     );
+  }
+
+  void _follow(Position fix) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted ||
+          !_mapReady ||
+          _loading ||
+          _path.isEmpty ||
+          _liveFix != fix)
+        return;
+      _mapController.move(LatLng(fix.latitude, fix.longitude), 18.5);
+    });
+  }
+
+  void _checkForReroute(Position fix) {
+    // Project onto each mapped segment so long straight sections count too.
+    final nearRoute = _path.asMap().entries.skip(1).any((entry) {
+      final start = _path[entry.key - 1];
+      final end = entry.value;
+      final dx = end.longitude - start.longitude;
+      final dy = end.latitude - start.latitude;
+      final lengthSquared = dx * dx + dy * dy;
+      final fraction = lengthSquared == 0
+          ? 0.0
+          : (((fix.longitude - start.longitude) * dx +
+                        (fix.latitude - start.latitude) * dy) /
+                    lengthSquared)
+                .clamp(0.0, 1.0);
+      return VisitorGps.metres(
+            fix,
+            LatLng(
+              start.latitude + fraction * dy,
+              start.longitude + fraction * dx,
+            ),
+          ) <=
+          35;
+    });
+
+    _offRouteFixes = nearRoute ? 0 : _offRouteFixes + 1;
+    final now = DateTime.now();
+    final lastReroute = _lastReroute;
+    if (_offRouteFixes < 3 ||
+        (lastReroute != null &&
+            now.difference(lastReroute) < const Duration(seconds: 30))) {
+      return;
+    }
+    _lastReroute = now;
+    _offRouteFixes = 0;
+    setState(() {
+      _loading = true;
+      _landmark = null;
+      _error = null;
+    });
+    unawaited(_load(initialPosition: fix));
   }
 
   void _clearLiveFix() {
@@ -290,6 +402,7 @@ class _VisitorNavigationPageState extends State<VisitorNavigationPage> {
     _liveExpiry?.cancel();
     unawaited(_liveLocation?.cancel());
     unawaited(_tts.stop());
+    _mapController.dispose();
     super.dispose();
   }
 
@@ -299,12 +412,15 @@ class _VisitorNavigationPageState extends State<VisitorNavigationPage> {
     final liveFix = _liveFix;
     final markerFix = liveFix ?? here;
     final heading = liveFix?.heading ?? -1;
+    final guiding = _canGuide(liveFix) && _path.isNotEmpty;
     final showHeading =
-        VisitorGps.trusted(liveFix) &&
-            (liveFix?.speed ?? 0) > .5 &&
-            heading.isFinite &&
-            heading >= 0 &&
-            heading < 360;
+        guiding &&
+        (liveFix?.speed ?? 0) > .5 &&
+        heading.isFinite &&
+        heading >= 0 &&
+        heading < 360;
+    final routeBearing = _steps.isEmpty ? null : _bearings[_instruction];
+    final arrowBearing = showHeading ? heading : (routeBearing ?? 0);
     final gpsPoint = markerFix == null
         ? null
         : LatLng(markerFix.latitude, markerFix.longitude);
@@ -315,7 +431,10 @@ class _VisitorNavigationPageState extends State<VisitorNavigationPage> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          if (_loading) const LinearProgressIndicator(),
+          if (_loading)
+            const LinearProgressIndicator()
+          else
+            const SizedBox.shrink(),
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
@@ -345,22 +464,38 @@ class _VisitorNavigationPageState extends State<VisitorNavigationPage> {
                   const SizedBox(height: 10),
                   Text(
                     'Route preview • Start accuracy ±${here.accuracy.round()} m. '
-                        'Check the starting point before following the steps.',
+                    'Check the starting point before following the steps.',
                     style: const TextStyle(color: Color(0xFF9B602D)),
                   ),
                 ],
-                if (_path.isNotEmpty) ...[
+                if (guiding && _steps.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    'Step ${_instruction + 1} of ${_steps.length}: '
+                    '${_steps[_instruction]}',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                ],
+                if (!guiding && _path.isNotEmpty) ...[
                   const SizedBox(height: 8),
                   const Text(
                     'The dots mark the ends of the mapped walking path. '
-                        'The purple arrow shows the selected route step, '
-                        'and the flag marks the destination.',
+                    'The blue arrow marks your estimated position. '
+                    'The flag marks the destination.',
                   ),
                 ],
                 if (liveFix != null)
-                  Text('Live GPS • accuracy ±${liveFix.accuracy.round()} m')
+                  Text(
+                    _arrived
+                        ? 'Arrived at the end of the mapped route'
+                        : guiding
+                        ? 'Live navigation • accuracy ±${liveFix.accuracy.round()} m'
+                        : 'Live GPS • ±${liveFix.accuracy.round()} m • route preview',
+                  )
                 else if (here != null)
-                  const Text('Showing route start • waiting for a live GPS fix'),
+                  const Text(
+                    'Showing route start • waiting for a live GPS fix',
+                  ),
                 if (!_loading) ...[
                   const SizedBox(height: 8),
                   FilledButton.icon(
@@ -386,23 +521,16 @@ class _VisitorNavigationPageState extends State<VisitorNavigationPage> {
             child: SizedBox(
               height: 360,
               child: FlutterMap(
-                key: ValueKey(_path),
+                mapController: _mapController,
                 options: MapOptions(
                   initialCenter:
                       _landmark?.point ?? gpsPoint ?? widget.destination,
                   initialZoom: 18,
-                  initialCameraFit: _path.isEmpty
-                      ? null
-                      : CameraFit.bounds(
-                    bounds: LatLngBounds.fromPoints([
-                      ..._path,
-                      widget.destination,
-                      if (_landmark case final landmark?) landmark.point,
-                      if (gpsPoint != null) gpsPoint,
-                    ]),
-                    padding: const EdgeInsets.all(32),
-                    maxZoom: 19,
-                  ),
+                  keepAlive: true,
+                  onMapReady: () {
+                    _mapReady = true;
+                    _fitRoute();
+                  },
                   minZoom: 10,
                   maxZoom: 21,
                 ),
@@ -410,7 +538,7 @@ class _VisitorNavigationPageState extends State<VisitorNavigationPage> {
                   const ProviderTileLayer(),
                   if (markerFix != null &&
                       gpsPoint != null &&
-                      markerFix.accuracy > VisitorGps.maxAccuracyMeters)
+                      markerFix.accuracy > _navigationAccuracy)
                     CircleLayer(
                       circles: [
                         CircleMarker(
@@ -451,13 +579,9 @@ class _VisitorNavigationPageState extends State<VisitorNavigationPage> {
                           width: 42,
                           height: 42,
                           child: Transform.rotate(
-                            angle: showHeading
-                                ? heading * 0.017453292519943295
-                                : 0,
-                            child: Icon(
-                              showHeading
-                                  ? Icons.navigation
-                                  : Icons.my_location,
+                            angle: arrowBearing * _radiansPerDegree,
+                            child: const Icon(
+                              Icons.navigation,
                               color: Colors.blue,
                               size: 33,
                             ),
@@ -478,8 +602,6 @@ class _VisitorNavigationPageState extends State<VisitorNavigationPage> {
                           ),
                       ],
                     ),
-                  if (_steps.isNotEmpty && _stepArrows[_instruction] != null)
-                    MarkerLayer(markers: [_stepArrows[_instruction]!]),
                   const ProviderAttribution(),
                 ],
               ),
@@ -501,15 +623,18 @@ class _VisitorNavigationPageState extends State<VisitorNavigationPage> {
                     style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
                   ),
                   const SizedBox(height: 6),
-                  const Text(
-                    'Use the arrows to change steps, or tap Speak '
-                        'to hear the selected step.',
+                  Text(
+                    guiding
+                        ? 'Steps update as you walk. Tap Speak to hear the current step.'
+                        : 'Use the arrows to change steps, or tap Speak '
+                              'to hear the selected step.',
                   ),
                   const SizedBox(height: 10),
-                  Text(
-                    'Step ${_instruction + 1} of ${_steps.length}: '
-                        '${_steps[_instruction]}',
-                  ),
+                  if (!guiding)
+                    Text(
+                      'Step ${_instruction + 1} of ${_steps.length}: '
+                      '${_steps[_instruction]}',
+                    ),
                   const SizedBox(height: 10),
                   Row(
                     children: [
@@ -520,20 +645,22 @@ class _VisitorNavigationPageState extends State<VisitorNavigationPage> {
                           label: const Text('Speak'),
                         ),
                       ),
-                      IconButton(
-                        tooltip: 'Previous step',
-                        onPressed: _instruction > 0
-                            ? () => setState(() => _instruction--)
-                            : null,
-                        icon: const Icon(Icons.chevron_left),
-                      ),
-                      IconButton(
-                        tooltip: 'Next step',
-                        onPressed: _instruction + 1 < _steps.length
-                            ? () => setState(() => _instruction++)
-                            : null,
-                        icon: const Icon(Icons.chevron_right),
-                      ),
+                      if (!guiding)
+                        IconButton(
+                          tooltip: 'Previous step',
+                          onPressed: _instruction > 0
+                              ? () => setState(() => _instruction--)
+                              : null,
+                          icon: const Icon(Icons.chevron_left),
+                        ),
+                      if (!guiding)
+                        IconButton(
+                          tooltip: 'Next step',
+                          onPressed: _instruction + 1 < _steps.length
+                              ? () => setState(() => _instruction++)
+                              : null,
+                          icon: const Icon(Icons.chevron_right),
+                        ),
                     ],
                   ),
                 ],
