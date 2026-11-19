@@ -63,8 +63,7 @@ class _MapPageState extends State<MapPage> {
       ? _gpsPosition : ParkLiveSharing.instance.position.value;
   bool get _onCampus => VisitorGps.trusted(_effectiveGps);
 
-  // A coarse fix may be displayed as an estimate, but must never enable
-  // nearby ranking, on-campus check-in, or walking directions.
+  // A coarse fix can be displayed and used to preview a walking route.
   Position? get _displayGps {
     final fix = _gpsPosition ?? ParkLiveSharing.instance.position.value;
     if (fix == null || !fix.latitude.isFinite || !fix.longitude.isFinite ||
@@ -97,18 +96,37 @@ class _MapPageState extends State<MapPage> {
     }
   }
 
-  Future<void> _navigateTo(String name, LatLng destination) async {
-    // A recent, in-park approximate GPS fix can be used for route PREVIEW.
-    // Never use it for precise turn-by-turn or proximity decisions.
-    if (_displayGps == null) {
-      await _locate();
-      if (!mounted || _displayGps == null) return;
-    }
-    if (!mounted) return;
+  Future<void> _navigateTo(
+    String name,
+    LatLng destination, {
+    ParkVisit? visit,
+    String? destinationId,
+  }) async {
+    final selected = _startId == destinationId ? null : visit?.place(_startId);
     await Navigator.push(context, MaterialPageRoute<void>(
       builder: (_) => VisitorNavigationPage(
         destinationName: name,
         destination: destination,
+        initialPosition: _displayGps,
+        initialStart: selected == null || visit == null
+            ? null
+            : (
+                name: selected.name,
+                point: venueCoordinate(selected, visit.places),
+              ),
+        chooseStart: visit == null
+            ? null
+            : () async {
+                final place = await _chooseStart(
+                  visit,
+                  excludedId: destinationId,
+                );
+                if (place == null) return null;
+                return (
+                  name: place.name,
+                  point: venueCoordinate(place, visit.places),
+                );
+              },
       ),
     ));
   }
@@ -277,7 +295,7 @@ class _MapPageState extends State<MapPage> {
               Expanded(child: FilledButton.icon(
                 onPressed: () {
                   Navigator.pop(ctx);
-                  _navigateTo(place.name, venueCoordinate(place, visit.places));
+                  _directions(place, visit);
                 },
                 icon: const Icon(Icons.directions_walk, size: 18),
                 label: const Text('Navigate'),
@@ -371,13 +389,14 @@ class _MapPageState extends State<MapPage> {
   }
 
   Future<Attraction?> _chooseStart(
-    ParkVisit visit,
-  ) => showModalBottomSheet<Attraction>(
+    ParkVisit visit, {
+    String? excludedId,
+  }) => showModalBottomSheet<Attraction>(
     context: context,
     isScrollControlled: true,
     useSafeArea: true,
     builder: (context) {
-      var selected = visit.place(_startId);
+      var selected = _startId == excludedId ? null : visit.place(_startId);
       return StatefulBuilder(
         builder: (context, setSheetState) {
           return SafeArea(
@@ -412,13 +431,14 @@ class _MapPageState extends State<MapPage> {
                     ),
                     items: [
                       for (final place in visit.places)
-                        DropdownMenuItem(
-                          value: place.id,
-                          child: Text(
-                            place.name,
-                            overflow: TextOverflow.ellipsis,
+                        if (place.id != excludedId)
+                          DropdownMenuItem(
+                            value: place.id,
+                            child: Text(
+                              place.name,
+                              overflow: TextOverflow.ellipsis,
+                            ),
                           ),
-                        ),
                     ],
                     onChanged: (value) =>
                         setSheetState(() => selected = visit.place(value)),
@@ -450,7 +470,12 @@ class _MapPageState extends State<MapPage> {
   }
 
   void _directions(Attraction destination, ParkVisit visit) {
-    _navigateTo(destination.name, venueCoordinate(destination, visit.places));
+    _navigateTo(
+      destination.name,
+      venueCoordinate(destination, visit.places),
+      visit: visit,
+      destinationId: destination.id,
+    );
   }
 
   @override
@@ -732,7 +757,7 @@ class _MapPageState extends State<MapPage> {
                   style: const TextStyle(fontSize: 12))
               else ...[
                 if (_displayGps != null) ...[
-                  Text('Approximate location shown on map (±${_displayGps!.accuracy.round()} m). Nearby sorting and walking directions need a more precise fix.',
+                  Text('Approximate location shown on map (±${_displayGps!.accuracy.round()} m). Choose a landmark to plan a route when GPS is imprecise.',
                     style: const TextStyle(fontSize: 12, color: queueInk)),
                   const SizedBox(height: 8),
                 ],

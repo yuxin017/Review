@@ -12,17 +12,23 @@ import 'venue_configuration.dart';
 import 'venue_map.dart';
 import 'visitor_gps.dart';
 
+typedef RouteStart = ({String name, LatLng point});
+
 class VisitorNavigationPage extends StatefulWidget {
   const VisitorNavigationPage({
     super.key,
     required this.destinationName,
     required this.destination,
     this.initialPosition,
+    this.initialStart,
+    this.chooseStart,
   });
 
   final String destinationName;
   final LatLng destination;
   final Position? initialPosition;
+  final RouteStart? initialStart;
+  final Future<RouteStart?> Function()? chooseStart;
 
   @override
   State<VisitorNavigationPage> createState() => _VisitorNavigationPageState();
@@ -32,6 +38,7 @@ class _VisitorNavigationPageState extends State<VisitorNavigationPage> {
   final _tts = FlutterTts();
 
   Position? _here;
+  RouteStart? _landmark;
   Position? _liveFix;
   StreamSubscription<Position>? _liveLocation;
   Timer? _liveExpiry;
@@ -48,7 +55,10 @@ class _VisitorNavigationPageState extends State<VisitorNavigationPage> {
   @override
   void initState() {
     super.initState();
-    unawaited(_load(initialPosition: widget.initialPosition));
+    _landmark = widget.initialStart;
+    unawaited(
+      _load(initialPosition: widget.initialPosition, landmark: _landmark),
+    );
   }
 
   bool _usable(Position position) =>
@@ -58,14 +68,20 @@ class _VisitorNavigationPageState extends State<VisitorNavigationPage> {
               VisitorGps.maxAge &&
           VisitorGps.inside(position.latitude, position.longitude);
 
-  Future<void> _load({Position? initialPosition}) async {
+  Future<void> _load({Position? initialPosition, RouteStart? landmark}) async {
     try {
-      final here = initialPosition != null && _usable(initialPosition)
-          ? initialPosition
-          : await VisitorGps.locate();
-
-      if (!_usable(here)) {
-        throw StateError(VisitorGps.reason(here) ?? 'Position unavailable.');
+      Position? here;
+      if (landmark == null) {
+        here = initialPosition != null && _usable(initialPosition)
+            ? initialPosition
+            : await VisitorGps.locate();
+        if (!_usable(here)) {
+          throw StateError(VisitorGps.reason(here) ?? 'Position unavailable.');
+        }
+      }
+      final start = landmark?.point ?? LatLng(here!.latitude, here.longitude);
+      if (!VisitorGps.inside(start.latitude, start.longitude)) {
+        throw StateError('Choose a starting point inside the campus area.');
       }
       if (!VisitorGps.inside(
         widget.destination.latitude,
@@ -80,7 +96,7 @@ class _VisitorNavigationPageState extends State<VisitorNavigationPage> {
       }
 
       final coordinates =
-          '${here.longitude},${here.latitude};'
+          '${start.longitude},${start.latitude};'
           '${widget.destination.longitude},${widget.destination.latitude}';
       final url = Uri.parse(
         'https://api.mapbox.com/directions/v5/mapbox/walking/$coordinates',
@@ -163,11 +179,11 @@ class _VisitorNavigationPageState extends State<VisitorNavigationPage> {
       }
 
       if (!mounted) return;
-      if (!_usable(here)) {
+      if (here != null && !_usable(here)) {
         throw StateError('Your location has expired. Refresh GPS to try again.');
       }
 
-      final approximate = !VisitorGps.trusted(here);
+      final approximate = here != null && !VisitorGps.trusted(here);
       setState(() {
         _here = here;
         _path = path;
@@ -179,7 +195,7 @@ class _VisitorNavigationPageState extends State<VisitorNavigationPage> {
         _loading = false;
         _error = null;
       });
-      _trackPosition();
+      if (here != null || widget.initialPosition != null) _trackPosition();
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -226,10 +242,17 @@ class _VisitorNavigationPageState extends State<VisitorNavigationPage> {
     }
   }
 
-  void _refresh() {
+  Future<void> _pickStart() async {
+    final start = await widget.chooseStart?.call();
+    if (!mounted || start == null) return;
+    _refresh(landmark: start);
+  }
+
+  void _refresh({RouteStart? landmark}) {
     if (_loading) return;
     setState(() {
       _loading = true;
+      _landmark = landmark;
       _error = null;
       _here = null;
       _path = const [];
@@ -237,7 +260,7 @@ class _VisitorNavigationPageState extends State<VisitorNavigationPage> {
       _walkingMetres = null;
       _approximateStart = false;
     });
-    unawaited(_load());
+    unawaited(_load(landmark: landmark));
   }
 
   Future<void> _speak() async {
@@ -316,6 +339,8 @@ class _VisitorNavigationPageState extends State<VisitorNavigationPage> {
                           ? 'Looking for a mapped walking path…'
                           : 'Mapped walking route: ${_walkingMetres!.round()} m'),
                 ),
+                if (_landmark case final landmark?)
+                  Text('Starting point: ${landmark.name}'),
                 if (_approximateStart && here != null) ...[
                   const SizedBox(height: 10),
                   Text(
@@ -341,8 +366,16 @@ class _VisitorNavigationPageState extends State<VisitorNavigationPage> {
                   FilledButton.icon(
                     onPressed: _refresh,
                     icon: const Icon(Icons.refresh),
-                    label: const Text('Refresh GPS'),
+                    label: Text(
+                      _landmark == null ? 'Refresh GPS' : 'Use GPS Start',
+                    ),
                   ),
+                  if (widget.chooseStart != null)
+                    OutlinedButton.icon(
+                      onPressed: _pickStart,
+                      icon: const Icon(Icons.place_outlined),
+                      label: const Text('Choose Starting Point'),
+                    ),
                 ],
               ],
             ),
@@ -355,7 +388,8 @@ class _VisitorNavigationPageState extends State<VisitorNavigationPage> {
               child: FlutterMap(
                 key: ValueKey(_path),
                 options: MapOptions(
-                  initialCenter: gpsPoint ?? widget.destination,
+                  initialCenter:
+                      _landmark?.point ?? gpsPoint ?? widget.destination,
                   initialZoom: 18,
                   initialCameraFit: _path.isEmpty
                       ? null
@@ -363,6 +397,7 @@ class _VisitorNavigationPageState extends State<VisitorNavigationPage> {
                     bounds: LatLngBounds.fromPoints([
                       ..._path,
                       widget.destination,
+                      if (_landmark case final landmark?) landmark.point,
                       if (gpsPoint != null) gpsPoint,
                     ]),
                     padding: const EdgeInsets.all(32),
