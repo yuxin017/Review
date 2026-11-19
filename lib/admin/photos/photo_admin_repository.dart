@@ -53,7 +53,11 @@ class FirebasePhotoAdminRepository implements PhotoAdminRepository {
   Future<Map<String, dynamic>> request(
     String action,
     Map<String, dynamic> data,
-  ) => ApplicationApi(auth: auth).post('/v1/photos/$action', data);
+  ) {
+    final route = staffPhotographerUid != null && action == 'upload'
+        ? 'staffUpload' : action;
+    return ApplicationApi(auth: auth).post('/v1/photos/$route', data);
+  }
   @override
   String newRequestId() => db.collection('parkPhotos').doc().id;
 }

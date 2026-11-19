@@ -121,7 +121,7 @@ function createAccountService({auth,db,projectId,workspaceId,reservations,recove
       let token;try{token=await auth.verifyIdToken(bearer[1],true);}catch(_){fail(401,'session-expired','Your session has ended. Please sign in again.');}
       if(!token.email_verified)fail(403,'email-not-verified','Verify your email before managing your account.');
       const key=token.uid+'_'+Math.floor(clock().getTime()/60000),count=(rate.get(key)||0)+1;rate.set(key,count);if(rate.size>1000)rate.clear();if(count>60)fail(429,'too-many-requests','Please wait a moment and try again.');
-      const limit=req.url==='/v1/photos/upload'?12000000:['/v1/photos/enroll','/v1/ai/saveLandmark','/v1/ai/recognizeLandmark'].includes(req.url)?3000000:req.url==='/v1/visits/rate'?300000:req.url?.startsWith('/v1/tickets/')?30000:8192;
+      const limit=['/v1/photos/upload','/v1/photos/staffUpload'].includes(req.url)?12000000:['/v1/photos/enroll','/v1/ai/saveLandmark','/v1/ai/recognizeLandmark'].includes(req.url)?3000000:req.url==='/v1/visits/rate'?300000:req.url?.startsWith('/v1/tickets/')?30000:8192;
       const chunks=[];let size=0;for await(const chunk of req){size+=chunk.length;if(size>limit)fail(413,'request-too-large','The request is too large.');chunks.push(chunk);}
       const raw=Buffer.concat(chunks).toString('utf8');
       let body;try{body=raw?JSON.parse(raw):{};}catch(_){fail(400,'invalid-request','Review the request and try again.');}

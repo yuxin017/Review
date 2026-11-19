@@ -165,6 +165,7 @@ class FirebasePhotoRepository implements PhotoRepository {
     FirebaseAuth? authentication,
     FirebaseFirestore? firestore,
     this.persistCart = true,
+    this.staffKiosk = false,
   }) : auth = authentication ?? FirebaseAuth.instance,
        db = firestore ?? FirebaseFirestore.instance;
   @override
@@ -172,6 +173,7 @@ class FirebasePhotoRepository implements PhotoRepository {
   @override
   String get email => auth.currentUser?.email ?? '';
   final bool persistCart;
+  final bool staffKiosk;
   @override
   late final cart = PhotoCart(uid, persist: persistCart);
   Stream<List<ParkPhoto>> records(String collection) => db
@@ -245,7 +247,11 @@ class FirebasePhotoRepository implements PhotoRepository {
   Future<Map<String, dynamic>> request(
     String action,
     Map<String, dynamic> data,
-  ) => ApplicationApi(auth: auth).post('/v1/photos/$action', data);
+  ) {
+    final route = staffKiosk && action.startsWith('kiosk')
+        ? 'staffK${action.substring(1)}' : action;
+    return ApplicationApi(auth: auth).post('/v1/photos/$route', data);
+  }
   @override
   Future<void> reauthenticate(String password) async {
     final user = auth.currentUser;

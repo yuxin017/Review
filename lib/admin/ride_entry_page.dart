@@ -193,14 +193,14 @@ class _RideEntryPageState extends State<RideEntryPage> {
                           ),
                           const SizedBox(height: 18),
                           Text(
-                            visit.startsAt == null
+                            visit.startsAt == null || visit.endsAt == null
                                 ? 'Visit time unavailable'
                                 : '${ParkTime.date(visit.startsAt!)} • ${ParkTime.time(visit.startsAt!)}–${ParkTime.time(visit.endsAt!)}',
                           ),
                           const SizedBox(height: 16),
                           AdminBadge(
-                            visit.stateAt(DateTime.now()),
-                            tone: visit.status == 'checked_in'
+                            result != null ? 'Checked in' : visit.stateAt(DateTime.now()),
+                            tone: result != null || visit.status == 'checked_in'
                                 ? 'active'
                                 : 'pending',
                           ),
@@ -224,7 +224,7 @@ class _RideEntryPageState extends State<RideEntryPage> {
                           const SizedBox(height: 20),
                           AdminButton(
                             busy ? 'Confirming…' : 'Confirm Attraction Entry',
-                            onPressed: busy || visit.status != 'confirmed'
+                            onPressed: busy || result != null || visit.status != 'confirmed'
                                 ? null
                                 : admit,
                             icon: Icons.check_circle_outline,

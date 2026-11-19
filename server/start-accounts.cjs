@@ -3,6 +3,8 @@ const {createAccountService}=require('./account_service.cjs');
 const {auth,db,projectId,accessToken,sharedFirestore,FieldValue}=require('./firebase_account_adapter.cjs');
 const {createReservationHandlers}=require('../functions/src/reservations');
 const {createVisitHandlers}=require('../functions/src/visits');
+const {currentStaffShift}=require('../functions/src/staff_shift_access');
+const {createStaffAdmission}=require('../functions/src/staff_admission');
 const {createGroupHandlers}=require('../functions/src/groups');
 const {createPhotoHandlers}=require('../functions/src/photos');
 const {PythonWorker}=require('./python_worker.cjs');
@@ -31,7 +33,18 @@ if(process.env.FIRESTORE_EMULATOR_HOST||process.env.FIREBASE_AUTH_EMULATOR_HOST)
  const exchangeRates=createExchangeRates();
  const ticketPromotions=createTicketPromotionHandlers({db:sharedFirestore(),FieldValue,exchangeRates:exchangeRates.rates});
  const visits=createVisitHandlers({db:sharedFirestore(),FieldValue});
- const operations={'/v1/visits/check-in':visits.checkIn,'/v1/visits/rate':visits.rate};
+ const staffAdmission=createStaffAdmission({db:sharedFirestore(),FieldValue});
+ const operations={
+   '/v1/visits/check-in':visits.checkIn,
+   '/v1/visits/rate':visits.rate,
+   '/v1/staff/ride-check-in':visits.staffCheckIn,
+   '/v1/staff/find-ride-pass':visits.staffLookup,
+   '/v1/staff/find-ticket':staffAdmission.find,
+   '/v1/staff/admit':staffAdmission.admit,
+   '/v1/staff/current-shift':async request=>({
+     shift:await currentStaffShift({db:sharedFirestore(),request,now:new Date()}),
+   }),
+ };
  operations['/v1/park/exchangeRates']=exchangeRates.rates;
  for(const [name,handler]of Object.entries(ticketPromotions))operations['/v1/tickets/'+name]=handler;
  const groups=createGroupHandlers({db:sharedFirestore(),FieldValue});

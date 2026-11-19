@@ -1,3 +1,6 @@
+import '../kiosk/photo_kiosk.dart';
+import '../photos/photo_repository.dart';
+import 'staff/staff_access.dart';
 import 'package:flutter/material.dart';
 import '../visitor/models/tickets.dart';
 import 'admin_models.dart';
@@ -323,10 +326,20 @@ class _AdminShellState extends State<AdminShell> {
         } else if (page == 'staff-my-work' && restricted &&
             widget.staffWorkDb != null && widget.staffWorkProfile != null) {
           body = StaffMyWorkPage(db: widget.staffWorkDb!, profile: widget.staffWorkProfile!);
+        } else if (repository case final StaffScopedAdminRepository staff
+            when page == 'photo-kiosk') {
+          sectionScrolls = true;
+          body = PhotoKiosk(
+            repository: FirebasePhotoRepository(
+              authentication: staff.auth, firestore: staff.db, staffKiosk: true,
+            ),
+            onSignOut: staff.auth.signOut,
+          );
         } else if (restricted &&
-            (page == 'dashboard' ||
-             (page != 'photos') ||
-             photos == null)) {
+            page != 'validation' &&
+            page != 'ride-entry' &&
+            !(page == 'photos' && photos != null &&
+              widget.portalNavigation.roles.contains(StaffRole.photographer))) {
           // Staff and Super Admin share AdminShell, styles and sidebar.
           // Other modules remain UI-only until their backend role scopes exist.
           body = StaffWorkspaceUi(

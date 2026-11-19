@@ -48,9 +48,11 @@ class FirebaseVisitRepository implements VisitRepository {
   final FirebaseFirestore db;
   final FirebaseAuth auth;
   late final api = ApplicationApi(auth: auth);
+  final bool staffCheckIn;
   FirebaseVisitRepository({
     FirebaseFirestore? firestore,
     FirebaseAuth? authentication,
+    this.staffCheckIn = false,
   }) : db = firestore ?? FirebaseFirestore.instance,
        auth = authentication ?? FirebaseAuth.instance;
   String get uid => auth.currentUser!.uid;
@@ -68,11 +70,23 @@ class FirebaseVisitRepository implements VisitRepository {
             ),
       );
   @override
-  Stream<AttractionVisit?> visit(String id) => db
+  Stream<AttractionVisit?> visit(String id) {
+    if (staffCheckIn) return Stream.fromFuture(_staffVisit(id));
+    return db
       .collection('reservations')
       .doc(id)
       .snapshots()
       .map((d) => d.exists ? AttractionVisit(d.id, d.data()!) : null);
+  }
+
+  Future<AttractionVisit> _staffVisit(String id) async {
+    final data = await api.post('/v1/staff/find-ride-pass', {'reservationId': id});
+    for (final key in ['startsAt', 'endsAt']) {
+      final date = DateTime.tryParse(data[key] as String? ?? '');
+      data[key] = date == null ? null : Timestamp.fromDate(date);
+    }
+    return AttractionVisit(id, data);
+  }
   @override
   Stream<Map<String, dynamic>> attraction(String id) => db
       .collection('attractions')
@@ -87,7 +101,10 @@ class FirebaseVisitRepository implements VisitRepository {
       .map((d) => (d.data()?['loyaltyPoints'] as num?)?.toInt() ?? 0);
   @override
   Future<Map<String, dynamic>> checkIn(String id) =>
-      api.post('/v1/visits/check-in', {'reservationId': id});
+      api.post(
+        staffCheckIn ? '/v1/staff/ride-check-in' : '/v1/visits/check-in',
+        {'reservationId': id},
+      );
   @override
   Future<void> rate(
     String id,

@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import '../firebase_options.dart';
+import '../services/application_api.dart';
 import '../visits/visit_repository.dart';
 import 'photos/photo_admin_repository.dart';
 import 'staff/staff_records_repository.dart';
@@ -465,6 +466,12 @@ class StaffScopedAdminRepository extends AdminRepository {
   final FirebaseAuth auth;
   final FirebaseFirestore db;
   final StaffProfile profile;
+  late final _api = ApplicationApi(auth: auth);
+
+  @override
+  VisitRepository get visitRepository => FirebaseVisitRepository(
+    firestore: db, authentication: auth, staffCheckIn: true,
+  );
 
   @override
   String get userId => auth.currentUser!.uid;
@@ -517,10 +524,21 @@ class StaffScopedAdminRepository extends AdminRepository {
       Future.error(StateError('This action requires an administrator.'));
 
   @override
-  Future<ParkTicket> findTicket(String code) =>
-      Future.error(StateError('Ticket validation requires authorized operations access.'));
+  Future<ParkTicket> findTicket(String code) async {
+    final ticket = await _api.post('/v1/staff/find-ticket', {'code': code});
+    return ParkTicket.fromMap(ticket['id'] as String, ticket);
+  }
 
   @override
-  Future<AdmissionResult> admit(String ticketId, String requestId) =>
-      Future.error(StateError('Ticket validation requires authorized operations access.'));
+  Future<AdmissionResult> admit(String ticketId, String requestId) async {
+    final result = await _api.post('/v1/staff/admit', {
+      'ticketId': ticketId, 'requestId': requestId,
+    });
+    final ticket = result['ticket'] as Map<String, dynamic>;
+    return AdmissionResult(
+      result['state'] as String,
+      result['message'] as String,
+      ParkTicket.fromMap(ticket['id'] as String, ticket),
+    );
+  }
 }

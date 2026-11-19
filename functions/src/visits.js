@@ -1,5 +1,6 @@
 'use strict';
 const {HttpsError}=require('firebase-functions/v2/https');
+const {requireStaffShift}=require('./staff_shift_access');
 const fail=(code,message)=>{throw new HttpsError(code,message);};
 const identifier=value=>typeof value==='string'&&/^[A-Za-z0-9_-]{1,160}$/.test(value);
 const date=value=>value?.toDate?.();
@@ -15,11 +16,12 @@ function createVisitHandlers({db,FieldValue,clock=()=>new Date()}){
     if(access.exists&&access.data().status!=='active')fail('permission-denied','This visitor account is restricted. Please contact support.');
     if(security.data()?.closing)fail('permission-denied','This account is being closed.');
   }
-  async function checkIn(request){
+  async function checkIn(request,{staff=false}={}){
     const ref=context(request);
-    if(request.auth.token.admin!==true)fail('permission-denied','An administrator must scan attraction entrance passes.');
+    if(!staff&&request.auth.token.admin!==true)fail('permission-denied','An administrator must scan attraction entrance passes.');
     return db.runTransaction(async tx=>{
       const saved=await tx.get(ref),r=saved.data();
+      if(staff)await requireStaffShift({db,reader:tx,request,now:clock()},'attraction_operator',r?.attractionId);
       if(!r)fail('not-found','Attraction pass not found.');
       await open(tx,r.ownerUid);
       if(r.status==='checked_in')return{reservationId:ref.id,status:r.status,points:r.earnedPoints??0,alreadyCheckedIn:true};
@@ -53,6 +55,18 @@ function createVisitHandlers({db,FieldValue,clock=()=>new Date()}){
       return{reservationId:ref.id,status:'checked_in',points,alreadyCheckedIn:false};
     });
   }
+  async function staffLookup(request) {
+    const ref = context(request);
+    const ride = (await ref.get()).data();
+    await requireStaffShift({db, request, now: clock()}, 'attraction_operator', ride?.attractionId);
+    return {
+      attractionId: ride.attractionId,
+      attractionName: ride.attractionName ?? '',
+      status: ride.status,
+      startsAt: date(ride.startsAt)?.toISOString() ?? null,
+      endsAt: date(ride.endsAt)?.toISOString() ?? null,
+    };
+  }
   async function rate(request){
     const ref=context(request),data=request.data;
     if(!Number.isInteger(data.stars)||data.stars<1||data.stars>5||!Array.isArray(data.categories)||data.categories.some(v=>!categories.includes(v))||data.categories.length>4||typeof data.message!=='string'||data.message.length>500||typeof data.anonymous!=='boolean')fail('invalid-argument','Choose a rating from one to five stars and review your feedback.');
@@ -76,6 +90,6 @@ function createVisitHandlers({db,FieldValue,clock=()=>new Date()}){
       return{reservationId:ref.id,submitted:true,alreadySubmitted:false};
     });
   }
-  return{checkIn,rate};
+  return{checkIn,staffLookup,staffCheckIn:request=>checkIn(request,{staff:true}),rate};
 }
 module.exports={createVisitHandlers};

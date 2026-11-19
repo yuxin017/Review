@@ -16,6 +16,9 @@ class StaffPortalNavigation {
         profile.status == 'active' ? profile.eligibleRoles : const {},
       );
 
+  factory StaffPortalNavigation.onDuty(StaffRole? role) =>
+      StaffPortalNavigation._(false, role == null ? const {} : {role});
+
   final bool superAdmin;
   final Set<StaffRole> roles;
 
