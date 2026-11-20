@@ -66,7 +66,7 @@ class _AdminShellState extends State<AdminShell> {
   late final facilities = repository.facilityStore,
       facilitySlots = repository.facilitySlots,
       facilityAccess = repository.facilityAccess;
-  String page = 'visitors', query = '';
+  String page = 'dashboard', query = '';
   bool get restricted => widget.portalNavigation.isRestricted;
   bool allowed(String menu) => widget.portalNavigation.allows(menu);
   String? visitorId;
@@ -74,7 +74,7 @@ class _AdminShellState extends State<AdminShell> {
   @override
   void initState() {
     super.initState();
-    if (restricted) page = 'dashboard';
+    if (restricted) page = 'staff-my-work';
     store.start();
   }
 
@@ -82,7 +82,7 @@ class _AdminShellState extends State<AdminShell> {
   void didUpdateWidget(covariant AdminShell oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (!allowed(page)) {
-      page = 'dashboard';
+      page = restricted ? 'staff-my-work' : 'dashboard';
       visitorId = null;
     }
   }
@@ -215,6 +215,7 @@ class _AdminShellState extends State<AdminShell> {
                       'Reservations',
                       Icons.event_available_outlined,
                     ),
+                    ('activity', 'Visitor Activity', Icons.history),
                     ('validation', 'Ticket Validation', Icons.qr_code_scanner),
                     (
                       'ride-entry',
@@ -576,20 +577,6 @@ class _AdminShellState extends State<AdminShell> {
                               ),
                             ),
                           ),
-                          if (!restricted) const SizedBox(width: 18),
-                          if (!restricted) IconButton(
-                            tooltip: 'Recent account activity',
-                            onPressed: () => open('activity'),
-                            icon: Badge(
-                              isLabelVisible: store.flagged > 0,
-                              label: Text('${store.flagged}'),
-                              backgroundColor: adminRose,
-                              child: const Icon(
-                                Icons.notifications_none,
-                                size: 24,
-                              ),
-                            ),
-                          ),
                           const Spacer(),
                           const SizedBox(width: 18),
                           AdminAvatar(widget.adminName, radius: 20),
@@ -682,36 +669,50 @@ class AdminDashboard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final today = visitDateString(parkToday());
-    final todaysTickets = store.tickets.where((t) => t.visitDate == today).toList();
-    final enteredToday = store.admissions.where((a) =>
-      adminDateLabel(a.at) == displayParkDate(today)).length;
-    final awaiting = todaysTickets.where((t) => !t.admittedToday &&
-        t.filter == 'Upcoming').length;
+    final parkDate = parkToday();
+    final today = visitDateString(parkDate);
+    final todayLabel = displayParkDate(today);
+    final enteredToday = store.admissions.where((event) =>
+      event.action == 'park_admission' && adminDateLabel(event.at) == todayLabel
+    ).length;
     final review = store.flagged;
+    final scheduledByDate = <String, int>{};
+    for (final ticket in store.tickets) {
+      if (ticket.status == 'valid' || ticket.status == 'used') {
+        scheduledByDate.update(ticket.visitDate, (count) => count + 1,
+          ifAbsent: () => 1);
+      }
+    }
     final nextDays = List.generate(7, (index) {
-      final day = visitDateString(parkToday().add(Duration(days: index)));
-      return MapEntry(day, store.tickets.where((t) => t.visitDate == day).length);
+      final day = visitDateString(parkDate.add(Duration(days: index)));
+      return MapEntry(day, scheduledByDate[day] ?? 0);
     });
+    final todayOrders = store.orders.where((order) =>
+      order.status == 'completed' && adminDateLabel(order.createdAt) == todayLabel
+    );
+    final ticketSales = todayOrders.fold<int>(
+      0, (total, order) => total + order.totalMinor,
+    );
     final peak = nextDays.fold<int>(1, (max, entry) =>
       entry.value > max ? entry.value : max);
     final recent = [...store.orders]..sort((a, b) =>
       (b.createdAt ?? DateTime(1970)).compareTo(a.createdAt ?? DateTime(1970)));
 
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-      AdminHeading('Park Overview', 'Admissions, demand and issues requiring attention',
-        action: AdminButton('View Orders', icon: Icons.receipt_long_outlined,
+      AdminHeading('Park Overview', '$todayLabel · Malaysia time',
+        action: AdminButton('Products & Sales', icon: Icons.storefront_outlined,
           onPressed: () => onOpen('commerce'))),
       const SizedBox(height: 22),
       AdminStats(children: [
-        AdminStat('Tickets for Today', '${todaysTickets.length}',
-          '', Icons.confirmation_number_outlined),
         AdminStat('Admissions Today', '$enteredToday',
-          '', Icons.how_to_reg_outlined, color: const Color(0xFF328A62)),
-        AdminStat('Still to Arrive', '$awaiting',
-          '', Icons.access_time_outlined, color: const Color(0xFFC08A35)),
+          'Successful park check-ins', Icons.how_to_reg_outlined,
+          color: const Color(0xFF328A62), height: 128),
+        AdminStat('Tickets Scheduled Today', '${nextDays.first.value}',
+          'By booked visit date', Icons.confirmation_number_outlined, height: 128),
+        AdminStat('Ticket Sales Today', money(ticketSales),
+          'Completed ticket orders', Icons.receipt_long_outlined, height: 128),
         AdminStat('Visitor Reviews', '$review',
-          '', Icons.policy_outlined, color: const Color(0xFFC97679)),
+          'Accounts awaiting review', Icons.policy_outlined, height: 128),
       ]),
       const SizedBox(height: 23),
       LayoutBuilder(builder: (context, c) {
@@ -719,7 +720,7 @@ class AdminDashboard extends StatelessWidget {
         final demand = AdminCard(child: Column(
           crossAxisAlignment: CrossAxisAlignment.start, children: [
           const Row(children: [Icon(Icons.insights_outlined, color: adminRose),
-            SizedBox(width: 10), Text('Expected Visits · Next 7 Days',
+            SizedBox(width: 10), Text('Scheduled Tickets · Next 7 Days',
               style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800))]),
           const SizedBox(height: 20),
           for (final entry in nextDays) ...[
@@ -737,7 +738,7 @@ class AdminDashboard extends StatelessWidget {
             ]),
             const SizedBox(height: 12),
           ],
-          const Text('Based on ticket visit dates; not a live crowd estimate.',
+          const Text('Counts use each ticket’s booked visit date.',
             style: TextStyle(fontSize: 11, color: adminMuted)),
         ]));
         final attention = AdminCard(child: Column(
@@ -747,28 +748,21 @@ class AdminDashboard extends StatelessWidget {
             Text('Needs Attention',
               style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800))]),
           const SizedBox(height: 16),
-          ListTile(contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.policy_outlined, color: adminRose),
-            title: Text('$review visitor accounts to review'),
-            subtitle: const Text('Check evidence before any account action'),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => onOpen('anomalies')),
+          if (review > 0)
+            ListTile(contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.policy_outlined, color: adminRose),
+              title: Text('$review visitor accounts to review'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => onOpen('anomalies'))
+          else
+            const Text('No visitor accounts awaiting review.',
+              style: TextStyle(color: adminMuted)),
           const Divider(),
           ListTile(contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.verified_user_outlined,
-              color: Color(0xFFB58336)),
-            title: Text('$awaiting tickets not yet scanned today'),
-            subtitle: const Text('Arrivals may be scheduled for later'),
+            leading: const Icon(Icons.qr_code_scanner, color: adminRose),
+            title: const Text('Open Ticket Validation'),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => onOpen('validation')),
-          const Divider(),
-          ListTile(contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.receipt_long_outlined,
-              color: adminRose),
-            title: Text('${store.orders.length} recorded bookings'),
-            subtitle: const Text('Review orders and sales performance'),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => onOpen('commerce')),
         ]));
         return compact ? Column(children: [demand, const SizedBox(height: 16), attention])
           : Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -781,7 +775,7 @@ class AdminDashboard extends StatelessWidget {
           Row(children: [const Expanded(child: Text('Recent Bookings',
             style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800))),
             TextButton(onPressed: () => onOpen('commerce'),
-              child: const Text('View All'))]),
+              child: const Text('Products & Sales'))]),
           const Divider(),
           if (recent.isEmpty)
             const Padding(padding: EdgeInsets.all(18),
@@ -794,8 +788,6 @@ class AdminDashboard extends StatelessWidget {
                 style: const TextStyle(color: adminMuted, fontSize: 12)),
               trailing: Text(money(item.totalMinor),
                 style: const TextStyle(fontWeight: FontWeight.w700))),
-          const Text('Figures include any seeded demonstration records.',
-            style: TextStyle(fontSize: 11, color: adminMuted)),
         ])),
     ]);
   }

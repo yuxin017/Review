@@ -45,6 +45,7 @@ class _PhotoManagementState extends State<PhotoManagement> {
           : Stream<Map<String, String>>.value(const {});
   String tab = 'Photos', query = '';
   int page = 0;
+  bool awaitingDeliveryOnly = false;
   final busy = <String>{};
   String? error;
   String uploaderLabel(ParkPhoto photo, Map<String, String> names) {
@@ -332,6 +333,15 @@ class _PhotoManagementState extends State<PhotoManagement> {
                       page = 0;
                     }),
                   ),
+                if (tab == 'Orders')
+                  FilterChip(
+                    label: const Text('Awaiting email delivery'),
+                    selected: awaitingDeliveryOnly,
+                    onSelected: (value) => setState(() {
+                      awaitingDeliveryOnly = value;
+                      page = 0;
+                    }),
+                  ),
                 SizedBox(
                   width: 250,
                   child: TextField(
@@ -553,6 +563,8 @@ class _PhotoManagementState extends State<PhotoManagement> {
 
   Widget _orderTable(List<ParkPhoto> all) {
     final rows = all
+        .where((order) => !awaitingDeliveryOnly ||
+            order.data['emailStatus'] != 'sent')
         .where(
           (o) =>
               query.isEmpty ||

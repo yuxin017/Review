@@ -3,7 +3,6 @@ import 'staff_records_repository.dart';
 import 'staff_management_page.dart';
 import 'staff_schedule_review_page.dart';
 import 'staff_leave_review_page.dart';
-import 'staff_availability_review_page.dart';
 
 /// Separate workforce pages under one consistent Admin work area.
 class StaffWorkforceHub extends StatefulWidget {
@@ -15,9 +14,9 @@ class StaffWorkforceHub extends StatefulWidget {
 
 class _StaffWorkforceHubState extends State<StaffWorkforceHub> {
   int selected = 0;
-  static const names = ['Staff Accounts','Weekly Schedule','Leave Requests','Availability'];
+  static const names = ['Staff Accounts','Weekly Schedule','Leave Requests'];
   static const icons = [Icons.badge_outlined, Icons.calendar_month_outlined,
-    Icons.event_note_outlined, Icons.how_to_reg_outlined];
+    Icons.event_note_outlined];
   @override
   Widget build(BuildContext context) => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -32,7 +31,6 @@ class _StaffWorkforceHubState extends State<StaffWorkforceHub> {
       if (selected == 0) StaffManagementPage(repository: widget.repository),
       if (selected == 1) StaffScheduleReviewPage(repository: widget.repository),
       if (selected == 2) StaffLeaveReviewPage(repository: widget.repository),
-      if (selected == 3) StaffAvailabilityReviewPage(repository: widget.repository),
     ],
   );
 }

@@ -68,6 +68,18 @@ class _PhotoProductCataloguePageState extends State<PhotoProductCataloguePage> {
     );
   }
 
+  Future<void> _unpublish(String id) async {
+    try {
+      await widget.db.collection('photoProducts').doc(id).update({
+        'active': false, 'updatedAt': FieldValue.serverTimestamp(),
+      });
+    } catch (_) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Unable to remove photo product.')),
+      );
+    }
+  }
+
   Future<void> _edit(Map<String, dynamic>? value,
       List<Map<String, dynamic>> all) async {
     await showDialog<void>(context: context, barrierDismissible: false,
@@ -238,14 +250,20 @@ class _PhotoProductCataloguePageState extends State<PhotoProductCataloguePage> {
                       DataCell(AdminBadge(item['active'] != false
                         ? 'Enabled' : 'Hidden', tone: item['active'] != false
                           ? 'active' : 'inactive')),
-                      DataCell(AdminButton('Edit', outlined: true,
-                        icon: Icons.edit_outlined,
-                        onPressed: () => _edit(item, records))),
+                      DataCell(Row(mainAxisSize: MainAxisSize.min, children: [
+                        AdminButton('Edit', outlined: true,
+                          icon: Icons.edit_outlined,
+                          onPressed: () => _edit(item, records)),
+                        if (item['active'] != false && item['id'] is String)
+                          IconButton(tooltip: 'Remove from shop',
+                            icon: const Icon(Icons.archive_outlined),
+                            onPressed: () => _unpublish(item['id'] as String)),
+                      ])),
                     ])],
                   )),
               const SizedBox(height: 10),
               const Text(
-                'Visitor checkout uses the prices shown above.',
+                'Active products appear in the visitor catalogue. Photo checkout confirms its own quote.',
                 style: TextStyle(fontSize: 12, color: adminMuted)),
             ],
           ],

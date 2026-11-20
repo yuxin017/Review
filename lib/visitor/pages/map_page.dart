@@ -663,7 +663,7 @@ class _MapPageState extends State<MapPage> {
         ),
         const SizedBox(height: 8),
         AspectRatio(
-          aspectRatio: .98,
+          aspectRatio: .88,
           child: Stack(
             children: [
               Positioned.fill(
@@ -674,33 +674,40 @@ class _MapPageState extends State<MapPage> {
                 bottom: 12,
                 child: Column(
                   children: [
-                    _mapButton(
-                      _heatmap ? 'Hide crowd heatmap' : 'Show crowd heatmap',
-                      Icons.layers_outlined,
-                      () => setState(() => _heatmap = !_heatmap),
-                    ),
-                    const SizedBox(height: 8),
-                    _mapButton(
-                      'Locate a Landmark',
-                      Icons.photo_camera_outlined,
-                      () => _landmark(visit),
-                    ),
-                    const SizedBox(height: 8),
-                    _mapButton(
-                      'Show My Team',
-                      Icons.groups_2_outlined,
-                      _chooseTeam,
-                    ),
-                    const SizedBox(height: 8),
-                    _mapButton(
-                      'My Live Location',
-                      Icons.location_searching,
-                      () async {
-                         await Navigator.push(context, MaterialPageRoute(
-                           builder: (_) => const LiveLocationPage(),
-                         ));
-                         if (mounted) setState(() => _gpsPosition = ParkLiveSharing.instance.position.value);
-                       },
+                    Material(
+                      color: Colors.white,
+                      shape: const CircleBorder(),
+                      child: PopupMenuButton<String>(
+                        tooltip: 'Map tools',
+                        icon: const Icon(Icons.layers_outlined, color: queueInk),
+                        itemBuilder: (_) => [
+                          PopupMenuItem(value: 'heatmap',
+                            child: Text(_heatmap ? 'Hide crowd heatmap' : 'Show crowd heatmap')),
+                          const PopupMenuItem(value: 'landmark', child: Text('Locate a landmark')),
+                          const PopupMenuItem(value: 'team', child: Text('Show my team')),
+                          const PopupMenuItem(value: 'live', child: Text('My live location')),
+                        ],
+                        onSelected: (tool) async {
+                          switch (tool) {
+                            case 'heatmap':
+                              setState(() => _heatmap = !_heatmap);
+                              break;
+                            case 'landmark':
+                              await _landmark(visit);
+                              break;
+                            case 'team':
+                              await _chooseTeam();
+                              break;
+                            case 'live':
+                              await Navigator.push(context, MaterialPageRoute(
+                                builder: (_) => const LiveLocationPage(),
+                              ));
+                              if (mounted) setState(() =>
+                                _gpsPosition = ParkLiveSharing.instance.position.value);
+                              break;
+                          }
+                        },
+                      ),
                     ),
                     const SizedBox(height: 8),
                     _mapButton(
@@ -772,9 +779,6 @@ class _MapPageState extends State<MapPage> {
                       style: const TextStyle(fontSize: 12))),
                   ])),
                 const SizedBox(height: 8),
-                OutlinedButton.icon(onPressed: _locating ? null : _locate,
-                  icon: const Icon(Icons.my_location, size: 17),
-                  label: Text(_locating ? 'Finding location…' : 'Check My Location')),
                 if (_search.text.trim().isEmpty)
                   TextButton(onPressed: () => setState(() => _showAll = !_showAll),
                     child: Text(_showAll ? 'Hide park directory' : 'Browse all facilities')),

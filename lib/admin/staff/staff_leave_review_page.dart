@@ -1,3 +1,5 @@
+import 'dart:convert';
+import 'package:file_picker/file_picker.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'staff_records_repository.dart';
@@ -5,6 +7,22 @@ import 'staff_records_repository.dart';
 class StaffLeaveReviewPage extends StatelessWidget {
   const StaffLeaveReviewPage({super.key, required this.repository});
   final StaffRecordsRepository repository;
+
+  Future<void> _saveCertificate(BuildContext context, String name, String data) async {
+    try {
+      await FilePicker.saveFile(
+        dialogTitle: 'Save medical certificate',
+        fileName: name.split(RegExp(r'[/\\]')).last,
+        bytes: base64Decode(data),
+      );
+    } catch (_) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Unable to save the medical certificate.')),
+        );
+      }
+    }
+  }
 
   Future<void> _decide(BuildContext context, String id, String decision) async {
     final note = TextEditingController();
@@ -68,8 +86,20 @@ class StaffLeaveReviewPage extends StatelessWidget {
                 leading: Icon(request.data()['status'] == 'pending'
                   ? Icons.hourglass_top : Icons.event_available_outlined),
                 title: Text('${request.data()['staffName'] ?? request.data()['staffUid'] ?? 'Staff'} · ${request.data()['leaveType'] ?? 'Leave'}'),
-                subtitle: Text('${request.data()['startOn'] ?? ''} to ${request.data()['endOn'] ?? ''}\n${request.data()['reason'] ?? ''}'),
-                isThreeLine: true,
+                subtitle: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('${request.data()['startOn'] ?? ''} to ${request.data()['endOn'] ?? ''}'),
+                    Text('${request.data()['reason'] ?? ''}'),
+                    if (request.data()['certificateName'] case final String name)
+                      if (request.data()['certificateData'] case final String data)
+                        TextButton.icon(
+                          onPressed: () => _saveCertificate(context, name, data),
+                          icon: const Icon(Icons.download_outlined),
+                          label: const Text('Medical certificate'),
+                        ),
+                  ],
+                ),
                 trailing: request.data()['status'] == 'pending'
                   ? Wrap(spacing: 6, children: [
                     OutlinedButton(onPressed: () => _decide(context,request.id,'rejected'), child: const Text('Reject')),

@@ -55,17 +55,9 @@ class _StaffScheduleReviewPageState extends State<StaffScheduleReviewPage> {
 
   Future<ScheduleDraft> _arrange() async {
     final directory = await widget.repository.watchStaffDirectory().first;
-    final availabilitySnap = await db.collection('staffAvailability')
-        .where('weekStart', isEqualTo: weekKey).get();
-    final availability = <String, Set<String>>{};
-    for (final doc in availabilitySnap.docs) {
-      final data = doc.data();
-      final uid = data['staffUid'];
-      if (uid is String) {
-        availability[uid] = (data['availableDays'] as List?)
-                ?.whereType<String>().toSet() ?? <String>{};
-      }
-    }
+    final rosterDays = {
+      for (var day = 0; day < 7; day++) StaffWeek.key(StaffWeek.day(monday, day)),
+    };
     final leaveSnap = await db.collection('staffLeaveRequests')
         .where('status', isEqualTo: 'approved').get();
     final leaves = leaveSnap.docs.map((doc) => doc.data());
@@ -79,7 +71,7 @@ class _StaffScheduleReviewPageState extends State<StaffScheduleReviewPage> {
       monday: monday,
       roles: selectedRoles,
       directory: directory,
-      availability: availability,
+      availability: {for (final employee in directory) employee.uid: rosterDays},
       leaves: leaves,
       qualifications: qualifications,
       attractions: await _readAttractions(openOnly: true),
@@ -93,12 +85,12 @@ class _StaffScheduleReviewPageState extends State<StaffScheduleReviewPage> {
       final result = await _arrange();
       if (mounted) setState(() {
         draft = result.assignments; gaps = result.gaps; draftGenerated = true;
-        message = draft.isEmpty ? 'No eligible shifts. Ask staff to submit availability.'
+        message = draft.isEmpty ? 'No eligible shifts. Check staff roles, training and approved leave.'
             : 'Draft ready. Review coverage before approving.';
       });
     } catch (_) {
       if (mounted) setState(() => message =
-          'Unable to generate the schedule. Check staff availability, training and permissions.');
+          'Unable to generate the schedule. Check staff roles, training and permissions.');
     } finally {
       if (mounted) setState(() => busy = false);
     }
@@ -204,24 +196,6 @@ class _StaffScheduleReviewPageState extends State<StaffScheduleReviewPage> {
     });
   }
 
-  Future<void> _sendReminder() async {
-    if (busy || pastWeek) return;
-    setState(() { busy = true; message = null; });
-    try {
-      await db.collection('staffAvailabilityReminders').doc(weekKey).set({
-        'weekStart': weekKey,
-        'sentAt': FieldValue.serverTimestamp(),
-      });
-      if (mounted) setState(() => message =
-          'Reminder posted in My Work for staff who still need to fill availability.');
-    } catch (_) {
-      if (mounted) setState(() => message =
-          'Could not post the reminder. Check your connection and try again.');
-    } finally {
-      if (mounted) setState(() => busy = false);
-    }
-  }
-
   Widget _timetable(Map<(StaffRole, String), List<String>> assigned, {
     Set<StaffRole> scheduledRoles = const {},
     bool isDraft = false,
@@ -304,22 +278,38 @@ class _StaffScheduleReviewPageState extends State<StaffScheduleReviewPage> {
     builder: (context, snapshot) {
       if (snapshot.hasError) return const Text('Could not load the published schedule.');
       if (!snapshot.hasData) return const LinearProgressIndicator();
-      return FutureBuilder<Map<String, String>>(
-        future: _attractionNames,
-        builder: (context, names) {
-          final assigned = <(StaffRole, String), List<String>>{};
-          for (final doc in snapshot.data!.docs) {
-            final data = doc.data();
-            final role = StaffRole.fromCode(data['roleCode']?.toString() ?? '');
-            final start = StaffWeek.fromTimestamp(data['startsAt']);
-            if (role == null || start == null) continue;
-            final key = (role, StaffWeek.key(StaffWeek.parkCalendar(start)));
-            final ids = (data['attractionIds'] as List?)?.whereType<String>() ?? const <String>[];
-            final places = ids.map((id) => names.data?[id]).whereType<String>().join(', ');
-            final staffName = data['staffName']?.toString() ?? 'Staff';
-            assigned.putIfAbsent(key, () => []).add(places.isEmpty ? staffName : '$staffName · $places');
+      return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+        stream: db.collection('staffLeaveRequests')
+            .where('status', isEqualTo: 'approved').snapshots(),
+        builder: (context, leaveSnapshot) {
+          if (leaveSnapshot.hasError) {
+            return const Text('Could not check the roster for approved leave.');
           }
-          return _timetable(assigned, scheduledRoles: assigned.keys.map((key) => key.$1).toSet());
+          if (!leaveSnapshot.hasData) return const LinearProgressIndicator();
+          final approvedLeaves = leaveSnapshot.data!.docs.map((doc) => doc.data());
+          return FutureBuilder<Map<String, String>>(
+            future: _attractionNames,
+            builder: (context, names) {
+              final assigned = <(StaffRole, String), List<String>>{};
+              for (final doc in snapshot.data!.docs) {
+                final data = doc.data();
+                final role = StaffRole.fromCode(data['roleCode']?.toString() ?? '');
+                final start = StaffWeek.fromTimestamp(data['startsAt']);
+                if (role == null || start == null) continue;
+                final key = (role, StaffWeek.key(StaffWeek.parkCalendar(start)));
+                final ids = (data['attractionIds'] as List?)?.whereType<String>() ?? const <String>[];
+                final places = ids.map((id) => names.data?[id]).whereType<String>().join(', ');
+                final staffName = data['staffName']?.toString() ?? 'Staff';
+                final onLeave = approvedLeaves.any((leave) =>
+                    leave['staffUid'] == data['staffUid'] &&
+                    staffLeaveIncludes(leave, key.$2));
+                final assignment = onLeave ? '$staffName · Cover needed' : staffName;
+                assigned.putIfAbsent(key, () => []).add(
+                    places.isEmpty ? assignment : '$assignment · $places');
+              }
+              return _timetable(assigned, scheduledRoles: assigned.keys.map((key) => key.$1).toSet());
+            },
+          );
         },
       );
     },
@@ -347,12 +337,6 @@ class _StaffScheduleReviewPageState extends State<StaffScheduleReviewPage> {
             OutlinedButton.icon(onPressed: busy ? null : () => _changeWeek(1),
               icon: const Icon(Icons.chevron_right), label: const Text('Next week')),
           ]))),
-      const SizedBox(height: 14),
-      OutlinedButton.icon(
-        onPressed: busy || pastWeek ? null : _sendReminder,
-        icon: const Icon(Icons.notifications_outlined),
-        label: const Text('Remind Staff to Fill Availability'),
-      ),
       const SizedBox(height: 14),
       Wrap(spacing: 9, runSpacing: 9, children: [
         ChoiceChip(label: const Text('Approved Schedule / History'),

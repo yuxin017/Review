@@ -1,3 +1,5 @@
+import 'dart:convert';
+import 'package:file_picker/file_picker.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'staff_records.dart';
@@ -20,35 +22,19 @@ class _StaffMyWorkPageState extends State<StaffMyWorkPage> {
   bool busy = false;
   String? feedback;
   String get weekKey => StaffWeek.key(monday);
-  String get availabilityId => StaffWeek.id(widget.profile.uid, monday);
-
-  Future<void> _saveAvailability(Set<String> dates) async {
-    setState(() { busy = true; feedback = null; });
-    try {
-      await widget.db.collection('staffAvailability').doc(availabilityId).set({
-        'staffUid': widget.profile.uid,
-        'weekStart': weekKey,
-        'availableDays': dates.toList()..sort(),
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
-      if (mounted) setState(() => feedback = 'Availability saved for $weekKey.');
-    } catch (_) {
-      if (mounted) setState(() => feedback =
-          'Could not save availability. Check your connection or staff permissions.');
-    } finally {
-      if (mounted) setState(() => busy = false);
-    }
-  }
 
   Future<void> _applyLeave() async {
     final reason = TextEditingController();
     var leaveType = 'Annual Leave';
+    PlatformFile? certificate;
+    var pickingCertificate = false;
+    String? certificateError;
     DateTime first = DateUtils.dateOnly(DateTime.now());
     DateTime last = first;
     final confirmed = await showDialog<bool>(context: context, builder: (dialogContext) =>
       StatefulBuilder(builder: (ctx, update) => AlertDialog(
         title: const Text('Apply Leave'),
-        content: SizedBox(width: 440, child: Column(mainAxisSize: MainAxisSize.min, children: [
+        content: SingleChildScrollView(child: SizedBox(width: 440, child: Column(mainAxisSize: MainAxisSize.min, children: [
           DropdownButtonFormField<String>(value: leaveType,
             decoration: const InputDecoration(labelText: 'Leave type'),
             items: ['Annual Leave','Sick Leave','Emergency Leave','Unpaid Leave']
@@ -67,9 +53,43 @@ class _StaffMyWorkPageState extends State<StaffMyWorkPage> {
           const SizedBox(height: 12),
           TextField(controller: reason, maxLines: 3, maxLength: 300,
             decoration: const InputDecoration(labelText: 'Reason', hintText: 'Briefly explain the request')),
-        ])),
+          if (leaveType == 'Sick Leave') ...[
+            OutlinedButton.icon(
+              icon: const Icon(Icons.attach_file),
+              label: Text(certificate?.name ?? 'Attach medical certificate'),
+              onPressed: pickingCertificate ? null : () async {
+                update(() { pickingCertificate = true; certificateError = null; });
+                try {
+                  final picked = await FilePicker.pickFiles(
+                    type: FileType.custom,
+                    allowedExtensions: ['pdf', 'jpg', 'jpeg', 'png'],
+                    withData: true,
+                  );
+                  if (!ctx.mounted || picked == null) return;
+                  final file = picked.files.single;
+                  final bytes = file.bytes;
+                  if (bytes == null || bytes.isEmpty || bytes.length > 650000 ||
+                      file.name.length > 160) {
+                    update(() => certificateError =
+                        'Choose a PDF, JPG or PNG up to 650 KB with a shorter name.');
+                  } else {
+                    update(() => certificate = file);
+                  }
+                } catch (_) {
+                  if (ctx.mounted) update(() => certificateError = 'Unable to open the file.');
+                } finally {
+                  if (ctx.mounted) update(() => pickingCertificate = false);
+                }
+              },
+            ),
+            if (certificateError != null) Text(certificateError!),
+          ],
+        ]))),
         actions: [TextButton(onPressed: () => Navigator.pop(ctx,false), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(ctx,true), child: const Text('Submit Request'))],
+          FilledButton(
+            onPressed: pickingCertificate || (leaveType == 'Sick Leave' && certificate == null)
+                ? null : () => Navigator.pop(ctx, true),
+            child: const Text('Submit Request'))],
       )),
     );
     final note = reason.text.trim();
@@ -88,6 +108,10 @@ class _StaffMyWorkPageState extends State<StaffMyWorkPage> {
         'startOn': StaffWeek.key(first),
         'endOn': StaffWeek.key(last),
         'reason': note,
+        if (leaveType == 'Sick Leave') ...{
+          'certificateName': certificate!.name,
+          'certificateData': base64Encode(certificate!.bytes!),
+        },
         'status': 'pending',
         'decisionNote': '',
         'createdAt': FieldValue.serverTimestamp(),
@@ -111,77 +135,21 @@ class _StaffMyWorkPageState extends State<StaffMyWorkPage> {
       Wrap(spacing: 8, children: [
         ChoiceChip(label: const Text('My Schedule'), selected: selected == 0,
           onSelected: (_) => setState(() => selected = 0)),
-        ChoiceChip(label: const Text('My Availability'), selected: selected == 1,
+        ChoiceChip(label: const Text('My Leave'), selected: selected == 1,
           onSelected: (_) => setState(() => selected = 1)),
-        ChoiceChip(label: const Text('Apply Leave / History'), selected: selected == 2,
-          onSelected: (_) => setState(() => selected = 2)),
       ]),
       if (busy) const LinearProgressIndicator(),
       if (feedback != null) Padding(padding: const EdgeInsets.symmetric(vertical: 10),
         child: Text(feedback!)),
       const SizedBox(height: 12),
-      _availabilityReminders(),
       if (selected == 0) _schedule(),
-      if (selected == 1) _availability(),
-      if (selected == 2) _leave(),
+      if (selected == 1) _leave(),
     ],
   );
 
   Stream<QuerySnapshot<Map<String, dynamic>>> _ownLeave() => widget.db
       .collection('staffLeaveRequests')
       .where('staffUid', isEqualTo: widget.profile.uid).snapshots();
-
-  Widget _availabilityReminders() {
-    final current = StaffWeek.start(StaffWeek.parkCalendar(DateTime.now()));
-    return Column(children: [
-      for (final week in {StaffWeek.key(current): current,
-        StaffWeek.key(StaffWeek.day(current, 7)): StaffWeek.day(current, 7),
-        weekKey: monday}.values)
-        if (!week.isBefore(current))
-          StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-            stream: widget.db.collection('staffAvailabilityReminders')
-                .doc(StaffWeek.key(week)).snapshots(),
-            builder: (context, reminder) {
-              if (reminder.data?.exists != true) return const SizedBox.shrink();
-              return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-                stream: widget.db.collection('staffAvailability')
-                    .doc(StaffWeek.id(widget.profile.uid, week)).snapshots(),
-                builder: (context, availability) {
-                  if (!availability.hasData) return const SizedBox.shrink();
-                  final days = availability.data?.data()?['availableDays'] as List?;
-                  return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                    stream: _ownLeave(),
-                    builder: (context, leave) {
-                      if (!leave.hasData) return const SizedBox.shrink();
-                      final leaveDays = staffLeaveDays(
-                        week, leave.data!.docs.map((doc) => doc.data()),
-                      );
-                      final weekDays = {
-                        for (var index = 0; index < 7; index++)
-                          StaffWeek.key(StaffWeek.day(week, index)),
-                      };
-                      final available = (days ?? []).whereType<String>().toSet()
-                          .intersection(weekDays).difference(leaveDays);
-                      if (available.length >= staffAvailabilityMinimum(leaveDays)) {
-                        return const SizedBox.shrink();
-                      }
-                      return Card(child: ListTile(
-                        leading: const Icon(Icons.notifications_outlined),
-                        title: const Text('Submit your availability'),
-                        subtitle: Text('Week of ${StaffWeek.key(week)}'),
-                        trailing: TextButton(
-                          onPressed: () => setState(() { monday = week; selected = 1; }),
-                          child: const Text('Fill Availability'),
-                        ),
-                      ));
-                    },
-                  );
-                },
-              );
-            },
-          ),
-    ]);
-  }
 
   Widget _weekPicker() => OutlinedButton.icon(icon: const Icon(Icons.calendar_month),
     label: Text('Week of $weekKey'),
@@ -278,38 +246,6 @@ class _StaffMyWorkPageState extends State<StaffMyWorkPage> {
     );
   }
 
-  Widget _availability() => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-    _weekPicker(), const SizedBox(height: 12),
-    StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: widget.db.collection('staffAvailability').doc(availabilityId).snapshots(),
-      builder: (context, snapshot) {
-        if (snapshot.hasError) return const Text('Could not load availability. Check permissions.');
-        if (!snapshot.hasData) return const LinearProgressIndicator();
-        final weekDays = {
-          for (var index = 0; index < 7; index++)
-            StaffWeek.key(StaffWeek.day(monday, index)),
-        };
-        final existing = (snapshot.data!.data()?['availableDays'] as List?)
-            ?.whereType<String>().toSet().intersection(weekDays) ?? <String>{};
-        return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-          stream: _ownLeave(),
-          builder: (context, leave) {
-            if (leave.hasError) return const Text('Could not load approved leave.');
-            if (!leave.hasData) return const LinearProgressIndicator();
-            final leaveDays = staffLeaveDays(
-              monday, leave.data!.docs.map((doc) => doc.data()),
-            );
-            return _AvailabilityForm(
-              key: ValueKey(availabilityId + existing.join(',') + leaveDays.join(',')),
-              monday: monday, initial: existing, busy: busy, onSave: _saveAvailability,
-              leaveDays: leaveDays,
-            );
-          },
-        );
-      },
-    ),
-  ]);
-
   Widget _leave() => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
     FilledButton.icon(onPressed: busy ? null : _applyLeave,
       icon: const Icon(Icons.add), label: const Text('Apply Leave')),
@@ -329,48 +265,4 @@ class _StaffMyWorkPageState extends State<StaffMyWorkPage> {
       },
     ),
   ]);
-}
-
-class _AvailabilityForm extends StatefulWidget {
-  const _AvailabilityForm({super.key, required this.monday, required this.initial,
-    required this.busy, required this.onSave, required this.leaveDays});
-  final DateTime monday;
-  final Set<String> initial;
-  final Set<String> leaveDays;
-  final bool busy;
-  final Future<void> Function(Set<String>) onSave;
-  @override
-  State<_AvailabilityForm> createState() => _AvailabilityFormState();
-}
-class _AvailabilityFormState extends State<_AvailabilityForm> {
-  late final Set<String> checked = widget.initial.difference(widget.leaveDays);
-  @override
-  Widget build(BuildContext context) => Card(child: Padding(
-    padding: const EdgeInsets.all(15), child: Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Text(
-          'Choose at least ${staffAvailabilityMinimum(widget.leaveDays)} days you can work',
-          style: const TextStyle(fontWeight: FontWeight.bold),
-        ),
-        Text('${checked.length} selected'),
-        for (var i=0;i<7;i++) CheckboxListTile(
-          title: Text(StaffWeek.key(StaffWeek.day(widget.monday,i))),
-          value: checked.contains(StaffWeek.key(StaffWeek.day(widget.monday,i))),
-          subtitle: widget.leaveDays.contains(StaffWeek.key(StaffWeek.day(widget.monday,i)))
-              ? const Text('Approved leave') : null,
-          onChanged: widget.busy ||
-              widget.leaveDays.contains(StaffWeek.key(StaffWeek.day(widget.monday,i)))
-              ? null : (v) => setState(() {
-            final key = StaffWeek.key(StaffWeek.day(widget.monday,i));
-            if (v == true) { checked.add(key); } else { checked.remove(key); }
-          }),
-        ),
-        FilledButton(onPressed: widget.busy ||
-            checked.length < staffAvailabilityMinimum(widget.leaveDays)
-            ? null : () => widget.onSave(checked),
-          child: const Text('Save Availability')),
-      ],
-    ),
-  ));
 }

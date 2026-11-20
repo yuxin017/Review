@@ -2,6 +2,7 @@ import 'dart:typed_data';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import '../../photos/photo_repository.dart';
@@ -36,7 +37,10 @@ List<Map<String, dynamic>> _combinedParkDaily(Map<String, dynamic> report) {
     (a['day'] as String).compareTo(b['day'] as String));
 }
 
-Future<Uint8List> buildParkReportPdf(Map<String, dynamic> report) async {
+Future<Uint8List> buildParkReportPdf(
+  Map<String, dynamic> report, {
+  Uint8List? logoBytes,
+}) async {
   final document = pw.Document(),
       summary = Map<String, dynamic>.from(report['summary']);
   final channel = report['souvenir'] is Map ? (report['souvenir'] as Map) : <String, dynamic>{};
@@ -46,21 +50,56 @@ Future<Uint8List> buildParkReportPdf(Map<String, dynamic> report) async {
   final totalOrders = (((summary['ticketOrders'] as num?) ?? 0) +
      ((summary['photoOrders'] as num?) ?? 0) +
      ((channel['paidOrders'] as num?) ?? 0)).toInt();
+  final daily = _combinedParkDaily(report);
+  final chartRows = daily.reversed.take(10).toList().reversed;
+  final peak = chartRows.fold<int>(1, (max, row) {
+    final value = row['revenueMinor'] as int;
+    return value > max ? value : max;
+  });
+  final logo = logoBytes == null ? null : pw.MemoryImage(logoBytes);
   document.addPage(
     pw.MultiPage(
       pageFormat: PdfPageFormat.a4,
       build: (_) => [
-        pw.Text(
-          'THEME PARK',
-          style: pw.TextStyle(fontSize: 25, fontWeight: pw.FontWeight.bold),
-        ),
+        pw.Row(children: [
+          if (logo != null) ...[
+            pw.Image(logo, width: 58, height: 58, fit: pw.BoxFit.contain),
+            pw.SizedBox(width: 12),
+          ],
+          pw.Expanded(child: pw.Column(
+            crossAxisAlignment: pw.CrossAxisAlignment.start,
+            children: [
+              pw.Text('THEME PARK', style: pw.TextStyle(
+                fontSize: 20, fontWeight: pw.FontWeight.bold)),
+              pw.Text('Unified Sales & Attendance Report', style: const pw.TextStyle(fontSize: 15)),
+            ],
+          )),
+        ]),
         pw.SizedBox(height: 8),
-        pw.Text(
-          'Unified Sales & Attendance Report',
-          style: const pw.TextStyle(fontSize: 18),
-        ),
-        pw.Text('${report['start']} to ${report['end']}'),
+        pw.Text('${report['start']} to ${report['end']} · Malaysia time'),
         pw.SizedBox(height: 22),
+        if (chartRows.isNotEmpty) ...[
+          pw.Text('Sales by day · MYR', style: pw.TextStyle(
+            fontSize: 13, fontWeight: pw.FontWeight.bold)),
+          pw.SizedBox(height: 6),
+          for (final row in chartRows)
+            pw.Padding(
+              padding: const pw.EdgeInsets.symmetric(vertical: 2),
+              child: pw.Row(children: [
+                pw.SizedBox(width: 68, child: pw.Text('${row['day']}',
+                  style: const pw.TextStyle(fontSize: 9))),
+                pw.SizedBox(width: 200, child: pw.Align(
+                  alignment: pw.Alignment.centerLeft,
+                  child: pw.Container(height: 8,
+                    width: 200 * (row['revenueMinor'] as int).clamp(0, peak) / peak,
+                    color: PdfColor.fromHex('#A44854')),
+                )),
+                pw.SizedBox(width: 10),
+                pw.Text(photoMoney(row['revenueMinor']), style: const pw.TextStyle(fontSize: 9)),
+              ]),
+            ),
+          pw.SizedBox(height: 16),
+        ],
         pw.TableHelper.fromTextArray(
           headers: ['Measure', 'Total'],
           data: [
@@ -181,6 +220,65 @@ Future<Uint8List> buildParkReportPdf(Map<String, dynamic> report) async {
   return document.save();
 }
 
+enum _ReportView {
+  overview('Sales & Attendance', {}),
+  admissions('Admissions', {'Park check-ins': 'parkAdmissions', 'Attraction check-ins': 'rideAdmissions'}),
+  queue('Reservations', {'Reservations': 'reservations', 'Cancellations': 'cancellations'}),
+  rewards('Rewards', {'Vouchers issued': 'vouchersIssued', 'Vouchers redeemed': 'vouchersRedeemed'}),
+  photos('Smart Photos', {'Confirmed photo orders': 'photoOrders'}),
+  staff('Staff & Leave', {
+    'Published shift assignments': 'staffShifts',
+    'Approved leave overlapping period': 'approvedLeave',
+    'Pending leave overlapping period': 'pendingLeave',
+  });
+
+  const _ReportView(this.label, this.metrics);
+  final String label;
+  final Map<String, String> metrics;
+}
+
+Future<Uint8List> _buildFocusedReport(
+  _ReportView view, Map<String, dynamic> report, Uint8List logo,
+) async {
+  final summary = report['summary'] as Map;
+  final metrics = {
+    for (final entry in view.metrics.entries)
+      entry.key: (summary[entry.value] as num?)?.toInt() ?? 0,
+  };
+  final peak = metrics.values.fold<int>(1, (max, value) => value > max ? value : max);
+  final pdf = pw.Document();
+  pdf.addPage(pw.MultiPage(
+    pageFormat: PdfPageFormat.a4,
+    footer: (context) => pw.Align(alignment: pw.Alignment.centerRight,
+      child: pw.Text('Page ${context.pageNumber} of ${context.pagesCount}')),
+    build: (_) => [
+      pw.Row(children: [
+        pw.Image(pw.MemoryImage(logo), width: 62, height: 62, fit: pw.BoxFit.contain),
+        pw.SizedBox(width: 14),
+        pw.Text('${view.label} Report', style: pw.TextStyle(fontSize: 22, fontWeight: pw.FontWeight.bold)),
+      ]),
+      pw.SizedBox(height: 14),
+      pw.Text('${report['start']} to ${report['end']} · Malaysia time'),
+      pw.SizedBox(height: 20),
+      for (final entry in metrics.entries)
+        pw.Padding(padding: const pw.EdgeInsets.only(bottom: 12), child: pw.Column(
+          crossAxisAlignment: pw.CrossAxisAlignment.start,
+          children: [
+            pw.Text('${entry.key}  ${entry.value}'),
+            pw.SizedBox(height: 4),
+            pw.Container(height: 9, width: 220 * entry.value / peak,
+              color: PdfColor.fromHex('#A44854')),
+          ],
+        )),
+      pw.TableHelper.fromTextArray(
+        headers: ['Metric', 'Total'],
+        data: [for (final entry in metrics.entries) [entry.key, '${entry.value}']],
+      ),
+    ],
+  ));
+  return pdf.save();
+}
+
 class ParkReportsPage extends StatefulWidget {
   final ParkAdminRepository repository;
   const ParkReportsPage({super.key, required this.repository, this.embedded = false, this.souvenirDb});
@@ -199,12 +297,58 @@ class _ParkReportsPageState extends State<ParkReportsPage> {
       DateTime.now().day,
     ),
   );
+  _ReportView view = _ReportView.overview;
   late Future<Map<String, dynamic>> report = load();
   bool exporting = false;
-  Future<Map<String, dynamic>> load() => widget.repository.request('report', {
-    'start': period.start.toUtc().toIso8601String(),
-    'end': period.end.add(const Duration(days: 1)).toUtc().toIso8601String(),
-  });
+  String _dateKey(DateTime date) => date.toIso8601String().substring(0, 10);
+
+  DateTime _parkMidnight(DateTime date) =>
+      DateTime.utc(date.year, date.month, date.day).subtract(const Duration(hours: 8));
+
+  Future<Map<String, dynamic>> load() async {
+    final selectedView = view;
+    final from = period.start;
+    final to = period.end;
+    final start = _parkMidnight(from);
+    final end = _parkMidnight(to).add(const Duration(days: 1));
+    final dates = {'start': _dateKey(from), 'end': _dateKey(to)};
+    if (selectedView != _ReportView.staff || widget.souvenirDb == null) {
+      final result = await widget.repository.request('report', {
+        'start': start.toIso8601String(),
+        'end': end.toIso8601String(),
+      });
+      return {...result, ...dates};
+    }
+    final db = widget.souvenirDb!;
+    final results = await Future.wait([
+      db.collection('staffPublishedShifts')
+          .where('startsAt', isGreaterThanOrEqualTo: Timestamp.fromDate(start))
+          .where('startsAt', isLessThan: Timestamp.fromDate(end)).get(),
+      db.collection('staffLeaveRequests')
+          .where('endOn', isGreaterThanOrEqualTo: dates['start']).get(),
+    ]);
+    final leaves = results[1].docs.map((doc) => doc.data()).where((leave) {
+      final firstDay = leave['startOn'];
+      return firstDay is String && firstDay.compareTo(dates['end']!) <= 0;
+    }).toList();
+    return {
+      ...dates,
+      'summary': {
+        'staffShifts': results[0].docs.where((doc) => doc.data()['published'] == true).length,
+        'approvedLeave': leaves.where((leave) => leave['status'] == 'approved').length,
+        'pendingLeave': leaves.where((leave) => leave['status'] == 'pending').length,
+      },
+    };
+  }
+
+  void _selectReport(_ReportView option) {
+    if (view == option) return;
+    setState(() {
+      view = option;
+      report = load();
+    });
+  }
+
   Future<void> dates() async {
     DateTime from = period.start;
     DateTime to = period.end;
@@ -292,17 +436,20 @@ class _ParkReportsPageState extends State<ParkReportsPage> {
   Future<void> export(Map<String, dynamic> data) async {
     setState(() => exporting = true);
     try {
+      final logo = await rootBundle.load('assets/images/Theme_Park_Main_Logo.png');
+      final logoBytes = logo.buffer.asUint8List(logo.offsetInBytes, logo.lengthInBytes);
+      final selectedView = view;
       await FilePicker.saveFile(
         fileName:
-            'ThemePark-Report-${period.start.toIso8601String().substring(0, 10)}.pdf',
+            'ThemePark-${selectedView.name}-${_dateKey(period.start)}.pdf',
         type: FileType.custom,
         allowedExtensions: ['pdf'],
-        bytes: await buildParkReportPdf({
+        bytes: selectedView == _ReportView.overview ? await buildParkReportPdf({
           ...data,
           // SOUVENIR_ADMIN_V11: include verified souvenir totals in exported PDF.
           if (widget.souvenirDb != null)
             'souvenir': await loadSouvenirSales(widget.souvenirDb!, period.start, period.end),
-        }),
+        }, logoBytes: logoBytes) : await _buildFocusedReport(selectedView, data, logoBytes),
       );
     } catch (e) {
       if (mounted) {
@@ -323,14 +470,24 @@ class _ParkReportsPageState extends State<ParkReportsPage> {
       children: [
         AdminHeading(
           widget.embedded ? 'Sales Performance' : 'Reports & Analytics',
-          'Sales trends and best-selling products.',
+          widget.embedded ? 'Sales trends and best-selling products.'
+              : 'Sales, attendance, reservations, rewards, photos and staff.',
         ),
+        if (!widget.embedded) ...[
+          const SizedBox(height: 14),
+          Wrap(spacing: 8, runSpacing: 8, children: [
+            for (final option in _ReportView.values)
+              if (option != _ReportView.staff || widget.souvenirDb != null)
+                ChoiceChip(label: Text(option.label), selected: view == option,
+                  onSelected: exporting ? null : (_) => _selectReport(option)),
+          ]),
+        ],
         const SizedBox(height: 18),
         Row(
           children: [
             const Icon(Icons.calendar_month_outlined, color: adminRose, size: 18),
             const SizedBox(width: 8),
-            Text('${adminDateLabel(period.start)} – ${adminDateLabel(period.end)}',
+            Text('${_dateKey(period.start)} – ${_dateKey(period.end)}',
               style: const TextStyle(color: adminMuted, fontWeight: FontWeight.w600)),
             const SizedBox(width: 12),
             OutlinedButton.icon(
@@ -362,13 +519,25 @@ class _ParkReportsPageState extends State<ParkReportsPage> {
               ],
             ),
           )
-        else if (!s.hasData)
+        else if (s.connectionState == ConnectionState.waiting || !s.hasData)
           const Center(
             child: Padding(
               padding: EdgeInsets.all(50),
               child: CircularProgressIndicator(),
             ),
           )
+        else if (view != _ReportView.overview)
+          AdminCard(child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              for (final metric in view.metrics.entries)
+                ListTile(title: Text(metric.key),
+                  trailing: Text('${(s.data!['summary'] as Map)[metric.value] ?? 0}')),
+              Align(alignment: Alignment.centerRight,
+                child: AdminButton('Download PDF', icon: Icons.picture_as_pdf_outlined,
+                  onPressed: exporting ? null : () => export(s.data!))),
+            ],
+          ))
         else ...[
           Builder(
             builder: (context) {

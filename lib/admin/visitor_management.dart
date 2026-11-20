@@ -97,7 +97,7 @@ class _VisitorManagementState extends State<VisitorManagement> {
     if (!mounted || isCheckingRefunds) return;
     final repository = widget.store.repository;
     if (repository is! FirebaseAdminRepository) return;
-    isCheckingRefunds = true;
+    setState(() => isCheckingRefunds = true);
     try {
       final count = await VisitorRefundReviewService(repository).scanAndFlag();
       if (mounted) setState(() {
@@ -109,7 +109,7 @@ class _VisitorManagementState extends State<VisitorManagement> {
       if (mounted) setState(() => refundScanMessage =
         'Refund pattern check could not run. Review permissions or connection.');
     } finally {
-      isCheckingRefunds = false;
+      if (mounted) setState(() => isCheckingRefunds = false);
     }
   }
 
@@ -144,7 +144,7 @@ class _VisitorManagementState extends State<VisitorManagement> {
   }
   Timer? refundTimer;
   bool isCheckingRefunds = false;
-  String refundScanMessage = 'Automated review checks confirmed refunds when this page is open.';
+  String? refundScanMessage;
   int page = 0, perPage = 10;
   bool ascending = true;
   String sort = 'name';
@@ -368,52 +368,6 @@ class _VisitorManagementState extends State<VisitorManagement> {
     });
   }
 
-  Widget _reviewSection() {
-    final review = widget.store.visitors.where((v) => v.watchlisted).toList();
-    return Container(
-      padding: const EdgeInsets.all(15),
-      decoration: BoxDecoration(color: const Color(0xFFF4EAE5),
-        border: Border.all(color: const Color(0xFFE6D8D2)),
-        borderRadius: BorderRadius.circular(14)),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text('Review Queue (${review.length})', style: const TextStyle(
-          color: Color(0xFF3C3031), fontSize: 16, fontWeight: FontWeight.bold)),
-        const SizedBox(height: 5),
-        const Text('A watchlist flag is not proof of wrongdoing. Review each account and its refund history before suspending it.',
-          style: TextStyle(fontSize: 12, color: Color(0xFF796966))),
-        const SizedBox(height: 8),
-        Row(children: [
-          Expanded(child: Text(refundScanMessage, style: const TextStyle(
-            fontSize: 11, color: Color(0xFF816D69)))),
-          TextButton.icon(onPressed: isCheckingRefunds ? null : _scanRefunds,
-            icon: const Icon(Icons.refresh, size: 15),
-            label: const Text('Check now')),
-        ]),
-        const SizedBox(height: 9),
-        for (final v in review.take(5)) Padding(
-          padding: const EdgeInsets.symmetric(vertical: 5),
-          child: Row(children: [
-            const Icon(Icons.flag_outlined, size: 17, color: Color(0xFFA76B4C)),
-            const SizedBox(width: 7),
-            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(v.name, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12)),
-                Text(v.note.isEmpty ? 'Manually added to watchlist — reason not recorded.' : v.note,
-                  maxLines: 2, overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 11, color: Color(0xFF796966))),
-              ])),
-            TextButton(onPressed: () => widget.onOpen(v), child: const Text('Review')),
-            if (v.status != 'suspended') TextButton(
-              onPressed: () => _status([v.id], 'suspended'),
-              child: const Text('Suspend')),
-          ]),
-        ),
-        if (review.isEmpty) const Text('No accounts are currently on the watchlist.',
-          style: TextStyle(fontSize: 12, color: Color(0xFF796966))),
-      ]),
-    );
-  }
-
   Widget _sectionChoice(String label, String key, IconData icon) =>
       ChoiceChip(label: Row(mainAxisSize: MainAxisSize.min,
         children: [Icon(icon, size: 15), const SizedBox(width: 5), Text(label)]),
@@ -426,6 +380,12 @@ class _VisitorManagementState extends State<VisitorManagement> {
   @override
   Widget build(BuildContext context) {
     final store = widget.store, list = filtered;
+    final reviewing = section == 'review';
+    final reviewCount = reviewing
+        ? store.visitors.where((visitor) => visitor.status != 'archived' &&
+            (visitor.watchlisted || visitor.risk != 'normal')).length
+        : 0;
+    final scanMessage = refundScanMessage;
     final lastPage = list.isEmpty ? 0 : (list.length - 1) ~/ perPage;
     final current = page.clamp(0, lastPage);
     final visible = list.skip(current * perPage).take(perPage).toList();
@@ -467,10 +427,14 @@ class _VisitorManagementState extends State<VisitorManagement> {
           const SizedBox(width: 8),
           _sectionChoice('Archived', 'archived', Icons.archive_outlined),
         ]),
-        if (section == 'review') ...[
-          const SizedBox(height: 12),
-          _reviewSection(),
-        ],
+        if (reviewing && store.repository is FirebaseAdminRepository)
+          TextButton.icon(
+            onPressed: isCheckingRefunds ? null : _scanRefunds,
+            icon: const Icon(Icons.refresh, size: 16),
+            label: Text(isCheckingRefunds ? 'Checking refunds…' : 'Check refunds'),
+          ),
+        if (reviewing && !isCheckingRefunds && scanMessage != null)
+          Text(scanMessage, style: const TextStyle(color: adminMuted, fontSize: 12)),
         const SizedBox(height: 24),
         KeyedSubtree(
           key: resultsAnchor,
@@ -625,11 +589,16 @@ class _VisitorManagementState extends State<VisitorManagement> {
           child: AdminCard(
           padding: EdgeInsets.zero,
           child: list.isEmpty
-              ? const AdminEmpty(
-                  'No matching visitors',
-                  'Try changing your search or filters.',
-                  icon: Icons.people_outline,
-                )
+              ? reviewing && reviewCount == 0
+                  ? const Padding(
+                      padding: EdgeInsets.all(18),
+                      child: Text('No cases awaiting review'),
+                    )
+                  : const AdminEmpty(
+                      'No matching visitors',
+                      'Try changing your search or filters.',
+                      icon: Icons.people_outline,
+                    )
               : AdminTable(
                   minWidth: 1110,
                   sortColumnIndex: sort == 'membership'
@@ -686,6 +655,10 @@ class _VisitorManagementState extends State<VisitorManagement> {
                       }),
                     ),
                     const DataColumn(label: Text('Status')),
+                    if (reviewing) ...[
+                      const DataColumn(label: Text('Review reason')),
+                      const DataColumn(label: Text('Last updated')),
+                    ],
                     const DataColumn(label: Text('Actions')),
                   ],
                   rows: [
@@ -778,6 +751,21 @@ class _VisitorManagementState extends State<VisitorManagement> {
                             style: const TextStyle(fontSize: 11, color: adminMuted),
                           )),
                           DataCell(AdminBadge(titleCase(v.status))),
+                          if (reviewing) ...[
+                            DataCell(SizedBox(
+                              width: 240,
+                              child: Text(
+                                v.note.trim().isEmpty
+                                    ? 'Flagged for review'
+                                    : v.note.trim().split('\n').last,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ), onTap: () => widget.onOpen(v)),
+                            DataCell(Text(adminTimeLabel(
+                              adminDate(v.metadata['updatedAt']),
+                            ))),
+                          ],
                           DataCell(
                             PopupMenuButton<String>(
                               tooltip: 'Actions for ${v.name}',
@@ -837,72 +825,72 @@ class _VisitorManagementState extends State<VisitorManagement> {
                 ),
           ),
         ),
-        const SizedBox(height: 16),
-        AdminCard(
-          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-          child: Wrap(
-            alignment: WrapAlignment.spaceBetween,
-            runSpacing: 12,
-            crossAxisAlignment: WrapCrossAlignment.center,
-            children: [
-              Text(
-                list.isEmpty
-                    ? 'Showing 0 results'
-                    : 'Showing ${current * perPage + 1} to ${(current + 1) * perPage > list.length ? list.length : (current + 1) * perPage} of ${list.length} results',
-                style: const TextStyle(color: adminMuted, fontSize: 12),
-              ),
-              AdminSelect(
-                value: '$perPage',
-                options: const {
-                  '5': '5 per page',
-                  '10': '10 per page',
-                  '25': '25 per page',
-                  '50': '50 per page',
-                },
-                onChanged: (v) => _change(() => perPage = int.parse(v)),
-                width: 125,
-              ),
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  IconButton(
-                    tooltip: 'Previous page',
-                    onPressed: current > 0
-                        ? () => setState(() => page = current - 1)
-                        : null,
-                    icon: const Icon(Icons.chevron_left),
-                  ),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 14,
-                      vertical: 9,
+        if (list.isNotEmpty) ...[
+          const SizedBox(height: 16),
+          AdminCard(
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+            child: Wrap(
+              alignment: WrapAlignment.spaceBetween,
+              runSpacing: 12,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                Text(
+                  'Showing ${current * perPage + 1} to ${(current + 1) * perPage > list.length ? list.length : (current + 1) * perPage} of ${list.length} results',
+                  style: const TextStyle(color: adminMuted, fontSize: 12),
+                ),
+                AdminSelect(
+                  value: '$perPage',
+                  options: const {
+                    '5': '5 per page',
+                    '10': '10 per page',
+                    '25': '25 per page',
+                    '50': '50 per page',
+                  },
+                  onChanged: (v) => _change(() => perPage = int.parse(v)),
+                  width: 125,
+                ),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      tooltip: 'Previous page',
+                      onPressed: current > 0
+                          ? () => setState(() => page = current - 1)
+                          : null,
+                      icon: const Icon(Icons.chevron_left),
                     ),
-                    decoration: BoxDecoration(
-                      color: adminRose,
-                      borderRadius: BorderRadius.circular(5),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 9,
+                      ),
+                      decoration: BoxDecoration(
+                        color: adminRose,
+                        borderRadius: BorderRadius.circular(5),
+                      ),
+                      child: Text(
+                        '${current + 1}',
+                        style: const TextStyle(color: Colors.white),
+                      ),
                     ),
-                    child: Text(
-                      '${current + 1}',
-                      style: const TextStyle(color: Colors.white),
+                    const SizedBox(width: 10),
+                    Text(
+                      'of ${lastPage + 1}',
+                      style: const TextStyle(color: adminMuted, fontSize: 12),
                     ),
-                  ),
-                  const SizedBox(width: 10),
-                  Text(
-                    'of ${lastPage + 1}',
-                    style: const TextStyle(color: adminMuted, fontSize: 12),
-                  ),
-                  IconButton(
-                    tooltip: 'Next page',
-                    onPressed: current < lastPage
-                        ? () => setState(() => page = current + 1)
-                        : null,
-                    icon: const Icon(Icons.chevron_right),
-                  ),
-                ],
-              ),
-            ],
+                    IconButton(
+                      tooltip: 'Next page',
+                      onPressed: current < lastPage
+                          ? () => setState(() => page = current + 1)
+                          : null,
+                      icon: const Icon(Icons.chevron_right),
+                    ),
+                  ],
+                ),
+              ],
+            ),
           ),
-        ),
+        ],
       ],
     );
   }

@@ -99,6 +99,7 @@ class AdminStat extends StatelessWidget {
   final String label, value, caption;
   final IconData icon;
   final Color color;
+  final double height;
   const AdminStat(
     this.label,
     this.value,
@@ -106,11 +107,13 @@ class AdminStat extends StatelessWidget {
     this.icon, {
     super.key,
     this.color = adminRose,
+    this.height = 164,
   });
   @override
   Widget build(BuildContext context) => SizedBox(
-    height: 164,
+    height: height,
     child: AdminCard(
+    padding: height < 130 ? const EdgeInsets.all(14) : const EdgeInsets.all(20),
     child: Row(
       children: [
         Container(
@@ -125,6 +128,9 @@ class AdminStat extends StatelessWidget {
         const SizedBox(width: 14),
         Expanded(
           child: Column(
+            mainAxisAlignment: height < 130
+                ? MainAxisAlignment.center
+                : MainAxisAlignment.start,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
@@ -133,7 +139,7 @@ class AdminStat extends StatelessWidget {
               ),
               const SizedBox(height: 6),
               SizedBox(
-                height: 38,
+                height: height < 130 ? 30 : 38,
                 child: Align(
                   alignment: Alignment.centerLeft,
                   child: FittedBox(

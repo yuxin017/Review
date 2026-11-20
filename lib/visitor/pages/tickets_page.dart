@@ -263,6 +263,7 @@ class TicketsPageState extends State<TicketsPage>
           break;
         default:
           page = TicketHub(
+            showLiveShop: photos != null,
             journey: journey,
             onBuy: _catalog,
             onTickets: () => _go('tickets'),
@@ -272,7 +273,7 @@ class TicketsPageState extends State<TicketsPage>
           );
       }
       const titles = {
-        'hub': 'Tickets',
+        'hub': 'Shop',
         'catalog': 'Day & Annual Passes',
         'cart': 'Your Cart',
         'guests': 'Guest Details',

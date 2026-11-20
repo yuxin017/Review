@@ -17,6 +17,25 @@ class PackageManagement extends StatefulWidget {
 
 class _PackageManagementState extends State<PackageManagement> {
   String query = '', status = 'all', category = 'all';
+  Future<void> _unpublish(AdminPackage product) async {
+    final pass = product.pass;
+    final store = widget.store;
+    final saved = await store.perform(() => store.repository.savePackage(product.id,
+      PackageDraft(
+        name: pass.name, description: pass.description, category: pass.category,
+        priceMinor: pass.priceMinor, childPriceMinor: pass.childPriceMinor,
+        durationDays: pass.durationDays, sortOrder: pass.sortOrder,
+        benefits: (product.data['benefits'] as List?)?.whereType<String>().toList() ?? const [],
+        imageUrl: product.data['imageUrl'] as String?, active: false,
+      ),
+    ));
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(saved ? 'Pass removed from the shop.' : 'Unable to remove pass.'),
+      ));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final list =
@@ -209,7 +228,8 @@ class _PackageManagementState extends State<PackageManagement> {
                             AdminBadge(p.active ? 'Active' : 'Inactive'),
                           ),
                           DataCell(
-                            AdminButton(
+                            Row(mainAxisSize: MainAxisSize.min, children: [
+                              AdminButton(
                               'Edit Pass',
                               icon: Icons.edit_outlined,
                               outlined: true,
@@ -221,6 +241,11 @@ class _PackageManagementState extends State<PackageManagement> {
                                       package: p,
                                     ),
                             ),
+                              if (p.active)
+                                IconButton(tooltip: 'Remove from shop',
+                                  onPressed: widget.store.busy ? null : () => _unpublish(p),
+                                  icon: const Icon(Icons.archive_outlined)),
+                            ]),
                           ),
                         ],
                       ),

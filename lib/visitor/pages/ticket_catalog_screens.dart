@@ -1,15 +1,19 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
+import '../../photos/photo_gallery_pages.dart';
+import '../../photos/photo_repository.dart';
+import 'souvenir_shop_page.dart';
 import 'package:flutter/material.dart';
 import '../models/tickets.dart';
 import '../services/ticket_journey.dart';
 import '../widgets/ticket_widgets.dart';
 import 'tickets_page.dart';
-import '../widgets/live_souvenirs_section.dart';
 
-class TicketHub extends StatelessWidget {
+class TicketHub extends StatefulWidget {
   final TicketJourney journey;
   final void Function([String category]) onBuy;
   final VoidCallback onTickets, onScan, onHistory;
   final ValueChanged<TicketPackage> onSelect;
+  final bool showLiveShop;
   const TicketHub({
     super.key,
     required this.journey,
@@ -18,9 +22,21 @@ class TicketHub extends StatelessWidget {
     required this.onScan,
     required this.onHistory,
     required this.onSelect,
+    this.showLiveShop = false,
   });
   @override
+  State<TicketHub> createState() => _TicketHubState();
+}
+
+class _TicketHubState extends State<TicketHub> {
+  String category = 'Tickets';
+
+  @override
   Widget build(BuildContext context) {
+    final journey = widget.journey;
+    final onBuy = widget.onBuy;
+    final onTickets = widget.onTickets;
+    final onSelect = widget.onSelect;
     final day = journey.packages.where((p) => p.category == 'day').firstOrNull;
     final annual = journey.packages
         .where((p) => p.category == 'annual')
@@ -28,24 +44,6 @@ class TicketHub extends StatelessWidget {
     return TicketPageBody(
       padding: const EdgeInsets.fromLTRB(17, 0, 17, 16),
       children: [
-        Semantics(
-          key: const Key('buy-tickets-banner'),
-          button: true,
-          label: 'Buy Tickets. Make every moment magical.',
-          child: InkWell(
-            onTap: () => onBuy(),
-            borderRadius: BorderRadius.circular(12),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(12),
-              child: Image.asset(
-                'assets/images/ticketing/hero.png',
-                width: double.infinity,
-                fit: BoxFit.fitWidth,
-              ),
-            ),
-          ),
-        ),
-        const SizedBox(height: 16),
         Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -54,16 +52,25 @@ class TicketHub extends StatelessWidget {
               'Day & Annual\nPasses',
               () => onBuy(),
             ),
-            _shortcut(Icons.qr_code_scanner, 'Add Ticket\n(Scan)', onScan),
+            _shortcut(Icons.qr_code_scanner, 'Add Ticket\n(Scan)', widget.onScan),
             _shortcut(
               Icons.account_balance_wallet_outlined,
               'My Tickets',
               onTickets,
             ),
-            _shortcut(Icons.shopping_bag_outlined, 'My Orders', onHistory),
+            _shortcut(Icons.shopping_bag_outlined, 'My Orders', widget.onHistory),
           ],
         ),
         const SizedBox(height: 20),
+        if (widget.showLiveShop) ...[
+          Wrap(spacing: 8, runSpacing: 6, children: [
+            for (final name in ['Tickets', 'Bundles', 'Food', 'Souvenirs', 'Photos'])
+              ChoiceChip(label: Text(name), selected: category == name,
+                onSelected: (_) => setState(() => category = name)),
+          ]),
+          const SizedBox(height: 16),
+        ],
+        if (category == 'Tickets') ...[
         _section('Day & Annual Passes', () => onBuy()),
         const SizedBox(height: 12),
         if (journey.loading)
@@ -100,7 +107,24 @@ class TicketHub extends StatelessWidget {
             ],
           ),
         const SizedBox(height: 18),
-        const LiveSouvenirsSection(),
+        ] else if (category == 'Souvenirs')
+          TicketButton('Browse souvenirs', onPressed: () => Navigator.of(context).push(
+            MaterialPageRoute(builder: (_) => const SouvenirShopPage()),
+          ))
+        else ...[
+          _LiveShopCatalogue(category: category),
+          if (category == 'Photos') ...[
+            const SizedBox(height: 8),
+            const Text('Check available formats and final prices in My Photos.'),
+            const SizedBox(height: 12),
+            TicketButton('Find my photos', onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(
+                settings: const RouteSettings(name: 'photos-hub'),
+                builder: (_) => PhotoHubPage(repository: FirebasePhotoRepository()),
+              ),
+            )),
+          ],
+        ],
         const SizedBox(height: 12),
         InkWell(
           onTap: onTickets,
@@ -242,6 +266,73 @@ class TicketHub extends StatelessWidget {
     ),
   );
 
+}
+
+class _LiveShopCatalogue extends StatelessWidget {
+  const _LiveShopCatalogue({required this.category});
+  final String category;
+
+  @override
+  Widget build(BuildContext context) {
+    final db = FirebaseFirestore.instance;
+    if (category != 'Food') {
+      final bundles = category == 'Bundles';
+      return _items(context, bundles
+          ? db.collection('ticketBundles').where('status', isEqualTo: 'published')
+          : db.collection('photoProducts').where('active', isEqualTo: true));
+    }
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: db.collection('attractions').snapshots(),
+      builder: (context, snapshot) {
+        if (snapshot.hasError) return const Text('Dining locations could not be loaded.');
+        if (!snapshot.hasData) return const LinearProgressIndicator();
+        final venues = {
+          for (final doc in snapshot.data!.docs)
+            if (doc.data()['deletedAt'] == null && _isDining(doc.data()))
+              doc.id: (doc.data()['name'] ?? 'Park dining').toString(),
+        };
+        return _items(context,
+          db.collection('parkMenuItems').where('active', isEqualTo: true),
+          venues: venues);
+      },
+    );
+  }
+
+  bool _isDining(Map<String, dynamic> data) {
+    final kind = (data['kind'] ?? '').toString().toLowerCase();
+    if (kind.isNotEmpty) return kind == 'dining';
+    final category = (data['category'] ?? '').toString().toLowerCase();
+    return ['dining', 'food', 'cafe', 'café', 'restaurant'].any(category.contains);
+  }
+
+  Widget _items(BuildContext context, Query<Map<String, dynamic>> query,
+      {Map<String, String>? venues}) =>
+    StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: query.snapshots(),
+      builder: (context, snapshot) {
+        if (snapshot.hasError) return Text('$category catalogue could not be loaded.');
+        if (!snapshot.hasData) return const LinearProgressIndicator();
+        final items = snapshot.data!.docs.map((doc) => doc.data())
+            .where((item) => venues == null || venues.containsKey(item['storeId']))
+            .toList()
+          ..sort((a, b) => (a['name'] ?? '').toString().compareTo((b['name'] ?? '').toString()));
+        if (items.isEmpty) return Text('No ${category.toLowerCase()} available.');
+        return Column(children: [
+          for (final item in items)
+            Card(child: ListTile(
+              title: Text((item['name'] ?? category).toString()),
+              subtitle: Text([
+                if (category == 'Bundles')
+                  "${item['adults']} adults · ${item['children']} children · Ask at admissions",
+                if (venues?[item['storeId']] case final String venue) venue,
+                if (item['description'] case final String description)
+                  if (description.isNotEmpty) description,
+              ].join('\n')),
+              trailing: Text(ticketDisplayPrice(context, (item['priceMinor'] as num?)?.toInt() ?? 0)),
+            )),
+        ]);
+      },
+    );
 }
 
 class PassCatalog extends StatelessWidget {

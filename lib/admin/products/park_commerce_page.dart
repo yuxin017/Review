@@ -28,13 +28,21 @@ class ParkCommercePage extends StatefulWidget {
 class _ParkCommercePageState extends State<ParkCommercePage> {
   int selected = 0;
   static const labels = [
-    'Tickets', 'Group Bundles', 'Photo Products', 'Food & Retail', 'Bookings & Orders',
+    'Overview', 'Tickets', 'Group Bundles', 'Photo Products', 'Food & Retail', 'Bookings & Orders',
   ];
   static const icons = [
-    Icons.confirmation_number_outlined, Icons.groups_2_outlined,
+    Icons.dashboard_outlined, Icons.confirmation_number_outlined, Icons.groups_2_outlined,
     Icons.photo_camera_outlined, Icons.storefront_outlined,
     Icons.receipt_long_outlined,
   ];
+
+  Widget _count(String label, String collection, String field, Object value, IconData icon) =>
+    StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: widget.db!.collection(collection).where(field, isEqualTo: value).snapshots(),
+      builder: (context, snapshot) => AdminStat(
+        label, snapshot.hasData ? '${snapshot.data!.size}' : '—',
+        snapshot.hasError ? 'Could not load' : 'Listed in the shop', icon),
+    );
 
   @override
   Widget build(BuildContext context) => Column(
@@ -52,18 +60,36 @@ class _ParkCommercePageState extends State<ParkCommercePage> {
         ),
       ]),
       const SizedBox(height: 24),
-      if (selected == 0) PackageManagement(store: widget.store),
-      if (selected == 1) widget.db == null
+      if (selected == 0) ...[
+        AdminStats(children: [
+          AdminStat('Active passes', '${widget.store.packages.where((p) => p.active).length}',
+            'Visitor ticket catalogue', Icons.confirmation_number_outlined),
+          AdminStat('Completed ticket orders',
+            '${widget.store.orders.where((o) => o.status == 'completed').length}',
+            'Recorded bookings', Icons.receipt_long_outlined),
+          if (widget.db != null) ...[
+            _count('Published bundles', 'ticketBundles', 'status', 'published', Icons.groups_outlined),
+            _count('Active photo products', 'photoProducts', 'active', true, Icons.photo_camera_outlined),
+            _count('Active food & retail', 'parkMenuItems', 'active', true, Icons.storefront_outlined),
+          ],
+        ]),
+        if (widget.reportsRepository != null) ...[
+          const SizedBox(height: 20),
+          ParkReportsPage(repository: widget.reportsRepository!, embedded: true, souvenirDb: widget.db),
+        ],
+      ],
+      if (selected == 1) PackageManagement(store: widget.store),
+      if (selected == 2) widget.db == null
           ? const AdminCard(child: Text('Admin sign-in required.'))
           : TicketBundleManagementPage(db: widget.db!, store: widget.store),
-      if (selected == 2) widget.reportsRepository == null || widget.db == null
+      if (selected == 3) widget.reportsRepository == null || widget.db == null
           ? const AdminCard(child: Text('Admin sign-in required.'))
           : PhotoProductCataloguePage(db: widget.db!,
               repository: widget.reportsRepository!),
-      if (selected == 3) widget.db == null
+      if (selected == 4) widget.db == null
           ? const AdminCard(child: Text('Admin sign-in required.'))
           : ParkMenuManagementPage(db: widget.db!),
-      if (selected == 4) ...[
+      if (selected == 5) ...[
         // SOUVENIR_ADMIN_V11: paid orders and one-way collection.
         if (widget.db != null) ...[
           SouvenirOrdersAdminPage(
@@ -71,11 +97,6 @@ class _ParkCommercePageState extends State<ParkCommercePage> {
             visitors: widget.store.visitors),
           const SizedBox(height: 22),
         ],
-        if (widget.reportsRepository == null)
-          const AdminCard(child: Text('Reporting requires administrator access.'))
-        else
-          ParkReportsPage(repository: widget.reportsRepository!, embedded: true, souvenirDb: widget.db),
-        const SizedBox(height: 18),
         TicketManagement(store: widget.store,
           onValidate: widget.onValidate, embedded: true),
       ],

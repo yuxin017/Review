@@ -10,20 +10,14 @@ import '../../photos/photo_repository.dart';
 import '../../park/assistant_page.dart';
 import '../../park/intelligence_repository.dart';
 import '../../park/offers_page.dart';
-import 'souvenir_shop_page.dart';
 
 class HomePage extends StatelessWidget {
   const HomePage({super.key});
 
-  Widget _sectionTitle(String title, String subtitle) => Padding(
+  Widget _sectionTitle(String title) => Padding(
     padding: const EdgeInsets.only(bottom: 12),
-    child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
-      Expanded(child: Text(title,
-        style: const TextStyle(fontSize: 20,
-          fontWeight: FontWeight.w800, color: Color(0xFF302A2A)))),
-      Text(subtitle, style: const TextStyle(
-        color: Color(0xFF957F7B), fontSize: 11)),
-    ]),
+    child: Text(title, style: const TextStyle(
+      fontSize: 20, fontWeight: FontWeight.w800, color: Color(0xFF302A2A))),
   );
 
   Widget _shortcutGrid(List<_HomeShortcut> actions) =>
@@ -31,7 +25,7 @@ class HomePage extends StatelessWidget {
         final cardWidth = (bounds.maxWidth - 12) / 2;
         return Wrap(spacing: 12, runSpacing: 12,
           children: [for (final item in actions)
-            SizedBox(width: cardWidth, height: 138,
+            SizedBox(width: cardWidth, height: 102,
               child: _ShortcutCard(item: item))]);
       });
 
@@ -51,18 +45,11 @@ class HomePage extends StatelessWidget {
           return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text('WELCOME TO YOUR ADVENTURE',
-                style: TextStyle(fontSize: 10, letterSpacing: 1.7,
-                  color: visitorRose, fontWeight: FontWeight.w800)),
-              const SizedBox(height: 7),
               Text('Hello, ${display.isEmpty ? 'Explorer' : display}!',
                 maxLines: 1, overflow: TextOverflow.ellipsis,
                 style: const TextStyle(fontSize: 26,
                   fontWeight: FontWeight.w800, letterSpacing: -.5,
                   color: Color(0xFF302A2A))),
-              const SizedBox(height: 5),
-              const Text('Your next adventure starts here.',
-                style: TextStyle(fontSize: 13, color: Color(0xFF7E7774))),
             ],
           );
         },
@@ -75,13 +62,13 @@ class HomePage extends StatelessWidget {
           child: InkWell(
             onTap: () => VisitorMainPage.openTickets(context, 'catalog'),
             child: Image.asset('assets/images/ticketing/hero.png',
-              height: 175, width: double.infinity,
+              height: 148, width: double.infinity,
               fit: BoxFit.cover, excludeFromSemantics: true),
           ),
         ),
       ),
       const SizedBox(height: 25),
-      _sectionTitle('Plan your visit', 'EXPLORE & PLAY'),
+      _sectionTitle('Plan your visit'),
       _shortcutGrid([
         _HomeShortcut(Icons.confirmation_number_outlined, 'My Tickets',
           'Your passes & QR',
@@ -92,10 +79,9 @@ class HomePage extends StatelessWidget {
         _HomeShortcut(Icons.map_outlined, 'Park Map',
           'Find your way',
           () => VisitorMainPage.goTo(context, 2)),
-        _HomeShortcut(Icons.shopping_bag_outlined, 'Souvenir Shop',
-          'Browse park merchandise',
-          () => Navigator.push(context, MaterialPageRoute(
-            builder: (_) => const SouvenirShopPage()))),
+        _HomeShortcut(Icons.shopping_bag_outlined, 'Park Shop',
+          'Passes, food and gifts',
+          () => VisitorMainPage.goTo(context, 1)),
         _HomeShortcut(Icons.local_offer_outlined, 'Park Offers',
           'Discover rewards',
           () => Navigator.push(context, MaterialPageRoute(
@@ -103,7 +89,7 @@ class HomePage extends StatelessWidget {
               repository: FirebaseParkOffersRepository())))),
       ]),
       const SizedBox(height: 24),
-      _sectionTitle('Made for you', 'YOUR PARK DAY'),
+      _sectionTitle('More at the park'),
       _shortcutGrid([
         _HomeShortcut(Icons.groups_outlined, 'My Groups',
           'Explore together',
@@ -153,15 +139,15 @@ class _ShortcutCard extends StatelessWidget {
     child: InkWell(
       onTap: item.onTap,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(15, 15, 12, 12),
+        padding: const EdgeInsets.all(10),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Container(width: 40, height: 40,
+            Container(width: 32, height: 32,
               decoration: BoxDecoration(
                 color: const Color(0xFFF8EBE8),
                 borderRadius: BorderRadius.circular(13)),
-              child: Icon(item.icon, size: 22, color: visitorRose)),
+              child: Icon(item.icon, size: 19, color: visitorRose)),
             const Spacer(),
             Text(item.title, maxLines: 1,
               overflow: TextOverflow.ellipsis,

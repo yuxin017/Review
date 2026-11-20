@@ -78,9 +78,13 @@ class _ParkManagementPageState extends State<ParkManagementPage> {
       ),
       const SizedBox(height: 22),
       if (tab == 'Promotions' || tab == 'Reward Catalogue') ...[
-        Row(
+        Wrap(
+          spacing: 12,
+          runSpacing: 10,
+          crossAxisAlignment: WrapCrossAlignment.center,
           children: [
-            Expanded(
+            SizedBox(
+              width: 280,
               child: TextField(
                 key: ValueKey(tab),
                 onChanged: (v) => setState(() {
@@ -93,7 +97,6 @@ class _ParkManagementPageState extends State<ParkManagementPage> {
                 ),
               ),
             ),
-            const SizedBox(width: 12),
             if (tab == 'Promotions') ...[
               AdminSelect(
                 value: campaignFilter,
@@ -110,7 +113,6 @@ class _ParkManagementPageState extends State<ParkManagementPage> {
                   page = 0;
                 }),
               ),
-              const SizedBox(width: 12),
             ],
             AdminButton(
               tab == 'Promotions' ? 'Create Campaign' : 'Add Reward',

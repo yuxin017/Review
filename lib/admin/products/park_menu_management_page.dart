@@ -34,6 +34,21 @@ class _ParkMenuManagementPageState extends State<ParkMenuManagementPage> {
   bool busy = false;
   String? feedback;
 
+  Future<void> _unpublishSouvenir(String id) async {
+    if (dining || busy) return;
+    setState(() => busy = true);
+    try {
+      await widget.db.collection('parkMenuItems').doc(id).update({
+        'active': false, 'updatedAt': FieldValue.serverTimestamp(),
+      });
+      if (mounted) setState(() => feedback = 'Souvenir removed from the shop.');
+    } catch (_) {
+      if (mounted) setState(() => feedback = 'Unable to remove the souvenir.');
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
   bool get dining => section == 'dining';
   List<String> get categories => dining ? foodCategories : retailCategories;
   String _label(Map<String, dynamic> item) =>
@@ -541,6 +556,10 @@ class _ParkMenuManagementPageState extends State<ParkMenuManagementPage> {
                                 onPressed: busy ? null : () => _edit(
                                   shopId: current, id: entry.id, item: entry.data()),
                                 child: const Text('Edit')),
+                              if (!dining && entry.data()['active'] == true)
+                                IconButton(tooltip: 'Remove from shop',
+                                  icon: const Icon(Icons.archive_outlined),
+                                  onPressed: busy ? null : () => _unpublishSouvenir(entry.id)),
                             ],
                           ),
                         ),

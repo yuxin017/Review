@@ -6,10 +6,10 @@ import '../admin_catalog_image.dart';
 import 'package:flutter/services.dart';
 import '../../visitor/models/tickets.dart';
 import '../admin_store.dart';
+import '../admin_models.dart' show titleCase;
 import '../admin_widgets.dart';
 
-/// A catalogue of admin-only bundle drafts. Purchase/QR fulfilment is NOT wired
-/// to these documents: the checkout service must independently reprice them.
+/// Manages the published visitor bundle catalogue and private drafts.
 class TicketBundleManagementPage extends StatefulWidget {
   const TicketBundleManagementPage({super.key, required this.db, required this.store});
   final FirebaseFirestore db;
@@ -24,6 +24,22 @@ class _TicketBundleManagementPageState extends State<TicketBundleManagementPage>
   String? feedback;
   String query = '';
   String status = 'all';
+
+  Future<void> _setStatus(String id, String status) async {
+    if (busy) return;
+    setState(() => busy = true);
+    try {
+      await widget.db.collection('ticketBundles').doc(id).update({
+        'status': status,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+      if (mounted) setState(() => feedback = 'Bundle ${status == 'draft' ? 'unpublished' : status}.');
+    } catch (_) {
+      if (mounted) setState(() => feedback = 'Unable to update this bundle.');
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
 
   Widget _bundlePanel(String title, IconData icon, List<Widget> children) =>
     Container(padding: const EdgeInsets.all(20),
@@ -303,7 +319,7 @@ class _TicketBundleManagementPageState extends State<TicketBundleManagementPage>
                     'name': name.text.trim(), 'basePackageId': packageId,
                     'adults': a, 'children': c, 'basePriceMinor': baseMinor,
                     'discountMinor': discountMinor, 'priceMinor': finalMinor,
-                    'currency': 'MYR', 'status': 'draft',
+                    'currency': 'MYR', 'status': existing?['status'] ?? 'draft',
                     if (imageUrl != null) 'imageUrl': imageUrl,
                     'updatedAt': FieldValue.serverTimestamp(),
                   });
@@ -317,7 +333,7 @@ class _TicketBundleManagementPageState extends State<TicketBundleManagementPage>
                 backgroundColor: adminRose,
                 padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 15),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15))),
-              child: Text(uploading ? 'Uploading...' : 'Save Draft', style: const TextStyle(fontWeight: FontWeight.w700)),
+              child: Text(uploading ? 'Uploading...' : 'Save Bundle', style: const TextStyle(fontWeight: FontWeight.w700)),
             ),
           ],
         );
@@ -333,7 +349,7 @@ class _TicketBundleManagementPageState extends State<TicketBundleManagementPage>
       } else {
         await col.doc(docId).update(draft);
       }
-      if (mounted) setState(() => feedback = 'Bundle draft saved. It is not available for purchase.');
+      if (mounted) setState(() => feedback = 'Bundle saved.');
     } on FirebaseException catch (e) {
       if (mounted) setState(() => feedback =
           'Unable to save bundle (${e.code}). ${e.message ?? 'Check Firestore Rules and admin permissions.'}');
@@ -365,7 +381,7 @@ class _TicketBundleManagementPageState extends State<TicketBundleManagementPage>
       ),
       const SizedBox(height: 10),
       const Text(
-        'Bundle prices use your Tickets & Passes rates. Draft bundles are not available for visitor checkout yet.',
+        'Bundle prices use your Tickets & Passes rates. Publish a bundle to list it in the visitor shop for purchase enquiries.',
         style: TextStyle(fontSize: 12, color: adminMuted),
       ),
       if (feedback != null) ...[
@@ -430,7 +446,7 @@ class _TicketBundleManagementPageState extends State<TicketBundleManagementPage>
                   )),
                   AdminSelect(value: status, width: 180,
                     options: const {'all': 'All Status',
-                      'draft': 'Draft', 'active': 'Active'},
+                      'draft': 'Draft', 'published': 'Published', 'archived': 'Archived'},
                     onChanged: (v) => setState(() => status = v)),
                   Text('${shown.length} of ${all.length} bundles',
                     style: const TextStyle(color: adminMuted, fontSize: 12)),
@@ -490,14 +506,25 @@ class _TicketBundleManagementPageState extends State<TicketBundleManagementPage>
                               ]))),
                             DataCell(Text(money((bundle.data()['priceMinor'] as num?)?.toInt() ?? 0),
                               style: const TextStyle(fontWeight: FontWeight.w700))),
-                            DataCell(AdminBadge(
-                              (bundle.data()['status'] ?? 'draft') == 'draft' ? 'Draft' : 'Active',
-                              tone: (bundle.data()['status'] ?? 'draft') == 'draft'
-                                ? 'pending' : 'active')),
-                            DataCell(AdminButton('Edit', outlined: true,
-                              icon: Icons.edit_outlined,
-                              onPressed: busy ? null : () => _edit(
-                                docId: bundle.id, existing: bundle.data()))),
+                            DataCell(AdminBadge(titleCase((bundle.data()['status'] ?? 'draft').toString()))),
+                            DataCell(Row(mainAxisSize: MainAxisSize.min, children: [
+                              AdminButton('Edit', outlined: true,
+                                icon: Icons.edit_outlined,
+                                onPressed: busy ? null : () => _edit(
+                                  docId: bundle.id, existing: bundle.data())),
+                              PopupMenuButton<String>(
+                                enabled: !busy,
+                                onSelected: (value) => _setStatus(bundle.id, value),
+                                itemBuilder: (_) => [
+                                  if (bundle.data()['status'] != 'published')
+                                    const PopupMenuItem(value: 'published', child: Text('Publish to Shop')),
+                                  if (bundle.data()['status'] == 'published')
+                                    const PopupMenuItem(value: 'draft', child: Text('Unpublish')),
+                                  if (bundle.data()['status'] != 'archived')
+                                    const PopupMenuItem(value: 'archived', child: Text('Archive')),
+                                ],
+                              ),
+                            ])),
                           ]),
                       ],
                     )),

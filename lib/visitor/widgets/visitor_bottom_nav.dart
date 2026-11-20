@@ -16,7 +16,7 @@ class VisitorBottomNav extends StatelessWidget {
 
   static const List<String> _labels = [
     'Home',
-    'Tickets',
+    'Shop',
     'Map',
     'Queue',
     'Profile',

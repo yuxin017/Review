@@ -182,12 +182,20 @@ service cloud.firestore {
       allow get, list: if workforceSuperAdmin() ||
         (signedIn() && resource.data.staffUid == request.auth.uid);
       allow create: if activeWorkforceMember(request.resource.data.staffUid)
-        && request.resource.data.keys().hasOnly(['staffUid','staffName','leaveType','startOn','endOn','reason','status','decisionNote','createdAt','updatedAt'])
+        && request.resource.data.keys().hasOnly(['staffUid','staffName','leaveType','startOn','endOn','reason','status','decisionNote','createdAt','updatedAt','certificateName','certificateData'])
         && request.resource.data.keys().hasAll(['staffUid','staffName','leaveType','startOn','endOn','reason','status','decisionNote','createdAt','updatedAt'])
         && request.resource.data.staffUid == request.auth.uid
         && request.resource.data.staffName is string
         && request.resource.data.staffName.size() <= 120
         && request.resource.data.leaveType in ['Annual Leave','Sick Leave','Emergency Leave','Unpaid Leave']
+        && (request.resource.data.leaveType != 'Sick Leave'
+          ? !request.resource.data.keys().hasAny(['certificateName', 'certificateData'])
+          : request.resource.data.certificateName is string
+            && request.resource.data.certificateName.size() > 0
+            && request.resource.data.certificateName.size() <= 160
+            && request.resource.data.certificateData is string
+            && request.resource.data.certificateData.size() >= 4
+            && request.resource.data.certificateData.size() <= 866668)
         && request.resource.data.startOn is string
         && request.resource.data.endOn is string
         && request.resource.data.startOn.size() == 10
@@ -1747,7 +1755,7 @@ service cloud.firestore {
         && d.discountMinor is int && d.discountMinor >= 0
         && d.priceMinor is int && d.priceMinor > 0
         && d.basePriceMinor == d.priceMinor + d.discountMinor
-        && d.currency == 'MYR' && d.status == 'draft'
+        && d.currency == 'MYR' && d.status in ['draft', 'published', 'archived']
         // Optional image URL is uploaded by the admin to Firebase Storage.
         && (!d.keys().hasAny(['imageUrl'])
           || (d.imageUrl is string
@@ -1756,7 +1764,7 @@ service cloud.firestore {
         && d.createdAt is timestamp && d.updatedAt == request.time;
     }
     match /ticketBundles/{bundleId} {
-      allow get, list: if isAdmin();
+      allow get, list: if isAdmin() || (signedIn() && resource.data.status == 'published');
       allow create: if isAdmin() && validTicketBundle(request.resource.data)
         && request.resource.data.createdAt == request.time;
       allow update: if isAdmin() && validTicketBundle(request.resource.data)
@@ -1764,7 +1772,7 @@ service cloud.firestore {
       allow delete: if false;
     }
     // Photo product catalogue: Digital, Photo Print, and Packages.
-    // Admin-only catalogue; visitor checkout remains server-priced.
+    // Visitors can browse active products. Checkout remains server-priced.
     function validPhotoProduct(d) {
       return d.keys().hasOnly([
           'name', 'description', 'type', 'sizeLabel', 'componentIds',
@@ -1791,7 +1799,7 @@ service cloud.firestore {
         && d.createdAt is timestamp && d.updatedAt == request.time;
     }
     match /photoProducts/{productId} {
-      allow get, list: if isAdmin();
+      allow get, list: if isAdmin() || (signedIn() && resource.data.active == true);
       allow create: if isAdmin() && validPhotoProduct(request.resource.data)
         && request.resource.data.createdAt == request.time;
       allow update: if isAdmin() && validPhotoProduct(request.resource.data)

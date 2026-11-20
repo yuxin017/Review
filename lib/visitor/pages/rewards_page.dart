@@ -237,6 +237,7 @@ class _RewardsPageState extends State<RewardsPage> {
                     animation: store,
                     builder: (context, _) {
                       final title = switch (section) {
+                        'membership' => 'Membership & Rewards',
                         'vouchers' => 'My Vouchers',
                         'catalogue' => 'Redemption Catalogue',
                         'offer' => 'Reward Details',
@@ -341,6 +342,7 @@ class _RewardsPageState extends State<RewardsPage> {
                                           : ''}',
                                     ),
                                     child: switch (section) {
+                                      'membership' => membership(),
                                       'vouchers' => vouchers(),
                                       'catalogue' => catalogue(),
                                       'offer' => offerDetails(),
@@ -361,6 +363,45 @@ class _RewardsPageState extends State<RewardsPage> {
       ),
     ),
   );
+
+  Widget membership() {
+    final earned = store.tier.earned;
+    final current = store.membershipPolicy.forEarned(earned);
+    final levels = store.membershipPolicy.levels;
+    final next = levels.where((level) => level.minPoints > earned).firstOrNull;
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(17, 8, 17, 24),
+      children: [
+        Card(child: ListTile(
+          leading: const Icon(Icons.stars_outlined),
+          title: Text('${current.name} member'),
+          subtitle: Text(next == null
+              ? '$earned lifetime points · Highest tier'
+              : '$earned lifetime points · ${next.minPoints - earned} to ${next.name}'),
+        )),
+        const SizedBox(height: 12),
+        for (final level in levels)
+          Card(child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(level.name, style: Theme.of(context).textTheme.titleMedium),
+              Text('${level.minPoints} lifetime points'),
+              if (level.description.isNotEmpty) Text(level.description),
+              for (final perk in level.highlights) Text('• $perk'),
+              if (level.upgradeBonusPoints > 0)
+                Text('Upgrade reward · ${level.upgradeBonusPoints} points'),
+              if (level.foodVoucherRewardId.isNotEmpty)
+                const Text('Upgrade reward · Food voucher'),
+            ]),
+          )),
+        const SizedBox(height: 12),
+        OutlinedButton(
+          onPressed: () => go('catalogue'),
+          child: const Text('Browse redeemable rewards'),
+        ),
+      ],
+    );
+  }
 
   Widget points() {
     final tier = store.tier;

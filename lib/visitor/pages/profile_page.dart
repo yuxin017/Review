@@ -19,7 +19,7 @@ import 'purchase_history_page.dart';
 class ProfilePage extends StatelessWidget {
   const ProfilePage({super.key});
 
-  static const Color _primary = Color(0xFFAD7472);
+  static const Color _primary = Color(0xFF9D424D);
   static const Color _background = Color(0xFFFDF4EF);
   static const Color _dark = Color(0xFF263238);
   static const Color _border = Color(0xFFE9D9D3);
@@ -69,41 +69,6 @@ class ProfilePage extends StatelessWidget {
                     stops: [0.0, 0.38, 1.0],
                     colors: [_background, Color(0xFFFEF8F5), Color(0xFFFFFCFA)],
                   ),
-                ),
-              ),
-            ),
-            Positioned(
-              top: 0,
-              left: 0,
-              right: 0,
-              height: 370,
-              child: IgnorePointer(
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    Image.asset(
-                      'assets/images/Background.png',
-                      fit: BoxFit.cover,
-                      alignment: Alignment.topCenter,
-                      errorBuilder: (context, error, stackTrace) =>
-                          const SizedBox.shrink(),
-                    ),
-                    const DecoratedBox(
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.topCenter,
-                          end: Alignment.bottomCenter,
-                          stops: [0, 0.35, 0.7, 1],
-                          colors: [
-                            Color(0x99FDF4EF),
-                            Color(0xBFFDF4EF),
-                            Color(0xF0FDF4EF),
-                            _background,
-                          ],
-                        ),
-                      ),
-                    ),
-                  ],
                 ),
               ),
             ),
@@ -454,6 +419,13 @@ class ProfilePage extends StatelessWidget {
             'Admin Portal',
             'Manage park operations and admissions',
             onTap: () => Navigator.of(context).pushNamed('/admin'),
+          ),
+          _divider(),
+          _menuItem(
+            Icons.stars_outlined,
+            'Membership & Rewards',
+            'Compare tiers and see your progress',
+            onTap: () => _openRewards(context, 'membership'),
           ),
           _divider(),
           _menuItem(
