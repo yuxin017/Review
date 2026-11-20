@@ -118,7 +118,21 @@ function createAccountService({auth,db,projectId,workspaceId,reservations,recove
         res.end(JSON.stringify(result));return;
       }
       const bearer=/^Bearer (\S+)$/.exec(req.headers.authorization||'');if(!bearer)fail(401,'unauthenticated','Please sign in again.');
-      let token;try{token=await auth.verifyIdToken(bearer[1],true);}catch(_){fail(401,'session-expired','Your session has ended. Please sign in again.');}
+      let token;
+      try {
+        token = await auth.verifyIdToken(bearer[1], true);
+      } catch (error) {
+        const code = error?.code;
+        if (['auth/id-token-expired', 'auth/id-token-revoked', 'auth/invalid-id-token',
+             'auth/argument-error', 'auth/user-disabled', 'auth/user-not-found'].includes(code)) {
+          fail(401, 'session-expired', 'Your session has ended. Please sign in again.');
+        }
+        console.warn('Firebase session verification unavailable:', code || 'unknown-error');
+        if (['auth/insufficient-permission', 'auth/invalid-credential'].includes(code)) {
+          fail(503, 'auth-service-credentials', 'The account service could not verify your login. Check its Firebase access.');
+        }
+        fail(503, 'auth-service-unavailable', 'The account service could not verify your login right now. Please try again.');
+      }
       if(!token.email_verified)fail(403,'email-not-verified','Verify your email before managing your account.');
       const key=token.uid+'_'+Math.floor(clock().getTime()/60000),count=(rate.get(key)||0)+1;rate.set(key,count);if(rate.size>1000)rate.clear();if(count>60)fail(429,'too-many-requests','Please wait a moment and try again.');
       const limit=['/v1/photos/upload','/v1/photos/staffUpload'].includes(req.url)?12000000:['/v1/photos/enroll','/v1/ai/saveLandmark','/v1/ai/recognizeLandmark'].includes(req.url)?3000000:req.url==='/v1/visits/rate'?300000:req.url?.startsWith('/v1/tickets/')?30000:8192;

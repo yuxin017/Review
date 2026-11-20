@@ -19,7 +19,7 @@ test('shared application operations reject restricted visitors before executing 
 function fixture(){
  const records=new Map(),events=[];let failCollection=null;
  const db={async get(key){return records.get(key)||null;},async set(key,data,merge=true){events.push(['set',key]);records.set(key,{...(merge?records.get(key)||{}:{}),...data});},async query(collection,field,value){if(failCollection===collection){failCollection=null;throw Error('Interrupted');}return [...records.entries()].filter(([key,data])=>key.split('/')[0]===collection&&data[field]===value).map(([path,data])=>({path,data}));},async remove(keys){for(const key of keys){events.push(['remove',key]);records.delete(key);}}};
- const auth={async getUser(uid){return{uid,email:uid+'@example.com',emailVerified:true,tokensValidAfterTime:now.toISOString()};},async revokeRefreshTokens(uid){events.push(['revoke',uid]);},async deleteUser(uid){events.push(['deleteAuth',uid]);},async verifyIdToken(token,revoked){assert.equal(revoked,true);if(token!=='valid')throw Error('Invalid');return{uid:'alice',email_verified:true,auth_time:now.getTime()/1000};}};
+ const auth={async getUser(uid){return{uid,email:uid+'@example.com',emailVerified:true,tokensValidAfterTime:now.toISOString()};},async revokeRefreshTokens(uid){events.push(['revoke',uid]);},async deleteUser(uid){events.push(['deleteAuth',uid]);},async verifyIdToken(token,revoked){assert.equal(revoked,true);if(token==='service-error')throw Object.assign(Error('Permission denied'),{code:'auth/insufficient-permission'});if(token!=='valid')throw Object.assign(Error('Invalid'),{code:'auth/invalid-id-token'});return{uid:'alice',email_verified:true,auth_time:now.getTime()/1000};}};
  const api=createAccountService({auth,db,projectId:'isolated-fixture',clock:()=>now});
  const token={uid:'alice',email_verified:true,auth_time:now.getTime()/1000};
  return{api,token,records,events,interrupt:(collection)=>failCollection=collection};
@@ -36,3 +36,17 @@ test('deleting an assigned guest anonymises the guest without deleting another p
 test('duplicate simultaneous deletion requests share one cleanup and one Auth deletion',async()=>{const f=fixture();await Promise.all([f.api.dispatch('/v1/account/close',{confirmation:'DELETE'},f.token),f.api.dispatch('/v1/account/close',{confirmation:'DELETE'},f.token)]);assert.equal(f.events.filter(e=>e[0]==='deleteAuth').length,1);});
 test('profile email sync uses verified Firebase Auth identity rather than client input',async()=>{const f=fixture();f.records.set('visitors/alice',{email:'old@example.com',loyaltyPoints:12});await f.api.dispatch('/v1/profile/sync',{email:'attacker@example.com'},f.token);assert.equal(f.records.get('visitors/alice').email,'alice@example.com');assert.equal(f.records.get('visitors/alice').loyaltyPoints,12);});
 test('HTTP API rejects untrusted origins and invalid tokens, and requires explicit deletion confirmation',async()=>{const f=fixture(),server=f.api.server();await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));const url='http://127.0.0.1:'+server.address().port;try{assert.equal((await fetch(url+'/v1/sessions/list',{method:'POST',headers:{Origin:'https://untrusted.example',Authorization:'Bearer valid'}})).status,403);assert.equal((await fetch(url+'/v1/sessions/list',{method:'POST',headers:{Authorization:'Bearer invalid'}})).status,401);assert.equal((await fetch(url+'/v1/account/close',{method:'POST',headers:{Authorization:'Bearer valid','Content-Type':'application/json'},body:JSON.stringify({confirmation:'yes'})})).status,400);assert.equal(f.events.length,0);}finally{await new Promise(resolve=>server.close(resolve));}});
+
+test('Firebase service permission failures do not report an expired session', async () => {
+ const {api}=fixture(), server=api.server();
+ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+ try {
+   const response=await fetch('http://127.0.0.1:'+server.address().port+'/v1/sessions/list',{
+     method:'POST',headers:{Authorization:'Bearer service-error'},
+   });
+   assert.equal(response.status,503);
+   assert.equal((await response.json()).error,'auth-service-credentials');
+ } finally {
+   await new Promise(resolve=>server.close(resolve));
+ }
+});
