@@ -3,7 +3,6 @@ import 'package:file_picker/file_picker.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'staff_records.dart';
-import 'staff_access.dart';
 import 'staff_schedule_utils.dart';
 
 /// Employee self-service on the separate Staff Firebase session.
@@ -17,11 +16,10 @@ class StaffMyWorkPage extends StatefulWidget {
 }
 
 class _StaffMyWorkPageState extends State<StaffMyWorkPage> {
-  int selected = 0;
-  DateTime monday = StaffWeek.start(StaffWeek.parkCalendar(DateTime.now()));
   bool busy = false;
   String? feedback;
-  String get weekKey => StaffWeek.key(monday);
+  late final _leaveRequests = widget.db.collection('staffLeaveRequests')
+      .where('staffUid', isEqualTo: widget.profile.uid).snapshots();
 
   Future<void> _applyLeave() async {
     final reason = TextEditingController();
@@ -131,131 +129,24 @@ class _StaffMyWorkPageState extends State<StaffMyWorkPage> {
   @override
   Widget build(BuildContext context) => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-      const Text('My Work', style: TextStyle(fontSize: 25, fontWeight: FontWeight.bold)),
+      const Text('Leave', style: TextStyle(fontSize: 25, fontWeight: FontWeight.bold)),
       const SizedBox(height: 7),
-      Text('Welcome, ${widget.profile.fullName}. View approved shifts and submit time-off requests.'),
+      const Text('Apply for time off and view the status of your requests.'),
       const SizedBox(height: 14),
-      Wrap(spacing: 8, children: [
-        ChoiceChip(label: const Text('My Schedule'), selected: selected == 0,
-          onSelected: (_) => setState(() => selected = 0)),
-        ChoiceChip(label: const Text('My Leave'), selected: selected == 1,
-          onSelected: (_) => setState(() => selected = 1)),
-      ]),
       if (busy) const LinearProgressIndicator(),
       if (feedback != null) Padding(padding: const EdgeInsets.symmetric(vertical: 10),
         child: Text(feedback!)),
       const SizedBox(height: 12),
-      if (selected == 0) _schedule(),
-      if (selected == 1) _leave(),
+      _leave(),
     ],
   );
-
-  Stream<QuerySnapshot<Map<String, dynamic>>> _ownLeave() => widget.db
-      .collection('staffLeaveRequests')
-      .where('staffUid', isEqualTo: widget.profile.uid).snapshots();
-
-  Widget _weekPicker() => OutlinedButton.icon(icon: const Icon(Icons.calendar_month),
-    label: Text('Week of $weekKey'),
-    onPressed: () async {
-      final date = await showDatePicker(context: context, initialDate: monday,
-        firstDate: DateTime(2025), lastDate: DateTime(2035));
-      if (date != null && mounted) setState(() => monday = StaffWeek.start(date));
-    });
-
-  Widget _schedule() => Column(
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: [
-      Align(alignment: Alignment.centerLeft, child: _weekPicker()),
-      const SizedBox(height: 12),
-      StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-        stream: _ownLeave(),
-        builder: (context, leave) {
-          if (leave.hasError) return const Text('Could not load approved leave.');
-          if (!leave.hasData) return const LinearProgressIndicator();
-          final leaveDays = staffLeaveDays(
-            monday, leave.data!.docs.map((doc) => doc.data()),
-          );
-          final fixed = widget.profile.eligibleRoles.where(fixedDutyRoles.contains).firstOrNull;
-          if (fixed != null) {
-            return _weekSchedule({}, leaveDays, fixedRole: fixed);
-          }
-          return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-            stream: widget.db.collection('staffPublishedShifts')
-                .where('staffUid', isEqualTo: widget.profile.uid).snapshots(),
-            builder: (context, snapshot) {
-              if (snapshot.hasError) return const Text('Could not load your schedule.');
-              if (!snapshot.hasData) return const LinearProgressIndicator();
-              final shifts = <String, Map<String, dynamic>>{};
-              for (final doc in snapshot.data!.docs) {
-                final shift = doc.data();
-                final starts = StaffWeek.fromTimestamp(shift['startsAt']);
-                if (shift['weekStart'] != weekKey ||
-                    shift['published'] != true || starts == null) continue;
-                shifts[StaffWeek.key(StaffWeek.parkCalendar(starts))] = shift;
-              }
-              return _weekSchedule(shifts, leaveDays);
-            },
-          );
-        },
-      ),
-    ],
-  );
-
-  Widget _weekSchedule(
-    Map<String, Map<String, dynamic>> shifts,
-    Set<String> leaveDays, {
-    StaffRole? fixedRole,
-  }) {
-    final theme = Theme.of(context);
-    final today = StaffWeek.key(StaffWeek.parkCalendar(DateTime.now()));
-    final labels = MaterialLocalizations.of(context);
-    return Card(
-      clipBehavior: Clip.antiAlias,
-      child: Column(children: [
-        for (var index = 0; index < 7; index++)
-          Builder(builder: (context) {
-            final date = StaffWeek.day(monday, index);
-            final key = StaffWeek.key(date);
-            final shift = shifts[key];
-            final onLeave = leaveDays.contains(key);
-            final role = fixedRole ?? StaffRole.fromCode(shift?['roleCode']?.toString() ?? '');
-            final hasShift = role != null && !onLeave;
-            final start = StaffWeek.fromTimestamp(shift?['startsAt']);
-            final end = StaffWeek.fromTimestamp(shift?['endsAt']);
-            String displayTime(DateTime instant) => labels.formatTimeOfDay(
-              TimeOfDay.fromDateTime(StaffWeek.parkCalendar(instant)),
-            );
-            final hours = start != null && end != null
-                ? '${displayTime(start)} – ${displayTime(end)}'
-                : '09:00–17:00';
-            return Column(children: [
-              if (index > 0) const Divider(height: 1),
-              ListTile(
-                tileColor: key == today ? theme.colorScheme.primaryContainer : null,
-                leading: CircleAvatar(
-                  backgroundColor: theme.colorScheme.surfaceContainerHighest,
-                  child: Text('${date.day}'),
-                ),
-                title: Text(labels.formatMediumDate(date),
-                  style: const TextStyle(fontWeight: FontWeight.w700)),
-                subtitle: Text(
-                  onLeave ? 'Approved leave' : hasShift ? role.label : 'No scheduled shift',
-                ),
-                trailing: hasShift ? Text(hours) : null,
-              ),
-            ]);
-          }),
-      ]),
-    );
-  }
 
   Widget _leave() => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
     FilledButton.icon(onPressed: busy ? null : _applyLeave,
       icon: const Icon(Icons.add), label: const Text('Apply Leave')),
     const SizedBox(height: 12),
     StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: widget.db.collection('staffLeaveRequests')
-          .where('staffUid', isEqualTo: widget.profile.uid).snapshots(),
+      stream: _leaveRequests,
       builder: (context, snapshot) {
         if (snapshot.hasError) return const Text('Could not load leave history.');
         if (!snapshot.hasData) return const LinearProgressIndicator();

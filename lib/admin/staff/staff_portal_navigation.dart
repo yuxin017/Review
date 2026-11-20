@@ -35,7 +35,6 @@ class StaffPortalNavigation {
     StaffRole.attractionOperator: {'ride-entry': StaffMenuAccess.manage},
     StaffRole.admissionStaff: {'validation': StaffMenuAccess.manage},
     StaffRole.photographer: {'photos': StaffMenuAccess.manage},
-    StaffRole.photoCounterStaff: {'photo-kiosk': StaffMenuAccess.manage},
     StaffRole.customerSupport: {'support': StaffMenuAccess.manage},
     StaffRole.marketingStaff: {
       'promotions': StaffMenuAccess.manage,
@@ -44,14 +43,14 @@ class StaffPortalNavigation {
   };
 
   String get landingPage => [
-    'validation', 'ride-entry', 'photos', 'photo-kiosk', 'promotions',
+    'validation', 'ride-entry', 'photos', 'promotions',
     'support', 'reports', 'reservations',
   ].where(allows).firstOrNull ?? 'staff-my-work';
 
   static const List<String> menuOrder = [
     'staff-my-work', 'dashboard', 'visitors', 'staff', 'commerce', 'tickets', 'packages', 'photos',
     'promotions', 'reports', 'crowd', 'landmarks', 'anomalies',
-    'photo-kiosk', 'facilities', 'reservations', 'validation',
+    'facilities', 'reservations', 'validation',
     'ride-entry', 'activity', 'support',
   ];
 

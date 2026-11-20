@@ -50,7 +50,21 @@ class TicketJourney extends ChangeNotifier {
       ? min(profile.points, subtotal - discountMinor) ~/ 100 * 100
       : 0;
   bool get guestsComplete =>
-      guests.length == quantity && guests.every((g) => g.complete);
+      guests.length == quantity && guests.every((guest) => guest.complete &&
+          !(isSelfAssigned(guest) && hasOtherSelfTicketOnDate(guest)));
+
+  bool isSelfAssigned(TicketGuest guest) {
+    final ownEmail = profile.email.trim().toLowerCase();
+    return guest.assignedToMe ||
+        (ownEmail.isNotEmpty && guest.email.trim().toLowerCase() == ownEmail);
+  }
+
+  bool hasOtherSelfTicketOnDate(TicketGuest guest) {
+    final datesByLine = {for (final line in cart) line.id: line.visitDate};
+    final date = datesByLine[guest.lineId];
+    return date != null && guests.any((other) =>
+        other.id != guest.id && datesByLine[other.lineId] == date && isSelfAssigned(other));
+  }
   String get _key => 'ticket_cart_v2_${repository.userId}';
   static String newId() {
     final random = Random.secure();
@@ -338,7 +352,7 @@ class TicketJourney extends ChangeNotifier {
   }
 
   void updateGuest(TicketGuest guest) {
-    if (pending != null) return;
+    if (pending != null || (guest.assignedToMe && hasOtherSelfTicketOnDate(guest))) return;
     guests = guests.map((g) => g.id == guest.id ? guest : g).toList();
     _changed();
   }

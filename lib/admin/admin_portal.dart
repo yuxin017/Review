@@ -73,7 +73,7 @@ class _AdminPortalState extends State<AdminPortal> {
                 }
                 final staffWorkspace = widget.staffWorkspaceBuilder;
                 if (token.hasData && token.data?.claims?['admin'] != true &&
-                    staffWorkspace != null && widget.staffBuilder == null) {
+                    staffWorkspace != null) {
                   return staffWorkspace(service, user);
                 }
                 if (token.data?.claims?['admin'] != true ||

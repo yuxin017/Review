@@ -52,6 +52,8 @@ class ThemeParkApp extends StatelessWidget {
             ),
           ),
         '/kiosk': (context) => AdminPortal(
+          staffWorkspaceBuilder: (service, user) =>
+              StaffPortalWorkspace(service: service, user: user, kioskOnly: true),
           staffBuilder: (firebase, user) => PhotoKiosk(
             repository: FirebasePhotoRepository(
               authentication: firebase.auth,

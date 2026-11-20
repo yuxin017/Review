@@ -1,3 +1,6 @@
+import '../../kiosk/photo_kiosk.dart';
+import '../../photos/photo_repository.dart';
+import 'staff_access.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
@@ -30,15 +33,18 @@ class StaffPortalWorkspace extends StatelessWidget {
     super.key,
     required this.service,
     required this.user,
+    this.kioskOnly = false,
   });
 
   final AdminFirebase service;
   final User user;
+  final bool kioskOnly;
 
   @override
   Widget build(BuildContext context) => _StaffSignedIn(
     key: ValueKey(user.uid),
     user: user,
+    kioskOnly: kioskOnly,
     session: _StaffSession(auth: service.auth, db: service.db),
   );
 }
@@ -138,7 +144,8 @@ class _StaffLogin extends StatelessWidget {
 }
 
 class _StaffSignedIn extends StatefulWidget {
-  const _StaffSignedIn({super.key, required this.user, required this.session});
+  const _StaffSignedIn({super.key, required this.user, required this.session, this.kioskOnly = false});
+  final bool kioskOnly;
   final User user;
   final _StaffSession session;
 
@@ -278,6 +285,23 @@ class _StaffSignedInState extends State<_StaffSignedIn> {
             return _StaffMessage(title: 'Staff access unavailable',
               details: 'Your account is not ready. Please contact your supervisor.',
               onSignOut: widget.session.auth.signOut);
+          }
+          if (widget.kioskOnly) {
+            if (!profile.eligibleRoles.contains(StaffRole.photoCounterStaff)) {
+              return _StaffMessage(
+                title: 'Photo Counter access required',
+                details: 'Sign in with an approved Photo Counter Staff account.',
+                onSignOut: widget.session.auth.signOut,
+              );
+            }
+            return PhotoKiosk(
+              repository: FirebasePhotoRepository(
+                authentication: widget.session.auth,
+                firestore: widget.session.db,
+                staffKiosk: true,
+              ),
+              onSignOut: widget.session.auth.signOut,
+            );
           }
           return _StaffAdminHome(profile: profile, repository: repo,
             auth: widget.session.auth, onSignOut: widget.session.auth.signOut);

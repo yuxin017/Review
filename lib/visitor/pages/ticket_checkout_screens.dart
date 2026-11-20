@@ -541,6 +541,8 @@ class TicketGuestsScreen extends StatelessWidget {
             initiallyExpanded: i == 0,
             profile: j.profile,
             locked: j.pending != null,
+            otherSelfTicketOnDate: j.hasOtherSelfTicketOnDate(j.guests[i]),
+            usesOwnEmail: j.isSelfAssigned(j.guests[i]),
             onChanged: j.updateGuest,
           ),
           const SizedBox(height: 14),
@@ -561,7 +563,7 @@ class _GuestForm extends StatefulWidget {
   final TicketGuest guest;
   final String label;
   final BookingProfile profile;
-  final bool initiallyExpanded, locked;
+  final bool initiallyExpanded, locked, otherSelfTicketOnDate, usesOwnEmail;
   final ValueChanged<TicketGuest> onChanged;
   const _GuestForm({
     super.key,
@@ -570,6 +572,8 @@ class _GuestForm extends StatefulWidget {
     required this.profile,
     required this.initiallyExpanded,
     required this.locked,
+    required this.otherSelfTicketOnDate,
+    required this.usesOwnEmail,
     required this.onChanged,
   });
   @override
@@ -693,7 +697,8 @@ class _GuestFormState extends State<_GuestForm> {
             children: [
               Checkbox(
                 value: widget.guest.assignedToMe,
-                onChanged: widget.locked || widget.profile.email.isEmpty
+                onChanged: widget.locked || widget.profile.email.trim().isEmpty ||
+                    (!widget.guest.assignedToMe && widget.otherSelfTicketOnDate)
                     ? null
                     : (value) {
                         if (value == true) {
@@ -707,9 +712,9 @@ class _GuestFormState extends State<_GuestForm> {
                             ),
                           );
                         } else {
-                          widget.onChanged(
-                            widget.guest.copyWith(assignedToMe: false),
-                          );
+                          name.clear();
+                          email.clear();
+                          _update();
                         }
                       },
               ),
@@ -721,6 +726,17 @@ class _GuestFormState extends State<_GuestForm> {
               ),
             ],
           ),
+          if (widget.otherSelfTicketOnDate)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'You can assign yourself one ticket per visit date.',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: widget.usesOwnEmail ? Theme.of(context).colorScheme.error : ticketMuted,
+                ),
+              ),
+            ),
         ],
       ],
     ),

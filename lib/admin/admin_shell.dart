@@ -1,5 +1,3 @@
-import '../kiosk/photo_kiosk.dart';
-import '../photos/photo_repository.dart';
 import 'package:flutter/material.dart';
 import '../visitor/models/tickets.dart';
 import 'admin_models.dart';
@@ -109,10 +107,6 @@ class _AdminShellState extends State<AdminShell> {
       );
       return;
     }
-    if (value == 'photo-kiosk' && !restricted) {
-      Navigator.pushNamed(context, '/kiosk');
-      return;
-    }
     setState(() {
       page = value;
       visitorId = null;
@@ -173,7 +167,7 @@ class _AdminShellState extends State<AdminShell> {
                     ('dashboard', 'Dashboard', Icons.dashboard_outlined),
                     ('visitors', 'Visitors', Icons.people_outline),
                     ('staff', 'Staff Management', Icons.badge_outlined),
-                    ('staff-my-work', 'My Work', Icons.calendar_month_outlined),
+                    ('staff-my-work', 'Leave', Icons.event_note_outlined),
                     ('commerce', 'Products & Sales', Icons.storefront_outlined),
                     (
                       'tickets',
@@ -194,11 +188,6 @@ class _AdminShellState extends State<AdminShell> {
                     ('reports', 'Reports & Analytics', Icons.insights_outlined),
                     ('crowd', 'Crowd Monitoring', Icons.hub_outlined),
                     ('anomalies', 'Visitor Risk Review', Icons.policy_outlined),
-                    (
-                      'photo-kiosk',
-                      'Photo Kiosk',
-                      Icons.local_printshop_outlined,
-                    ),
                     (
                       'facilities',
                       'Park Facilities',
@@ -326,15 +315,6 @@ class _AdminShellState extends State<AdminShell> {
         } else if (page == 'staff-my-work' && restricted &&
             widget.staffWorkDb != null && widget.staffWorkProfile != null) {
           body = StaffMyWorkPage(db: widget.staffWorkDb!, profile: widget.staffWorkProfile!);
-        } else if (repository case final StaffScopedAdminRepository staff
-            when page == 'photo-kiosk') {
-          sectionScrolls = true;
-          body = PhotoKiosk(
-            repository: FirebasePhotoRepository(
-              authentication: staff.auth, firestore: staff.db, staffKiosk: true,
-            ),
-            onSignOut: staff.auth.signOut,
-          );
         } else if (restricted && page == 'dashboard') {
           body = StaffWorkspaceUi(
             navigation: widget.portalNavigation,

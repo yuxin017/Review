@@ -8,14 +8,23 @@ function createTicketPromotionHandlers({db,FieldValue,exchangeRates,clock=()=>ne
   async function price(tx,request){
     const d=input(request),uid=request.auth.uid,[profile,access,security,loyalty]=await tx.getAll(db.doc('visitors/'+uid),db.doc('visitorAccess/'+uid),db.doc('accountSecurity/'+uid),db.doc('parkSettings/loyalty'));
     if(!profile.exists)fail('failed-precondition','Complete your visitor profile first.');if(access.exists&&access.data().status!=='active')fail('permission-denied','This account is restricted. Please contact support.');if(security.data()?.closing||security.data()?.revokedBefore>=(request.auth.token.auth_time??0))fail('unauthenticated','Your session has ended.');
-    const items=[],lineIds=new Set(),guests=new Set();let subtotal=0;
+    const items=[],lineIds=new Set(),guests=new Set(),selfDates=new Set();let subtotal=0;
+    const buyerEmail=String(request.auth.token.email??'').trim().toLowerCase();
     for(const line of d.lines){
       if(!validId(line.id)||lineIds.has(line.id)||!validId(line.packageId)||typeof line.visitDate!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(line.visitDate)||!Number.isInteger(line.adults)||!Number.isInteger(line.children)||line.adults<0||line.children<0||line.adults+line.children<1||line.adults+line.children>10)fail('invalid-argument','Review the pass quantities and visit date.');lineIds.add(line.id);
       const visit=new Date(line.visitDate+'T00:00:00Z'),today=day(clock());if(!Number.isFinite(visit.getTime())||visit.toISOString().slice(0,10)!==line.visitDate||line.visitDate<today||visit>new Date(today+'T00:00:00Z').getTime()+365*86400000)fail('invalid-argument','Choose a valid visit date within the next year.');
       const saved=await tx.get(db.doc('ticketPackages/'+line.packageId)),p=saved.data(),duration=p?.durationDays??1;
       if(!p||p.active!==true||p.currency!=='MYR'||!Number.isInteger(p.priceMinor)||p.priceMinor<1||p.priceMinor>10000000||!Number.isInteger(p.childPriceMinor??p.priceMinor)||!Number.isInteger(duration)||duration<1||duration>366||line.packageName!==p.name||line.adultPriceMinor!==p.priceMinor||line.childPriceMinor!==(p.childPriceMinor??p.priceMinor)||line.durationDays!==duration)fail('failed-precondition','A selected pass or price has changed. Review the cart again.');
       const rows=d.guests.filter(g=>g.lineId===line.id);if(rows.length!==line.adults+line.children||rows.filter(g=>g.type==='adult').length!==line.adults||rows.filter(g=>g.type==='child').length!==line.children)fail('invalid-argument','Add each guest to the correct pass.');
-      for(const guest of rows){if(!validId(guest.id)||guests.has(guest.id)||typeof guest.fullName!=='string'||guest.fullName.trim().length<2||guest.fullName.length>100||typeof guest.email!=='string'||guest.email.length>254||!/^\S+@\S+\.\S+$/.test(guest.email))fail('invalid-argument','Complete each guest’s name and email.');guests.add(guest.id);const amount=guest.type==='child'?(p.childPriceMinor??p.priceMinor):p.priceMinor;subtotal+=amount;items.push({packageId:saved.id,packageName:p.name,visitDate:line.visitDate,validUntil:new Date(visit.getTime()+(duration-1)*86400000).toISOString().slice(0,10),durationDays:duration,ticketType:guest.type,guestName:guest.fullName.trim(),guestEmail:guest.email.trim().toLowerCase(),unitPriceMinor:amount});}
+      for(const guest of rows){if(!validId(guest.id)||guests.has(guest.id)||typeof guest.fullName!=='string'||guest.fullName.trim().length<2||guest.fullName.length>100||typeof guest.email!=='string'||guest.email.length>254||!/^\S+@\S+\.\S+$/.test(guest.email))fail('invalid-argument','Complete each guest’s name and email.');guests.add(guest.id);
+        const guestEmail=guest.email.trim().toLowerCase();
+        const self=buyerEmail!==''&&guestEmail===buyerEmail;
+        if(guest.assignedToMe===true&&!self)fail('invalid-argument','Assign this ticket using your account email.');
+        if(self){
+          if(selfDates.has(line.visitDate))fail('invalid-argument','You can assign yourself one ticket per visit date.');
+          selfDates.add(line.visitDate);
+        }
+        const amount=guest.type==='child'?(p.childPriceMinor??p.priceMinor):p.priceMinor;subtotal+=amount;items.push({packageId:saved.id,packageName:p.name,visitDate:line.visitDate,validUntil:new Date(visit.getTime()+(duration-1)*86400000).toISOString().slice(0,10),durationDays:duration,ticketType:guest.type,guestName:guest.fullName.trim(),guestEmail,unitPriceMinor:amount});}
     }
     if(items.length!==d.guests.length||items.length>10)fail('invalid-argument','Review your guest list.');
     const promotion=await promotionPrice({db,tx,code:d.promoCode??'',scope:'tickets',subtotal,uid,now:clock()}),balance=profile.data().loyaltyPoints??0,maxPoints=promotion.offer?.allowPoints===false?0:Math.floor(Math.min(balance,subtotal-promotion.discountMinor)/100)*100,used=d.pointsUsed??0,rate=loyalty.data()?.purchasePointsPerRinggit??1;
