@@ -447,6 +447,33 @@ class _VisitorNavigationPageState extends State<VisitorNavigationPage> {
     super.dispose();
   }
 
+  Widget _direction() {
+    final step = _steps[_instruction];
+    final words = step.toLowerCase();
+    final arrow = switch (words) {
+      _ when words.contains('u-turn') => Icons.u_turn_left,
+      _ when words.contains('left') => Icons.turn_left,
+      _ when words.contains('right') => Icons.turn_right,
+      _ when words.contains('northeast') => Icons.north_east,
+      _ when words.contains('northwest') => Icons.north_west,
+      _ when words.contains('southeast') => Icons.south_east,
+      _ when words.contains('southwest') => Icons.south_west,
+      _ when words.contains('south') => Icons.south,
+      _ when words.contains('east') => Icons.east,
+      _ when words.contains('west') => Icons.west,
+      _ when words.contains('arrive') => Icons.flag_outlined,
+      _ => Icons.north,
+    };
+    return Row(children: [
+      Icon(arrow, size: 36, color: const Color(0xFF973E4B)),
+      const SizedBox(width: 12),
+      Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text('Step ${_instruction + 1} of ${_steps.length}'),
+        Text(step, style: const TextStyle(fontSize: 23, fontWeight: FontWeight.w700)),
+      ])),
+    ]);
+  }
+
   @override
   Widget build(BuildContext context) {
     final here = _here;
@@ -511,11 +538,7 @@ class _VisitorNavigationPageState extends State<VisitorNavigationPage> {
                 ],
                 if (guiding && _steps.isNotEmpty) ...[
                   const SizedBox(height: 8),
-                  Text(
-                    'Step ${_instruction + 1} of ${_steps.length}: '
-                    '${_steps[_instruction]}',
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
+                  _direction(),
                 ],
                 if (!guiding && _path.isNotEmpty) ...[
                   const SizedBox(height: 8),
@@ -692,11 +715,7 @@ class _VisitorNavigationPageState extends State<VisitorNavigationPage> {
                               'to hear the selected step.',
                   ),
                   const SizedBox(height: 10),
-                  if (!guiding)
-                    Text(
-                      'Step ${_instruction + 1} of ${_steps.length}: '
-                      '${_steps[_instruction]}',
-                    ),
+                  if (!guiding) _direction(),
                   const SizedBox(height: 10),
                   Row(
                     children: [

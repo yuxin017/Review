@@ -6,7 +6,6 @@ import '../admin_catalog_image.dart';
 import 'package:flutter/services.dart';
 import '../../visitor/models/tickets.dart';
 import '../admin_store.dart';
-import '../admin_models.dart' show titleCase;
 import '../admin_widgets.dart';
 
 /// Manages the published visitor bundle catalogue and private drafts.
@@ -514,7 +513,11 @@ class _TicketBundleManagementPageState extends State<TicketBundleManagementPage>
                               ]))),
                             DataCell(Text(money((bundle.data()['priceMinor'] as num?)?.toInt() ?? 0),
                               style: const TextStyle(fontWeight: FontWeight.w700))),
-                            DataCell(AdminBadge(titleCase((bundle.data()['status'] ?? 'draft').toString()))),
+                            DataCell(AdminBadge(switch (bundle.data()['status']) {
+                              'published' => 'Visible in Shop',
+                              'archived' => 'Archived',
+                              _ => 'Draft · hidden',
+                            })),
                             DataCell(Row(mainAxisSize: MainAxisSize.min, children: [
                               AdminButton('Edit', outlined: true,
                                 icon: Icons.edit_outlined,

@@ -1,6 +1,9 @@
 import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
+import '../visitor/pages/selfie_camera_stub.dart'
+    if (dart.library.html) '../visitor/pages/selfie_camera_web.dart';
 import 'package:image_picker/image_picker.dart';
 import '../photos/photo_widgets.dart';
 import '../photos/photo_repository.dart';
@@ -22,15 +25,19 @@ class _LandmarkLocationPageState extends State<LandmarkLocationPage> {
   bool busy = false;
   Future<void> capture(ImageSource source) async {
     if (busy) return;
+    setState(() { busy = true; error = null; });
     try {
-      final file = await ImagePicker().pickImage(
-        source: source,
-        maxWidth: 1200,
-        maxHeight: 1200,
-        imageQuality: 82,
-      );
-      if (file == null) return;
-      final bytes = await file.readAsBytes();
+      final Uint8List? bytes;
+      if (kIsWeb && source == ImageSource.camera) {
+        bytes = await captureWebSelfie(context, facingMode: 'environment', title: 'Capture Landmark');
+      } else {
+        final file = await ImagePicker().pickImage(
+          source: source, preferredCameraDevice: CameraDevice.rear,
+          maxWidth: 1200, maxHeight: 1200, imageQuality: 82,
+        );
+        bytes = await file?.readAsBytes();
+      }
+      if (bytes == null || !mounted) return;
       if (bytes.length > 2000000) {
         throw StateError('Choose a smaller landmark image.');
       }

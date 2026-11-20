@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
@@ -7,6 +8,9 @@ import '../../attractions/data/attraction_repository.dart';
 import '../../attractions/models/attraction.dart';
 import '../../attractions/models/attraction_slot.dart';
 import '../../attractions/models/queue_policy.dart';
+import '../../attractions/models/park_time.dart';
+import '../../reservations/models/reservation.dart';
+import '../../reservations/pages/my_reservations_page.dart';
 import '../../attractions/pages/attractions_page.dart';
 import '../../attractions/widgets/attraction_widgets.dart';
 import '../../park/crowd_heatmap_page.dart';
@@ -112,6 +116,14 @@ class _SignedInAttractions extends StatefulWidget {
 class _SignedInAttractionsState extends State<_SignedInAttractions> {
   late final Stream<DocumentSnapshot<Map<String, dynamic>>> _profile;
   late final ReservationRepository _reservations;
+  late Stream<List<AdmissionTicket>> _tickets;
+  late final Timer _dayClock;
+
+  @override
+  void dispose() {
+    _dayClock.cancel();
+    super.dispose();
+  }
 
   @override
   void initState() {
@@ -122,6 +134,10 @@ class _SignedInAttractionsState extends State<_SignedInAttractions> {
       functions: FirebaseFunctions.instanceFor(region: 'us-central1'),
       email: FirebaseAuth.instance.currentUser?.email,
     );
+    _tickets = _reservations.watchAdmissionTickets();
+    _dayClock = Timer.periodic(const Duration(minutes: 1), (_) {
+      if (mounted) setState(() {});
+    });
     _profile = widget.firestore
         .collection('visitors')
         .doc(widget.uid)
@@ -136,7 +152,8 @@ class _SignedInAttractionsState extends State<_SignedInAttractions> {
           attractions: widget.store,
           slots: widget.store,
           reservations: _reservations,
-          day: QueuePolicy.parkDay(slot?.startsAt ?? DateTime.now()),
+          day: QueuePolicy.parkDay(DateTime.now()),
+          todayOnly: true,
           initialSlotId: slot?.id,
         ),
       ),
@@ -187,9 +204,43 @@ class _SignedInAttractionsState extends State<_SignedInAttractions> {
   }
 
   @override
-  Widget build(
-    BuildContext context,
-  ) => StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+  Widget build(BuildContext context) => StreamBuilder<List<AdmissionTicket>>(
+    stream: _tickets,
+    builder: (context, snapshot) {
+      if (snapshot.hasError) {
+        return VisitorScreen(title: 'Virtual Queue', children: [
+          AttractionMessage(icon: Icons.refresh, title: 'Could not check your tickets',
+            message: 'Reconnect and try again.', action: 'Try again',
+            onAction: () => setState(() => _tickets = _reservations.watchAdmissionTickets())),
+        ]);
+      }
+      if (!snapshot.hasData) {
+        return const VisitorScreen(title: 'Virtual Queue',
+          children: [Center(child: CircularProgressIndicator())]);
+      }
+      final today = ParkTime.date(DateTime.now());
+      if (!snapshot.data!.any((ticket) => ticket.covers(today))) {
+        return VisitorScreen(title: 'Virtual Queue', children: [
+          AttractionMessage(
+            icon: Icons.confirmation_number_outlined,
+            title: 'You don’t have a ticket for today',
+            message: 'A park admission ticket valid today is required to reserve a ride.',
+            action: 'Buy a ticket',
+            onAction: () => VisitorMainPage.openTickets(context, 'catalog'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).push(MaterialPageRoute(
+              builder: (_) => MyReservationsPage(store: _reservations),
+            )),
+            child: const Text('My reservations'),
+          ),
+        ]);
+      }
+      return _queue(context);
+    },
+  );
+
+  Widget _queue(BuildContext context) => StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
     stream: _profile,
     builder: (context, snapshot) {
       final rawHeight = snapshot.data?.data()?['heightCm'];
@@ -205,6 +256,7 @@ class _SignedInAttractionsState extends State<_SignedInAttractions> {
         store: _reservations,
         child: AttractionsPage(
           store: widget.store,
+          todayOnly: true,
           slotReader: widget.store,
           reservations: _reservations,
           visitorHeightCm: height,

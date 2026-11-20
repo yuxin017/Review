@@ -1064,6 +1064,10 @@ class TicketPaymentScreen extends StatelessWidget {
           ],
         )),
         const SizedBox(height: 18),
+        if (j.error case final String message) ...[
+          TicketSurface(child: Semantics(liveRegion: true, child: Text(message))),
+          const SizedBox(height: 12),
+        ],
         if (j.pending != null) ...[
           TicketSurface(child: const Text(
             'Already returned from Stripe? Verify your payment before retrying. '

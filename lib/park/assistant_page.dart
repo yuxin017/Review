@@ -51,6 +51,7 @@ class _ParkAssistantPageState extends State<ParkAssistantPage> {
   ];
   String language = 'auto';
   bool busy = false, listening = false, speaking = false;
+  String? composerNotice;
   String detect(String text) {
     if (language != 'auto') return language;
     if (RegExp(r'[\u3400-\u9fff]').hasMatch(text)) return 'zh';
@@ -79,19 +80,18 @@ class _ParkAssistantPageState extends State<ParkAssistantPage> {
       await tts.setLanguage(locale(message.language));
       await tts.speak(message.text);
     } catch (_) {
-      if (mounted) notice('Audio playback is unavailable on this device.');
+      if (mounted) setState(() => composerNotice = 'Audio playback is unavailable on this device.');
     }
   }
 
-  void notice(String text) =>
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
-  Future<void> send([String? suggested, bool voice = false]) async {
+  Future<void> send([String? suggested, bool voice = false, String? forcedLanguage]) async {
     final question = (suggested ?? input.text).trim();
     if (question.isEmpty || busy) return;
-    final lang = detect(question);
+    final lang = forcedLanguage ?? detect(question);
     input.clear();
     setState(() {
       busy = true;
+      composerNotice = null;
       messages.add(AssistantMessage(question, lang, fromVisitor: true));
     });
     moveToLatest();
@@ -109,14 +109,15 @@ class _ParkAssistantPageState extends State<ParkAssistantPage> {
       );
       setState(() => messages.add(message));
       if (voice) await speak(message);
-    } catch (e) {
-      if (mounted) {
-        setState(
-          () => messages.add(
-            AssistantMessage(photoError(e), lang, actions: const ['support']),
-          ),
-        );
-      }
+    } catch (_) {
+      if (mounted) setState(() {
+        if (input.text.isEmpty) input.text = question;
+        composerNotice = switch (lang) {
+          'zh' => '暂时无法取得回答，请重试。',
+          'ms' => 'Jawapan tidak dapat dimuatkan. Cuba lagi.',
+          _ => 'Could not get an answer. Try sending again.',
+        };
+      });
     } finally {
       if (mounted) {
         setState(() => busy = false);
@@ -127,20 +128,19 @@ class _ParkAssistantPageState extends State<ParkAssistantPage> {
 
   Future<void> microphone() async {
     if (busy || listening) return;
-    setState(() => listening = true);
+    setState(() { listening = true; composerNotice = null; });
+    final deviceLanguage = WidgetsBinding.instance.platformDispatcher.locale.languageCode;
+    final voiceLanguage = language != 'auto' ? language
+        : (['zh', 'ms'].contains(deviceLanguage) ? deviceLanguage : 'en');
     try {
-      final text = await listenSpeech(
-        locale(language == 'auto' ? 'en' : language),
-      );
-      if (text.isNotEmpty && mounted) await send(text, true);
-    } catch (e) {
-      if (mounted) {
-        notice(
-          e is StateError
-              ? e.message.toString()
-              : 'Voice input could not start. Please type your question.',
-        );
-      }
+      final text = await listenSpeech(locale(voiceLanguage));
+      if (text.isNotEmpty && mounted) await send(text, true, voiceLanguage);
+    } catch (_) {
+      if (mounted) setState(() => composerNotice = switch (voiceLanguage) {
+        'zh' => '无法使用麦克风。请检查权限，或输入问题。',
+        'ms' => 'Mikrofon tidak tersedia. Semak kebenaran atau taip soalan.',
+        _ => 'Voice input unavailable. Check microphone permissions or type your question.',
+      });
     } finally {
       if (mounted) setState(() => listening = false);
     }
@@ -470,6 +470,12 @@ class _ParkAssistantPageState extends State<ParkAssistantPage> {
                   ),
                 ),
               ),
+              if (composerNotice case final String message)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 6, 16, 4),
+                  child: Semantics(liveRegion: true, child: Text(message,
+                    style: const TextStyle(color: photoRose, fontSize: 12))),
+                ),
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 25),
                 child: OutlinedButton.icon(

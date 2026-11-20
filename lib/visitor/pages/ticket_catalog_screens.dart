@@ -1,3 +1,4 @@
+import '../visitor_main_page.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../photos/photo_gallery_pages.dart';
 import '../../photos/photo_repository.dart';
@@ -153,11 +154,9 @@ class _TicketHubState extends State<TicketHub> {
             ],
           ),
         const SizedBox(height: 18),
-        ] else if (category == 'Souvenirs')
-          TicketButton('Browse souvenirs', onPressed: () => Navigator.of(context).push(
-            MaterialPageRoute(builder: (_) => SouvenirShopPage(initialSearch: query)),
-          ))
-        else ...[
+        ] else ...[
+          Text(category, style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w700)),
+          const SizedBox(height: 12),
           _LiveShopCatalogue(category: category, term: query),
           if (category == 'Photos') ...[
             const SizedBox(height: 8),
@@ -290,7 +289,7 @@ class _LiveShopCatalogue extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final db = FirebaseFirestore.instance;
-    if (category != 'Food') {
+    if (category != 'Food' && category != 'Souvenirs') {
       final bundles = category == 'Bundles';
       return _items(context, bundles
           ? db.collection('ticketBundles').where('status', isEqualTo: 'published')
@@ -299,11 +298,11 @@ class _LiveShopCatalogue extends StatelessWidget {
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
       stream: db.collection('attractions').snapshots(),
       builder: (context, snapshot) {
-        if (snapshot.hasError) return const Text('Dining locations could not be loaded.');
+        if (snapshot.hasError) return const Text('Shop locations could not be loaded.');
         if (!snapshot.hasData) return const LinearProgressIndicator();
         final venues = {
           for (final doc in snapshot.data!.docs)
-            if (doc.data()['deletedAt'] == null && _isDining(doc.data()))
+            if (doc.data()['deletedAt'] == null && _matchesVenue(doc.data()))
               doc.id: (doc.data()['name'] ?? 'Park dining').toString(),
         };
         return _items(context,
@@ -313,11 +312,74 @@ class _LiveShopCatalogue extends StatelessWidget {
     );
   }
 
-  bool _isDining(Map<String, dynamic> data) {
+  bool _matchesVenue(Map<String, dynamic> data) {
+    final food = category == 'Food';
     final kind = (data['kind'] ?? '').toString().toLowerCase();
-    if (kind.isNotEmpty) return kind == 'dining';
-    final category = (data['category'] ?? '').toString().toLowerCase();
-    return ['dining', 'food', 'cafe', 'café', 'restaurant'].any(category.contains);
+    if (kind.isNotEmpty) return kind == (food ? 'dining' : 'shops');
+    final label = (data['category'] ?? '').toString().toLowerCase();
+    return (food
+        ? ['dining', 'food', 'cafe', 'café', 'restaurant']
+        : ['shop', 'retail', 'souvenir', 'gift']).any(label.contains);
+  }
+
+  Widget _image(Map<String, dynamic> item, {double height = 126}) {
+    final url = item['imageUrl'];
+    final fallback = ColoredBox(
+      color: const Color(0xFFF3E4DF),
+      child: Center(child: Icon(_TicketHubState.departments[category], color: ticketRose, size: 36)),
+    );
+    return SizedBox(height: height, width: double.infinity, child:
+      url is String && url.isNotEmpty
+        ? Image.network(url, fit: BoxFit.cover, errorBuilder: (_, __, ___) => fallback)
+        : fallback,
+    );
+  }
+
+  void _detail(BuildContext context, Map<String, dynamic> item, String? venue) {
+    final name = (item['name'] ?? category).toString();
+    final price = ticketDisplayPrice(context, (item['priceMinor'] as num?)?.toInt() ?? 0);
+    showModalBottomSheet<void>(
+      context: context, useSafeArea: true, isScrollControlled: true,
+      builder: (sheet) => SingleChildScrollView(
+        padding: const EdgeInsets.all(20),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          ClipRRect(borderRadius: BorderRadius.circular(12), child: _image(item, height: 175)),
+          const SizedBox(height: 14),
+          Text(name, style: Theme.of(sheet).textTheme.titleLarge),
+          Text(price, style: const TextStyle(color: ticketRose, fontSize: 21, fontWeight: FontWeight.w700)),
+          if (item['description'] case final String description)
+            if (description.isNotEmpty) Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8), child: Text(description)),
+          if (category == 'Bundles') ...[
+            Text("${item['adults']} adults · ${item['children']} children"),
+            const SizedBox(height: 8),
+            const Text('Ask at park admissions to purchase this bundle.'),
+          ],
+          if (venue != null) Text('Available at $venue'),
+          const SizedBox(height: 16),
+          if (category == 'Souvenirs')
+            TicketButton('Open in souvenir shop', onPressed: () {
+              Navigator.pop(sheet);
+              Navigator.of(context).push(MaterialPageRoute(builder: (_) => SouvenirShopPage(
+                initialSearch: name, initialStoreId: item['storeId'] as String?,
+              )));
+            })
+          else if (category == 'Food' || category == 'Bundles')
+            TicketButton('Open Park Map', onPressed: () {
+              Navigator.pop(sheet);
+              VisitorMainPage.goTo(context, 2);
+            })
+          else if (category == 'Photos')
+            TicketButton('Find my photos', onPressed: () {
+              Navigator.pop(sheet);
+              Navigator.of(context).push(MaterialPageRoute(
+                settings: const RouteSettings(name: 'photos-hub'),
+                builder: (_) => PhotoHubPage(repository: FirebasePhotoRepository()),
+              ));
+            }),
+        ]),
+      ),
+    );
   }
 
   Widget _items(BuildContext context, Query<Map<String, dynamic>> query,
@@ -336,26 +398,32 @@ class _LiveShopCatalogue extends StatelessWidget {
           child: Text(term.isNotEmpty ? 'No matching products.' :
             category == 'Bundles' ? 'No group bundles are published yet.' : 'No ${category.toLowerCase()} available.'),
         );
-        return Column(children: [
-          for (final item in items)
-            Card(child: ListTile(
-              leading: item['imageUrl'] is String && (item['imageUrl'] as String).isNotEmpty
-                  ? ClipRRect(borderRadius: BorderRadius.circular(8), child: Image.network(
-                    item['imageUrl'] as String, width: 54, height: 54, fit: BoxFit.cover,
-                    errorBuilder: (_, __, ___) => Icon(_TicketHubState.departments[category]),
-                  ))
-                  : Icon(_TicketHubState.departments[category]),
-              title: Text((item['name'] ?? category).toString()),
-              subtitle: Text([
-                if (category == 'Bundles')
-                  "${item['adults']} adults · ${item['children']} children · Ask at admissions",
-                if (venues?[item['storeId']] case final String venue) venue,
-                if (item['description'] case final String description)
-                  if (description.isNotEmpty) description,
-              ].join('\n')),
-              trailing: Text(ticketDisplayPrice(context, (item['priceMinor'] as num?)?.toInt() ?? 0)),
-            )),
-        ]);
+        return LayoutBuilder(builder: (context, bounds) {
+          final columns = bounds.maxWidth >= 680 ? 3 : 2;
+          final cardWidth = (bounds.maxWidth - (columns - 1) * 12) / columns;
+          return Wrap(spacing: 12, runSpacing: 12, children: [
+            for (final item in items)
+              SizedBox(width: cardWidth, child: TicketSurface(
+                padding: EdgeInsets.zero,
+                child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                  ClipRRect(borderRadius: const BorderRadius.vertical(top: Radius.circular(11)),
+                    child: InkWell(onTap: () => _detail(context, item, venues?[item['storeId']]), child: _image(item))),
+                  Padding(padding: const EdgeInsets.all(10), child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text((item['name'] ?? category).toString(), maxLines: 2,
+                        overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w700)),
+                      const SizedBox(height: 5),
+                      Text(ticketDisplayPrice(context, (item['priceMinor'] as num?)?.toInt() ?? 0),
+                        style: const TextStyle(color: ticketRose, fontWeight: FontWeight.w700)),
+                      const SizedBox(height: 8),
+                      TicketButton('View Product', onPressed: () => _detail(context, item, venues?[item['storeId']])),
+                    ],
+                  )),
+                ]),
+              )),
+          ]);
+        });
       },
     );
 }

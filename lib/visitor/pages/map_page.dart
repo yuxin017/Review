@@ -422,6 +422,23 @@ class _MapPageState extends State<MapPage> {
                     ),
                   ),
                   const SizedBox(height: 14),
+                  OutlinedButton.icon(
+                    icon: const Icon(Icons.photo_camera_outlined),
+                    label: const Text('Identify with camera'),
+                    onPressed: () async {
+                      final result = await Navigator.of(context).push<Object>(
+                        MaterialPageRoute(builder: (_) => LandmarkLocationPage(
+                          repository: FirebaseParkIntelligenceRepository(),
+                        )),
+                      );
+                      if (!context.mounted || result is! String) return;
+                      final match = visit.place(result);
+                      if (match != null && match.id != excludedId) {
+                        Navigator.pop(context, match);
+                      }
+                    },
+                  ),
+                  const SizedBox(height: 12),
                   DropdownButtonFormField<String>(
                     initialValue: selected?.id,
                     isExpanded: true,

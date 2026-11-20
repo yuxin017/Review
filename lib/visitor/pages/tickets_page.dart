@@ -55,8 +55,6 @@ class TicketsPageState extends State<TicketsPage>
       if (!mounted) return;
       if (journey.completed != null) {
         showSection('success');
-      } else if (journey.pending != null) {
-        showSection('payment');
       }
     }));
   }
@@ -412,11 +410,12 @@ class TicketsPageState extends State<TicketsPage>
                               ),
                             ),
                             IconButton(
-                              tooltip: 'Ticket notifications',
-                              onPressed: () => _go('tickets'),
-                              icon: const Icon(
-                                Icons.notifications_none,
-                                size: 29,
+                              tooltip: 'Shopping cart',
+                              onPressed: journey.busy ? null : () => _go('cart'),
+                              icon: Badge(
+                                isLabelVisible: journey.pending != null || journey.quantity > 0,
+                                backgroundColor: ticketRose,
+                                child: const Icon(Icons.shopping_cart_outlined, size: 27),
                               ),
                             ),
                           ] else if (_screen == 'tickets' ||
@@ -460,7 +459,8 @@ class TicketsPageState extends State<TicketsPage>
                         ],
                       ),
                     ),
-                    if (journey.error != null)
+                    if (journey.error != null &&
+                        const ['cart', 'guests', 'review'].contains(_screen))
                       Container(
                         margin: const EdgeInsets.fromLTRB(20, 0, 20, 12),
                         padding: const EdgeInsets.all(12),
@@ -485,7 +485,7 @@ class TicketsPageState extends State<TicketsPage>
                           ],
                         ),
                       ),
-                    if (journey.pending != null && _screen != 'payment')
+                    if (journey.pending != null && _screen == 'cart')
                       Padding(
                         padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
                         child: TicketButton(

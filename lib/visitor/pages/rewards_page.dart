@@ -376,7 +376,7 @@ class _RewardsPageState extends State<RewardsPage> {
           padding: const EdgeInsets.all(22),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(22),
-            gradient: const LinearGradient(colors: [Color(0xFF42252C), Color(0xFF783847)]),
+            gradient: const LinearGradient(colors: [Color(0xFF233F39), Color(0xFF396758)]),
           ),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Row(children: [
@@ -390,7 +390,7 @@ class _RewardsPageState extends State<RewardsPage> {
               const SizedBox(height: 14),
               LinearProgressIndicator(
                 value: ((earned - current.minPoints) / (next.minPoints - current.minPoints)).clamp(0.0, 1.0).toDouble(),
-                backgroundColor: const Color(0xFF9F6772), color: const Color(0xFFFFD998),
+                backgroundColor: const Color(0xFF759887), color: const Color(0xFFFFD998),
               ),
               const SizedBox(height: 7),
               Text('${next.minPoints - earned} points to ${next.name}',

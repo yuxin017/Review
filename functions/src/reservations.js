@@ -129,6 +129,9 @@ function createReservationHandlers({db, FieldValue, clock = () => new Date()}) {
       }
       if (!start || !end || start <= now || !validWindow(slot)) fail("failed-precondition", "slot-unavailable", "Choose a future session during park hours.");
       const date = dayKey(start);
+      if (date !== dayKey(now)) {
+        fail("failed-precondition", "visit-date", "Virtual Queue reservations are available for today only.");
+      }
       const guestEmail=typeof ticket?.guestEmail==='string'?ticket.guestEmail.toLowerCase():'';
       const callerEmail=String(request.auth.token?.email??'').toLowerCase();
       if (!ticket || (ticket.ownerUid !== uid && (!guestEmail||guestEmail!==callerEmail))) fail("permission-denied", "ticket-owner", "Choose your own admission ticket.");

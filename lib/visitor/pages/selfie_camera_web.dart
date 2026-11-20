@@ -6,7 +6,9 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
-Future<Uint8List?> captureWebSelfie(BuildContext context) async {
+Future<Uint8List?> captureWebSelfie(
+  BuildContext context, {String facingMode = 'user', String title = 'Take Selfie'}
+) async {
   final devices = html.window.navigator.mediaDevices;
   if (devices == null) {
     throw StateError('Open the app on localhost or HTTPS to use the camera.');
@@ -15,10 +17,10 @@ Future<Uint8List?> captureWebSelfie(BuildContext context) async {
   try {
     stream = await devices.getUserMedia({
       'audio': false,
-      'video': {'facingMode': 'user', 'width': {'ideal': 960}},
+      'video': {'facingMode': facingMode, 'width': {'ideal': 960}},
     });
   } catch (_) {
-    throw StateError('Camera unavailable. Allow camera access or upload a selfie.');
+    throw StateError('Camera unavailable. Allow camera access or upload an image.');
   }
   final video = html.VideoElement()
     ..muted = true
@@ -34,7 +36,7 @@ Future<Uint8List?> captureWebSelfie(BuildContext context) async {
     return await showDialog<Uint8List>(
       context: context,
       builder: (dialog) => AlertDialog(
-        title: const Text('Take Selfie'),
+        title: Text(title),
         content: SizedBox(
           width: 380,
           height: 285,

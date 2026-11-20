@@ -8,9 +8,10 @@ import '../../commerce/stripe_commerce_client.dart';
 import '../widgets/souvenir_product_image.dart';
 
 class SouvenirShopPage extends StatefulWidget {
-  const SouvenirShopPage({super.key, this.initialOrders = false, this.initialSearch = ''});
+  const SouvenirShopPage({super.key, this.initialOrders = false, this.initialSearch = '', this.initialStoreId});
   final bool initialOrders;
   final String initialSearch;
+  final String? initialStoreId;
   @override
   State<SouvenirShopPage> createState() => _SouvenirShopPageState();
 }
@@ -39,6 +40,7 @@ class _SouvenirShopPageState extends State<SouvenirShopPage> with WidgetsBinding
     super.initState();
     _orders = widget.initialOrders;
     _search = widget.initialSearch;
+    _shopId = widget.initialStoreId;
     WidgetsBinding.instance.addObserver(this);
     _loadPending();
   }

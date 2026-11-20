@@ -34,6 +34,7 @@ class AttractionsPage extends StatefulWidget {
     this.onGroups,
     this.clock,
     this.reservations,
+    this.todayOnly = true,
   });
   final AttractionReader store;
   final SlotReader? slotReader;
@@ -45,6 +46,7 @@ class AttractionsPage extends StatefulWidget {
   final VoidCallback? onGroups;
   final DateTime Function()? clock;
   final ReservationStore? reservations;
+  final bool todayOnly;
   @override
   State<AttractionsPage> createState() => _AttractionsPageState();
 }
@@ -127,6 +129,7 @@ class _AttractionsPageState extends State<AttractionsPage> {
         slots: widget.slotReader!,
         reservations: widget.reservations!,
         day: _day,
+        todayOnly: widget.todayOnly,
       ),
     ),
   );
@@ -446,12 +449,14 @@ class _AttractionsPageState extends State<AttractionsPage> {
                           'Plan your visit',
                           widget.onPlan,
                         ),
-                        const SizedBox(width: 10),
-                        _headerAction(
-                          Icons.calendar_month_outlined,
-                          'Choose visit date',
-                          _chooseDate,
-                        ),
+                        if (!widget.todayOnly) ...[
+                          const SizedBox(width: 10),
+                          _headerAction(
+                            Icons.calendar_month_outlined,
+                            'Choose visit date',
+                            _chooseDate,
+                          ),
+                        ],
                       ],
                     ),
                     const SizedBox(height: 14),

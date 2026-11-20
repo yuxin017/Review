@@ -23,6 +23,7 @@ class ReserveAttractionPage extends StatefulWidget {
     required this.day,
     this.initialSlotId,
     this.clock,
+    this.todayOnly = true,
   });
   final Attraction attraction;
   final AttractionReader attractions;
@@ -31,6 +32,7 @@ class ReserveAttractionPage extends StatefulWidget {
   final DateTime day;
   final String? initialSlotId;
   final DateTime Function()? clock;
+  final bool todayOnly;
   @override
   State<ReserveAttractionPage> createState() => _ReserveAttractionPageState();
 }
@@ -50,11 +52,17 @@ class _ReserveAttractionPageState extends State<ReserveAttractionPage> {
   @override
   void initState() {
     super.initState();
-    _day = widget.day;
+    _day = widget.todayOnly ? QueuePolicy.parkDay(_now) : widget.day;
     _selected = widget.initialSlotId;
     _subscribe();
     _timer = Timer.periodic(const Duration(minutes: 1), (_) {
-      if (mounted) setState(() {});
+      if (mounted) setState(() {
+        final today = QueuePolicy.parkDay(_now);
+        if (widget.todayOnly && today != _day) {
+          _day = today;
+          _selected = null;
+        }
+      });
     });
   }
 
@@ -271,7 +279,7 @@ class _ReserveAttractionPageState extends State<ReserveAttractionPage> {
                       ),
                       const SizedBox(height: 10),
                       OutlinedButton.icon(
-                        onPressed: _date,
+                        onPressed: widget.todayOnly ? null : _date,
                         icon: const Icon(
                           Icons.calendar_today_outlined,
                           size: 16,
