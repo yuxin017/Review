@@ -415,6 +415,13 @@ class ProfilePage extends StatelessWidget {
       child: Column(
         children: [
           _menuItem(
+            Icons.admin_panel_settings_outlined,
+            'Admin Portal',
+            'Manage park operations and admissions',
+            onTap: () => Navigator.of(context).pushNamed('/admin'),
+          ),
+          _divider(),
+          _menuItem(
             Icons.stars_outlined,
             'Membership & Rewards',
             'Compare tiers and see your progress',
