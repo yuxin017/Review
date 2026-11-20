@@ -194,6 +194,7 @@ class TicketsPageState extends State<TicketsPage>
             journey: journey,
             onShop: () => _catalog(),
             onCheckout: () => _go('guests'),
+            onResume: () => _go('payment'),
           );
           break;
         case 'guests':
@@ -460,7 +461,7 @@ class TicketsPageState extends State<TicketsPage>
                       ),
                     ),
                     if (journey.error != null &&
-                        const ['cart', 'guests', 'review'].contains(_screen))
+                        const ['guests', 'review'].contains(_screen))
                       Container(
                         margin: const EdgeInsets.fromLTRB(20, 0, 20, 12),
                         padding: const EdgeInsets.all(12),
@@ -483,15 +484,6 @@ class TicketsPageState extends State<TicketsPage>
                               ),
                             ),
                           ],
-                        ),
-                      ),
-                    if (journey.pending != null && _screen == 'cart')
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
-                        child: TicketButton(
-                          'Resume pending checkout',
-                          onPressed: () => _go('payment'),
-                          outlined: true,
                         ),
                       ),
                     Expanded(child: page),

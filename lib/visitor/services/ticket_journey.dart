@@ -567,6 +567,39 @@ class TicketJourney extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<bool> cancelPendingPayment() async {
+    final request = pending;
+    final uid = repository.userId;
+    if (busy || request == null || uid == null) return false;
+    busy = true;
+    error = null;
+    notifyListeners();
+    try {
+      final result = await repository.cancelHostedPayment(request.requestId);
+      if (result == 'paid') {
+        busy = false;
+        return await verifyHostedPayment();
+      }
+      if (result == 'expired' && repository.userId == uid) {
+        await pendingStore.clear(uid);
+        pending = null;
+        termsAccepted = false;
+        cartNotice = 'Checkout cancelled. You can edit your cart.';
+      } else {
+        error = result == 'manual_review'
+            ? 'Payment needs staff review. Contact support.'
+            : 'Payment is still processing. Check its status before changing your cart.';
+      }
+      return false;
+    } catch (e) {
+      error = bookingError(e);
+      return false;
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
+  }
+
   /// Resolve the server state before allowing an uncertain request to be replaced.
   Future<bool> reviewPending() async {
     if (busy || pending == null) return false;

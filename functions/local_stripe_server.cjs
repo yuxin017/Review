@@ -58,6 +58,7 @@ const handlers = {
   '/stripeTicketQuote':gateway.quote,
   '/stripeTicketCheckout':gateway.start,
   '/stripeTicketStatus':gateway.status,
+  '/stripeTicketCancel':gateway.cancel,
 };
 const MAX_BODY = 1024 * 1024;
 function originAllowed(origin) {

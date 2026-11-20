@@ -9,11 +9,13 @@ import 'tickets_page.dart';
 class TicketCartScreen extends StatefulWidget {
   final TicketJourney journey;
   final VoidCallback onShop, onCheckout;
+  final VoidCallback? onResume;
   const TicketCartScreen({
     super.key,
     required this.journey,
     required this.onShop,
     required this.onCheckout,
+    this.onResume,
   });
   @override
   State<TicketCartScreen> createState() => _TicketCartScreenState();
@@ -399,7 +401,7 @@ class _TicketCartScreenState extends State<TicketCartScreen> {
             style: const TextStyle(color: ticketMuted, fontSize: 13)),
         ]),
         const SizedBox(height: 8),
-        if (j.cart.isNotEmpty) const Padding(
+        if (j.cart.isNotEmpty && j.pending == null) const Padding(
           padding: EdgeInsets.only(bottom: 12),
           child: Row(children: [
             Icon(Icons.swipe_left_alt_outlined,
@@ -422,13 +424,44 @@ class _TicketCartScreenState extends State<TicketCartScreen> {
             ]),
           ),
         ),
-        if (j.pending != null) const Padding(
-          padding: EdgeInsets.only(bottom: 14),
-          child: TicketSurface(
-            color: Color(0xFFFFF2E8),
-            child: Text('A payment is in progress. Check its status before editing your cart.'),
+        if (j.pending != null)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 14),
+            child: TicketSurface(child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Text('Payment pending', style: TextStyle(fontWeight: FontWeight.w700)),
+                if (j.error != null) ...[
+                  const SizedBox(height: 6),
+                  Text(j.error!, style: const TextStyle(color: ticketMuted)),
+                ],
+                const SizedBox(height: 10),
+                TicketButton('Continue payment',
+                  onPressed: j.busy ? null : widget.onResume),
+                TextButton(
+                  onPressed: j.busy ? null : () async {
+                    final confirmed = await showDialog<bool>(context: context,
+                      builder: (dialog) => AlertDialog(
+                        title: const Text('Cancel this checkout?'),
+                        content: const Text('We’ll check Stripe before cancelling. Your passes will stay in your cart.'),
+                        actions: [
+                          TextButton(onPressed: () => Navigator.pop(dialog, false),
+                            child: const Text('Go back')),
+                          FilledButton(onPressed: () => Navigator.pop(dialog, true),
+                            child: const Text('Cancel checkout')),
+                        ],
+                      ));
+                    if (confirmed != true || !context.mounted) return;
+                    final paid = await j.cancelPendingPayment();
+                    if (paid && context.mounted) {
+                      context.findAncestorStateOfType<TicketsPageState>()?.showSection('success');
+                    }
+                  },
+                  child: const Text('Cancel checkout & edit cart'),
+                ),
+              ],
+            )),
           ),
-        ),
         if (j.cart.isEmpty) ...[
           const SizedBox(height: 48),
           const Center(child: Icon(Icons.shopping_bag_outlined,
@@ -444,7 +477,7 @@ class _TicketCartScreenState extends State<TicketCartScreen> {
           TicketButton('Browse Passes', onPressed: widget.onShop),
         ] else ...[
           for (final line in j.cart) _lineCard(line),
-          TextButton.icon(onPressed: widget.onShop,
+          if (j.pending == null) TextButton.icon(onPressed: widget.onShop,
             icon: const Icon(Icons.add_circle_outline),
             label: const Text('Add another pass')),
           const SizedBox(height: 6),

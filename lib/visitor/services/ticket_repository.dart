@@ -19,6 +19,8 @@ abstract class TicketRepository {
       throw UnsupportedError('Hosted payment is unavailable.');
   Future<String> hostedPaymentStatus(String orderId) =>
       throw UnsupportedError('Hosted payment verification is unavailable.');
+  Future<String> cancelHostedPayment(String orderId) =>
+      throw UnsupportedError('Hosted payment cancellation is unavailable.');
   Future<Map<String, dynamic>> promotionQuote(
     TicketCheckout request, {
     String paymentCurrency = 'MYR',
@@ -117,6 +119,11 @@ class FirebaseTicketRepository implements TicketRepository {
   @override
   Future<String> hostedPaymentStatus(String orderId) async {
     final data = await _callPayment('stripeTicketStatus', {'orderId': orderId});
+    return data['status'] as String? ?? 'pending';
+  }
+  @override
+  Future<String> cancelHostedPayment(String orderId) async {
+    final data = await _callPayment('stripeTicketCancel', {'orderId': orderId});
     return data['status'] as String? ?? 'pending';
   }
   @override

@@ -42,4 +42,5 @@ const stripeTickets=createStripeGateway({db,FieldValue,
 exports.stripeTicketQuote=onCall(options,stripeTickets.quote);
 exports.stripeTicketCheckout=onCall({...options,secrets:[STRIPE_SECRET_KEY]},stripeTickets.start);
 exports.stripeTicketStatus=onCall({...options,secrets:[STRIPE_SECRET_KEY]},stripeTickets.status);
+exports.stripeTicketCancel=onCall({...options,secrets:[STRIPE_SECRET_KEY]},stripeTickets.cancel);
 exports.stripeTicketWebhook=onRequest({region:'us-central1',timeoutSeconds:60,memory:'256MiB',secrets:[STRIPE_WEBHOOK_SECRET]},stripeTickets.webhook);

@@ -50,6 +50,7 @@ function createStripeGateway({db,FieldValue,getStripeKey,getWebhookSecret,projec
     const data=request.data??{},origin=checkoutOrigin(data.returnUrl,projectId);
     // Validate the basket, authenticated user, price and promotion before creating Stripe session.
     const attempt=await ticket.reserveStripe(request);
+    if(attempt.status==='expired')fail('failed-precondition','Checkout was cancelled or expired. Start a new payment.');
     if(attempt.status==='paid')return{status:'paid',orderId:attempt.orderId};
     if(attempt.status==='manual_review')fail('failed-precondition','Payment requires staff review. Contact support.');
     if(attempt.url)return{status:'pending',url:attempt.url,orderId:attempt.orderId};
@@ -70,7 +71,14 @@ function createStripeGateway({db,FieldValue,getStripeKey,getWebhookSecret,projec
       },`park-tickets-${attempt.orderId}`);
     }catch(error){console.error('Stripe session creation failed',error);fail('unavailable','Unable to open the secure payment page. Please try again.');}
     if(typeof session?.url!=='string'||typeof session?.id!=='string'||!session.url.startsWith('https://checkout.stripe.com/'))fail('unavailable','Secure payment session could not be created.');
-    await db.doc('ticketPayments/'+attempt.orderId).update({sessionId:session.id,url:session.url});
+    const ref=db.doc('ticketPayments/'+attempt.orderId);
+    const ready=await db.runTransaction(async tx=>{
+      const current=await tx.get(ref);
+      if(current.data()?.status!=='pending')return false;
+      tx.update(ref,{sessionId:session.id,url:session.url});
+      return true;
+    });
+    if(!ready)fail('failed-precondition','Checkout is no longer available.');
     return{status:'pending',url:session.url,orderId:attempt.orderId};
   }
   async function status(request){
@@ -80,7 +88,7 @@ function createStripeGateway({db,FieldValue,getStripeKey,getWebhookSecret,projec
     if(!doc.exists||doc.data().ownerUid!==request.auth.uid)fail('permission-denied','This payment is not linked to your account.');
     const attempt=doc.data();
     if(attempt.status==='paid')return{status:'paid',orderId:id};
-    if(attempt.status==='manual_review')return{status:'manual_review',orderId:id};
+    if(['manual_review','expired'].includes(attempt.status))return{status:attempt.status,orderId:id};
     if(!attempt.sessionId)return{status:'pending',orderId:id};
     let session;
     try{session=await api(getStripeKey(),'GET','/checkout/sessions/'+encodeURIComponent(attempt.sessionId));}
@@ -90,6 +98,45 @@ function createStripeGateway({db,FieldValue,getStripeKey,getWebhookSecret,projec
       return{status:result,orderId:id};
     }
     return{status:'pending',orderId:id};
+  }
+  async function cancel(request){
+    const uid=request.auth?.uid,id=request.data?.orderId;
+    if(!uid||request.auth.token?.email_verified!==true||!/^[a-f0-9]{48}$/.test(id??''))
+      fail('invalid-argument','Choose a valid checkout to cancel.');
+    const ref=db.doc('ticketPayments/'+id);
+    const markExpired=async sessionId=>db.runTransaction(async tx=>{
+      const doc=await tx.get(ref);
+      if(!doc.exists){
+        tx.create(ref,{ownerUid:uid,status:'expired',cancelledAt:FieldValue.serverTimestamp()});
+        return {status:'expired'};
+      }
+      const saved=doc.data();
+      if(saved.ownerUid!==uid)fail('permission-denied','This payment is not linked to your account.');
+      if(saved.status!=='pending')return saved;
+      if((saved.sessionId??'')!==sessionId)return saved;
+      tx.update(ref,{status:'expired',url:'',cancelledAt:FieldValue.serverTimestamp()});
+      return {status:'expired'};
+    });
+    const saved=await markExpired('');
+    if(saved.status!=='pending')return {status:saved.status,orderId:id};
+    const path='/checkout/sessions/'+encodeURIComponent(saved.sessionId);
+    const verify=session=>{
+      if(session.id!==saved.sessionId||session.client_reference_id!==id||
+          session.metadata?.uid!==uid||session.metadata?.orderId!==id||
+          session.currency!=='myr'||session.amount_total!==saved.amountMinor)
+        fail('failed-precondition','Stripe session did not match this booking.');
+      return session;
+    };
+    let session=verify(await api(getStripeKey(),'GET',path));
+    if(session.status==='open'&&session.payment_status==='unpaid'){
+      try{session=verify(await api(getStripeKey(),'POST',path+'/expire'));}
+      catch(_){session=verify(await api(getStripeKey(),'GET',path));}
+    }
+    if(session.payment_status==='paid')
+      return {status:await ticket.completeStripe(session),orderId:id};
+    if(session.status==='expired'&&session.payment_status==='unpaid')
+      return {status:(await markExpired(session.id)).status,orderId:id};
+    return {status:'pending',orderId:id};
   }
   async function webhook(req,res){
     if(req.method!=='POST'){res.status(405).send('Method not allowed');return;}
@@ -104,6 +151,6 @@ function createStripeGateway({db,FieldValue,getStripeKey,getWebhookSecret,projec
       res.status(200).json({received:true});
     }catch(error){console.error('Ticket payment fulfillment failed',error);res.status(500).send('Retry later');}
   }
-  return{quote,start,status,webhook};
+  return{quote,start,status,cancel,webhook};
 }
 module.exports={createStripeGateway,verifyStripeEvent,checkoutOrigin};
