@@ -377,56 +377,6 @@ class _LoginPageState extends State<LoginPage> {
 
                           const SizedBox(height: 25),
 
-                          const Row(
-                            children: [
-                              Expanded(child: Divider()),
-                              Padding(
-                                padding: EdgeInsets.symmetric(horizontal: 14),
-                                child: Text(
-                                  'Or continue with',
-                                  style: TextStyle(color: Color(0xFF817070)),
-                                ),
-                              ),
-                              Expanded(child: Divider()),
-                            ],
-                          ),
-
-                          const SizedBox(height: 16),
-
-                          InkWell(
-                            onTap: () {
-                              showDialog<void>(
-                                context: context,
-                                builder: (context) => AlertDialog(
-                                  title: const Text('Sign in on this device'),
-                                  content: const Text(
-                                    'Sign in with your email and password first. In Profile → Security & Account → Device Authentication, enable Face ID or fingerprint unlock for your next visit on a supported device.',
-                                  ),
-                                  actions: [
-                                    TextButton(
-                                      onPressed: () => Navigator.pop(context),
-                                      child: const Text('Continue with Email'),
-                                    ),
-                                  ],
-                                ),
-                              );
-                            },
-                            child: Column(
-                              children: [
-                                Image.asset(
-                                  'assets/images/Face_ID_Icon.png',
-                                  width: 55,
-                                  height: 55,
-                                  fit: BoxFit.contain,
-                                ),
-                                SizedBox(height: 5),
-                                Text('Face ID'),
-                              ],
-                            ),
-                          ),
-
-                          const SizedBox(height: 30),
-
                           Wrap(
                             alignment: WrapAlignment.center,
                             crossAxisAlignment: WrapCrossAlignment.center,

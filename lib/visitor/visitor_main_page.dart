@@ -63,12 +63,12 @@ class _VisitorMainPageState extends State<VisitorMainPage> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       if (kind == 'ticket') {
-        unawaited(_verifyReturnedTicket());
+        unawaited(_verifyReturnedTicket(orderId));
       } else if (kind == 'photo') {
         _openReturnedPhoto(orderId);
       } else {
         Navigator.of(context).push(MaterialPageRoute(builder: (_) =>
-          const SouvenirShopPage(initialOrders: true)));
+          SouvenirShopPage(initialOrders: true, returningPaymentId: orderId)));
       }
     });
   }
@@ -80,22 +80,12 @@ class _VisitorMainPageState extends State<VisitorMainPage> {
     )));
   }
 
-  Future<void> _verifyReturnedTicket() async {
-    _onTabSelected(1, resetTickets: false);
+  Future<void> _verifyReturnedTicket(String orderId) async {
     final tickets = _ticketsKey.currentState;
-    if (tickets == null || !tickets.mounted) return;
-    if (tickets.journey.pending == null) {
-      tickets.showSection(tickets.journey.completed != null ? 'success' : 'hub');
-      return;
-    }
-    tickets.showSection('payment');
-    try {
-      final confirmed = await tickets.journey.verifyHostedPayment();
-      if (!mounted || !tickets.mounted) return;
-      tickets.showSection(confirmed ? 'success' : 'payment');
-    } catch (_) {
-      // The payment screen retains its manual status-verification action.
-    }
+    if (!mounted || tickets == null || !tickets.mounted) return;
+    Navigator.of(context).popUntil((route) => route.isFirst);
+    if (_selectedIndex != 1) setState(() => _selectedIndex = 1);
+    await tickets.showPaymentReturn(orderId);
   }
 
   final _ticketsKey = GlobalKey<TicketsPageState>();
@@ -127,20 +117,28 @@ class _VisitorMainPageState extends State<VisitorMainPage> {
         if (mounted) unawaited(_consumeAndroidPaymentReturn());
       });
     }
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || _commerceReturnOpened || !Uri.base.queryParameters.containsKey('commerce_payment')) return;
-      _commerceReturnOpened = true;
+    if (kIsWeb) {
       final query = Uri.base.queryParameters;
-      if (query['purchase_type'] == 'photo') {
-        final id = query['order'];
-        if (id != null && RegExp(r'^[a-f0-9]{64}$').hasMatch(id)) {
-          _openReturnedPhoto(id);
-        }
-        return;
+      final id = query['order'];
+      if (id != null && query.containsKey('ticket_payment') &&
+          RegExp(r'^[a-f0-9]{48}$').hasMatch(id)) {
+        _selectedIndex = 1;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) unawaited(_verifyReturnedTicket(id));
+        });
+      } else if (id != null && query.containsKey('commerce_payment') &&
+          RegExp(r'^[a-f0-9]{64}$').hasMatch(id)) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          if (query['purchase_type'] == 'photo') {
+            _openReturnedPhoto(id);
+          } else {
+            Navigator.of(context).push(MaterialPageRoute(builder: (_) =>
+                SouvenirShopPage(initialOrders: true, returningPaymentId: id)));
+          }
+        });
       }
-      Navigator.of(context).push(MaterialPageRoute(builder: (_) =>
-        const SouvenirShopPage(initialOrders:true)));
-    });
+    }
   }
 
   @override
@@ -153,7 +151,6 @@ class _VisitorMainPageState extends State<VisitorMainPage> {
     super.dispose();
   }
 
-  bool _commerceReturnOpened = false;
   int _selectedIndex = 0;
   final _startPlace = ValueNotifier<String?>(null);
 

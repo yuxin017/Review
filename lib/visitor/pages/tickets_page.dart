@@ -27,6 +27,7 @@ class TicketsPageState extends State<TicketsPage>
     fetchRates: () => ApplicationApi().post('/v1/park/exchangeRates'),
   );
   late final TicketJourney journey;
+  late final Future<void> _checkoutReady;
   final List<String> _history = [];
   String _screen = 'hub', _category = 'day';
   TicketPackage? _package;
@@ -51,18 +52,46 @@ class TicketsPageState extends State<TicketsPage>
       widget.repository ?? FirebaseTicketRepository(),
       widget.pendingStore ?? PendingTicketCheckoutStore(),
     );
-    unawaited(journey.start().then((_) {
+    _checkoutReady = journey.start().then((_) {
       if (!mounted) return;
       if (journey.completed != null) {
         showSection('success');
       }
-    }));
+    });
+  }
+
+  Future<void> showPaymentReturn(String orderId) async {
+    await _checkoutReady;
+    if (!mounted) return;
+    if (journey.completed?.requestId == orderId) {
+      showSection('success');
+      return;
+    }
+    if (journey.pending?.requestId == orderId) {
+      showSection('payment');
+      if (await journey.verifyHostedPayment() && mounted) showSection('success');
+      return;
+    }
+    try {
+      final status = await journey.repository.hostedPaymentStatus(orderId);
+      if (mounted && status == 'paid') openOrder(orderId);
+      else if (mounted) showSection('tickets');
+    } catch (_) {
+      if (mounted) showSection('tickets');
+    }
+  }
+
+  Future<void> _checkAfterResume() async {
+    await _checkoutReady;
+    if (!mounted || _screen != 'payment' || journey.pending == null) return;
+    if (await journey.verifyHostedPayment() && mounted) showSection('success');
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       journey.pruneUnavailableCartLines();
+      unawaited(_checkAfterResume());
     }
   }
 

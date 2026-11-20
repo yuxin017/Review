@@ -49,5 +49,10 @@ if (-not $Camera) {
     $flutterArgs += @('--dart-define=LOCAL_STRIPE_API=http://127.0.0.1:8788', '--dart-define=PAYMENT_RETURN_URL=http://127.0.0.1:8788')
 }
 if ($Camera) { $flutterArgs += @('--release','--dart-define=ATTRACTION_CAMERA_STATION=true') }
+# Give Dart and its child processes the same existing Windows temp path.
+$buildTemp = Join-Path $script:FypProjectRoot '.local\android-tmp'
+$null = New-Item -ItemType Directory -Force -Path $buildTemp
+$env:TEMP = $buildTemp
+$env:TMP = $buildTemp
 & $runtime.flutter @flutterArgs
 exit $LASTEXITCODE

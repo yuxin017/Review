@@ -8,10 +8,10 @@ import '../../commerce/stripe_commerce_client.dart';
 import '../widgets/souvenir_product_image.dart';
 
 class SouvenirShopPage extends StatefulWidget {
-  const SouvenirShopPage({super.key, this.initialOrders = false, this.initialSearch = '', this.initialStoreId});
+  const SouvenirShopPage({super.key, this.initialOrders = false, this.initialSearch = '', this.initialStoreId, this.returningPaymentId});
   final bool initialOrders;
   final String initialSearch;
-  final String? initialStoreId;
+  final String? initialStoreId, returningPaymentId;
   @override
   State<SouvenirShopPage> createState() => _SouvenirShopPageState();
 }
@@ -66,7 +66,7 @@ class _SouvenirShopPageState extends State<SouvenirShopPage> with WidgetsBinding
 
   Future<void> _loadPending() async {
     final prefs = await SharedPreferences.getInstance();
-    final saved = prefs.getString(_pendingKey);
+    final saved = prefs.getString(_pendingKey) ?? widget.returningPaymentId;
     if (mounted && saved != null && saved.isNotEmpty) {
       setState(() => _pendingPaymentId = saved);
       _startAutomaticPaymentCheck();
@@ -104,7 +104,7 @@ class _SouvenirShopPageState extends State<SouvenirShopPage> with WidgetsBinding
     _paymentCheckRunning = true;
     if (!silent) setState(() {_busy = true; _notice = null;});
     try {
-      final result = await _client.status(id);
+      final result = await _client.status(id, type: 'souvenir');
       if (!mounted || id != _pendingPaymentId) return;
       final status = result['status'];
       if (status == 'paid' || status == 'expired') {
