@@ -26,7 +26,8 @@ class _StaffMyWorkPageState extends State<StaffMyWorkPage> {
   Future<void> _applyLeave() async {
     final reason = TextEditingController();
     var leaveType = 'Annual Leave';
-    PlatformFile? certificate;
+    String? certificateName;
+    String? certificateData;
     var pickingCertificate = false;
     String? certificateError;
     DateTime first = DateUtils.dateOnly(DateTime.now());
@@ -56,24 +57,26 @@ class _StaffMyWorkPageState extends State<StaffMyWorkPage> {
           if (leaveType == 'Sick Leave') ...[
             OutlinedButton.icon(
               icon: const Icon(Icons.attach_file),
-              label: Text(certificate?.name ?? 'Attach medical certificate'),
+              label: Text(certificateName ?? 'Attach medical certificate'),
               onPressed: pickingCertificate ? null : () async {
                 update(() { pickingCertificate = true; certificateError = null; });
                 try {
                   final picked = await FilePicker.pickFiles(
                     type: FileType.custom,
                     allowedExtensions: ['pdf', 'jpg', 'jpeg', 'png'],
-                    withData: true,
                   );
-                  if (!ctx.mounted || picked == null) return;
-                  final file = picked.files.single;
-                  final bytes = file.bytes;
-                  if (bytes == null || bytes.isEmpty || bytes.length > 650000 ||
-                      file.name.length > 160) {
+                  if (!ctx.mounted || picked.isEmpty) return;
+                  final file = picked.single;
+                  final bytes = await file.readAsBytes();
+                  if (!ctx.mounted) return;
+                  if (bytes.isEmpty || bytes.length > 650000 || file.name.length > 160) {
                     update(() => certificateError =
                         'Choose a PDF, JPG or PNG up to 650 KB with a shorter name.');
                   } else {
-                    update(() => certificate = file);
+                    update(() {
+                      certificateName = file.name;
+                      certificateData = base64Encode(bytes);
+                    });
                   }
                 } catch (_) {
                   if (ctx.mounted) update(() => certificateError = 'Unable to open the file.');
@@ -87,7 +90,7 @@ class _StaffMyWorkPageState extends State<StaffMyWorkPage> {
         ]))),
         actions: [TextButton(onPressed: () => Navigator.pop(ctx,false), child: const Text('Cancel')),
           FilledButton(
-            onPressed: pickingCertificate || (leaveType == 'Sick Leave' && certificate == null)
+            onPressed: pickingCertificate || (leaveType == 'Sick Leave' && certificateData == null)
                 ? null : () => Navigator.pop(ctx, true),
             child: const Text('Submit Request'))],
       )),
@@ -109,8 +112,8 @@ class _StaffMyWorkPageState extends State<StaffMyWorkPage> {
         'endOn': StaffWeek.key(last),
         'reason': note,
         if (leaveType == 'Sick Leave') ...{
-          'certificateName': certificate!.name,
-          'certificateData': base64Encode(certificate!.bytes!),
+          'certificateName': certificateName!,
+          'certificateData': certificateData!,
         },
         'status': 'pending',
         'decisionNote': '',
