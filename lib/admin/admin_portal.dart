@@ -8,7 +8,8 @@ import 'admin_widgets.dart';
 
 class AdminPortal extends StatefulWidget {
   final Widget Function(AdminFirebase, User)? staffBuilder;
-  const AdminPortal({super.key, this.staffBuilder});
+  final Widget Function(AdminFirebase, User)? staffWorkspaceBuilder;
+  const AdminPortal({super.key, this.staffBuilder, this.staffWorkspaceBuilder});
   @override
   State<AdminPortal> createState() => _AdminPortalState();
 }
@@ -37,10 +38,14 @@ class _AdminPortalState extends State<AdminPortal> {
         final service = snapshot.data!;
         return StreamBuilder<User?>(
           stream: service.auth.idTokenChanges(),
+          initialData: service.auth.currentUser,
           builder: (context, state) {
             final user = state.data;
             if (user == null) {
               return AdminLoginPage(
+                accessNotice: widget.staffWorkspaceBuilder != null
+                    ? 'Sign in with your park staff or administrator account.'
+                    : 'Access is restricted to authorized park administrators.',
                 onSignIn: (email, password, remember) async {
                   if (kIsWeb) {
                     await service.auth.setPersistence(
@@ -65,6 +70,11 @@ class _AdminPortalState extends State<AdminPortal> {
                       child: CircularProgressIndicator(color: adminRose),
                     ),
                   );
+                }
+                final staffWorkspace = widget.staffWorkspaceBuilder;
+                if (token.hasData && token.data?.claims?['admin'] != true &&
+                    staffWorkspace != null && widget.staffBuilder == null) {
+                  return staffWorkspace(service, user);
                 }
                 if (token.data?.claims?['admin'] != true ||
                     !user.emailVerified) {

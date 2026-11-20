@@ -39,7 +39,10 @@ class ThemeParkApp extends StatelessWidget {
       home: const SplashScreen(),
       initialRoute: initialRoute,
       routes: {
-        '/admin': (context) => const AdminPortal(),
+        '/admin': (context) => AdminPortal(
+          staffWorkspaceBuilder: (service, user) =>
+              StaffPortalWorkspace(service: service, user: user),
+        ),
         '/staff': (context) => const StaffPortal(),
         if (defaultTargetPlatform == TargetPlatform.android && !kIsWeb)
           '/camera': (context) => AdminPortal(

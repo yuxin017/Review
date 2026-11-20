@@ -28,6 +28,25 @@ class StaffPortal extends StatefulWidget {
   State<StaffPortal> createState() => _StaffPortalState();
 }
 
+/// Opens the role-scoped workspace using the account already signed in to Admin.
+class StaffPortalWorkspace extends StatelessWidget {
+  const StaffPortalWorkspace({
+    super.key,
+    required this.service,
+    required this.user,
+  });
+
+  final AdminFirebase service;
+  final User user;
+
+  @override
+  Widget build(BuildContext context) => _StaffSignedIn(
+    key: ValueKey(user.uid),
+    user: user,
+    session: _StaffSession(auth: service.auth, db: service.db),
+  );
+}
+
 class _StaffSession {
   const _StaffSession({required this.auth, required this.db});
   final FirebaseAuth auth;
@@ -273,7 +292,7 @@ class _StaffSignedInState extends State<_StaffSignedIn> {
 }
 
 /// Shares the EXACT AdminShell/sidebar and feature file used by Super Admin.
-/// Staff sign in through the separate ThemeParkStaff Firebase session.
+/// Uses the Firebase session supplied by the portal that authenticated staff.
 class _StaffReadOnlyHome extends StatefulWidget {
   const _StaffReadOnlyHome({
     required this.profile,
