@@ -281,8 +281,13 @@ service cloud.firestore {
         && data.updatedAt == request.time;
     }
     match /staffTrainingCourses/{courseId} {
-      allow get, list: if workforceSuperAdmin();
-      allow create: if workforceSuperAdmin()
+      allow get, list: if workforceSuperAdmin() || activeStaffWithRole('operations_manager');
+      allow create: if (workforceSuperAdmin() || (
+          activeStaffWithRole('operations_manager')
+          && request.resource.data.roleCode == 'attraction_operator'
+          && courseId == 'ride_' + request.resource.data.attractionId
+          && request.resource.data.active == true
+        ))
         && workforceTrainingCourseValid(request.resource.data);
       allow update: if workforceSuperAdmin()
         && workforceTrainingCourseValid(request.resource.data)
@@ -1105,28 +1110,28 @@ service cloud.firestore {
     }
     match /parkCategories/{categoryId} {
       allow read: if signedIn();
-      allow create: if isAdmin() && step16ValidCategory(request.resource.data)
+      allow create: if (isAdmin() || activeStaffWithRole('operations_manager')) && step16ValidCategory(request.resource.data)
         && request.resource.data.active == true
         && request.resource.data.createdAt == request.time
         && request.resource.data.updatedAt == request.time;
-      allow update: if isAdmin() && step16ValidCategory(request.resource.data)
+      allow update: if (isAdmin() || activeStaffWithRole('operations_manager')) && step16ValidCategory(request.resource.data)
         && request.resource.data.kind == resource.data.kind
         && request.resource.data.createdAt == resource.data.createdAt
         && request.resource.data.diff(resource.data).affectedKeys()
           .hasOnly(['name', 'active', 'updatedAt'])
         && request.resource.data.updatedAt == request.time;
-      allow delete: if isAdmin();
+      allow delete: if (isAdmin() || activeStaffWithRole('operations_manager'));
     }
 
     match /attractions/{attractionId} {
       allow read: if signedIn();
-      allow create: if isAdmin()
+      allow create: if (isAdmin() || activeStaffWithRole('operations_manager'))
         && request.resource.data.keys().hasOnly(module1AttractionFields())
         && module1ValidAttraction(request.resource.data)
         && (request.resource.data.get('categoryId', null) == null ||
           getAfter(/databases/$(database)/documents/parkCategories/$(request.resource.data.categoryId)).data.active == true)
         && (request.resource.data.get('updatedAt', null) == null || request.resource.data.updatedAt == request.time);
-      allow update: if isAdmin()
+      allow update: if (isAdmin() || activeStaffWithRole('operations_manager'))
         && resource.data.get('deletedAt', null) == null
         && ((request.resource.data.diff(resource.data).affectedKeys().hasOnly(module1AttractionFields())
           && module1ValidAttraction(request.resource.data)
@@ -1245,7 +1250,8 @@ service cloud.firestore {
       allow write: if false;
     }
     match /campaigns/{id} {
-      allow read: if isAdmin() || (signedIn() && resource.data.get('public', false) == true);
+      allow read: if isAdmin() || activeStaffWithRole('marketing_staff')
+        || (signedIn() && resource.data.get('public', false) == true);
       allow write: if false;
     }
     match /parkWeather/{day} {
@@ -1253,7 +1259,7 @@ service cloud.firestore {
       allow write: if false;
     }
     match /landmarkReferences/{id} {
-      allow read: if isAdmin();
+      allow read: if isAdmin() || activeStaffWithRole('operations_manager');
       allow write: if false;
     }
     match /attractionRatings/{ratingId} {
@@ -1299,7 +1305,7 @@ service cloud.firestore {
       allow write: if false;
     }
     function reservationSignedIn() { return signedIn(); }
-    function reservationAdmin() { return reservationSignedIn() && request.auth.token.get('admin', false) == true; }
+    function reservationAdmin() { return isAdmin() || activeStaffWithRole('operations_manager'); }
     match /reservations/{reservationId} {
       allow get: if reservationSignedIn() && (reservationAdmin()
         || !exists(/databases/$(database)/documents/reservations/$(reservationId))
@@ -1473,7 +1479,7 @@ service cloud.firestore {
         && data.updatedAt == request.time && data.updatedBy == request.auth.uid;
     }
     match /rewardCatalogue/{id} {
-      allow read: if signedIn() && (resource.data.active == true || isAdmin());
+      allow read: if signedIn() && (resource.data.active == true || isAdmin() || activeStaffWithRole('marketing_staff'));
       allow create, update: if isAdmin() && validRewardCatalogue(request.resource.data);
     }
     function validEarnEvent(id, data) {
@@ -1544,6 +1550,7 @@ service cloud.firestore {
     }
 
     // Member A module 4: visitor support and administrator case handling.
+    function supportOperator() { return isAdmin() || activeStaffWithRole('customer_support'); }
     function supportOwner(uid) { return verifiedVisitor() && request.auth.uid == uid && activeVisitor(uid); }
     function supportCategory(value) {
       return value in ['App Experience','Tickets & Admission','Payments & Billing','Rides & Attractions',
@@ -1589,7 +1596,7 @@ service cloud.firestore {
         && resource.data.status != 'resolved' && data.updatedAt == request.time
         && data.messageCount == resource.data.messageCount + 1 && !exists(path)
         && message.caseId == id && message.ownerUid == resource.data.ownerUid && message.authorUid == request.auth.uid
-        && (message.role == 'admin' ? (isAdmin() && data.status == 'in_progress'
+        && (message.role == 'admin' ? (supportOperator() && data.status == 'in_progress'
           && data.firstResponseAt == (resource.data.firstResponseAt == null ? request.time : resource.data.firstResponseAt))
           : (supportOwner(resource.data.ownerUid) && data.status == resource.data.status && data.firstResponseAt == resource.data.firstResponseAt));
     }
@@ -1601,7 +1608,7 @@ service cloud.firestore {
         && data.updatedAt == request.time;
     }
     function supportAdminUpdate(id, data) {
-      return isAdmin() && data.diff(resource.data).affectedKeys().hasOnly(['status','priority','category','assigneeUid',
+      return supportOperator() && data.diff(resource.data).affectedKeys().hasOnly(['status','priority','category','assigneeUid',
           'assigneeName','resolution','resolvedAt','updatedAt','lastEventId'])
         && data.status in ['new','in_progress','resolved'] && data.priority in ['low','medium','high'] && supportCategory(data.category)
         && data.assigneeUid is string && data.assigneeName is string && data.assigneeName.size() <= 100
@@ -1620,14 +1627,14 @@ service cloud.firestore {
     }
     match /supportCases/{id} {
       allow get: if signedIn() && (!exists(/databases/$(database)/documents/supportCases/$(id))
-        || resource.data.ownerUid == request.auth.uid || isAdmin());
-      allow list: if signedIn() && (resource.data.ownerUid == request.auth.uid || isAdmin());
+        || resource.data.ownerUid == request.auth.uid || supportOperator());
+      allow list: if signedIn() && (resource.data.ownerUid == request.auth.uid || supportOperator());
       allow create: if supportOwner(request.resource.data.ownerUid) && supportNewCase(id, request.resource.data);
       allow update: if signedIn() && (supportReplyUpdate(id, request.resource.data)
         || supportAdminUpdate(id, request.resource.data) || supportVisitorReopen(id, request.resource.data));
     }
     match /supportAttachments/{id} {
-      allow get: if signedIn() && (resource.data.ownerUid == request.auth.uid || isAdmin());
+      allow get: if signedIn() && (resource.data.ownerUid == request.auth.uid || supportOperator());
       allow create: if supportOwner(request.resource.data.ownerUid)
         && request.resource.data.keys().hasOnly(['ownerUid','caseId','name','mime','size','sha256','base64','createdAt'])
         && request.resource.data.caseId == id && request.resource.data.createdAt == request.time
@@ -1648,22 +1655,22 @@ service cloud.firestore {
         && data.ownerUid == record.ownerUid && data.authorUid == request.auth.uid
         && data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 100
         && data.body is string && data.body.size() >= 2 && data.body.size() <= 2000 && data.createdAt == request.time
-        && (data.role == 'admin' ? isAdmin() : (!internal && data.role == 'visitor' && supportOwner(record.ownerUid)
+        && (data.role == 'admin' ? supportOperator() : (!internal && data.role == 'visitor' && supportOwner(record.ownerUid)
           && data.authorName == get(/databases/$(database)/documents/visitors/$(request.auth.uid)).data.fullName))
-        && (internal ? isAdmin() : (record.status != 'resolved' && getAfter(casePath).data.lastMessageId == id
+        && (internal ? supportOperator() : (record.status != 'resolved' && getAfter(casePath).data.lastMessageId == id
           && getAfter(casePath).data.messageCount == record.messageCount + 1 && getAfter(casePath).data.updatedAt == request.time));
     }
     match /supportMessages/{id} {
-      allow read: if signedIn() && (resource.data.ownerUid == request.auth.uid || isAdmin());
+      allow read: if signedIn() && (resource.data.ownerUid == request.auth.uid || supportOperator());
       allow get: if verifiedVisitor() && !exists(/databases/$(database)/documents/supportMessages/$(id));
       allow create: if signedIn() && supportNewMessage(id, request.resource.data, false);
     }
     match /supportNotes/{id} {
-      allow read: if isAdmin();
-      allow create: if isAdmin() && supportNewMessage(id, request.resource.data, true) && request.resource.data.role == 'admin';
+      allow read: if supportOperator();
+      allow create: if supportOperator() && supportNewMessage(id, request.resource.data, true) && request.resource.data.role == 'admin';
     }
     match /supportEvents/{id} {
-      allow read: if signedIn() && (resource.data.ownerUid == request.auth.uid || isAdmin());
+      allow read: if signedIn() && (resource.data.ownerUid == request.auth.uid || supportOperator());
       allow create: if signedIn()
         && request.resource.data.keys().hasOnly(['caseId','ownerUid','actorUid','actorName','action','fromStatus','toStatus','createdAt'])
         && request.resource.data.caseId is string && request.resource.data.caseId.matches('^[a-f0-9]{48}$')
@@ -1678,7 +1685,7 @@ service cloud.firestore {
         && getAfter(/databases/$(database)/documents/supportCases/$(request.resource.data.caseId)).data.status == request.resource.data.toStatus
         && request.resource.data.action == (request.resource.data.fromStatus != request.resource.data.toStatus && request.resource.data.toStatus == 'resolved'
           ? 'resolved' : request.resource.data.fromStatus == 'resolved' && request.resource.data.toStatus != 'resolved' ? 'reopened' : 'updated')
-        && (isAdmin() || (supportOwner(request.resource.data.ownerUid) && request.resource.data.action == 'reopened'
+        && (supportOperator() || (supportOwner(request.resource.data.ownerUid) && request.resource.data.action == 'reopened'
           && request.resource.data.fromStatus == 'resolved' && request.resource.data.toStatus == 'in_progress'));
     }
 

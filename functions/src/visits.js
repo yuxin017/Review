@@ -1,6 +1,6 @@
 'use strict';
 const {HttpsError}=require('firebase-functions/v2/https');
-const {requireStaffShift}=require('./staff_shift_access');
+const {requireStaffRole}=require('./staff_shift_access');
 const fail=(code,message)=>{throw new HttpsError(code,message);};
 const identifier=value=>typeof value==='string'&&/^[A-Za-z0-9_-]{1,160}$/.test(value);
 const date=value=>value?.toDate?.();
@@ -21,7 +21,7 @@ function createVisitHandlers({db,FieldValue,clock=()=>new Date()}){
     if(!staff&&request.auth.token.admin!==true)fail('permission-denied','An administrator must scan attraction entrance passes.');
     return db.runTransaction(async tx=>{
       const saved=await tx.get(ref),r=saved.data();
-      if(staff)await requireStaffShift({db,reader:tx,request,now:clock()},'attraction_operator',r?.attractionId);
+      if(staff)await requireStaffRole({db,reader:tx,request,now:clock()},'attraction_operator',r?.attractionId);
       if(!r)fail('not-found','Attraction pass not found.');
       await open(tx,r.ownerUid);
       if(r.status==='checked_in')return{reservationId:ref.id,status:r.status,points:r.earnedPoints??0,alreadyCheckedIn:true};
@@ -58,7 +58,7 @@ function createVisitHandlers({db,FieldValue,clock=()=>new Date()}){
   async function staffLookup(request) {
     const ref = context(request);
     const ride = (await ref.get()).data();
-    await requireStaffShift({db, request, now: clock()}, 'attraction_operator', ride?.attractionId);
+    await requireStaffRole({db, request, now: clock()}, 'attraction_operator', ride?.attractionId);
     return {
       attractionId: ride.attractionId,
       attractionName: ride.attractionName ?? '',

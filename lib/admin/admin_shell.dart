@@ -1,6 +1,5 @@
 import '../kiosk/photo_kiosk.dart';
 import '../photos/photo_repository.dart';
-import 'staff/staff_access.dart';
 import 'package:flutter/material.dart';
 import '../visitor/models/tickets.dart';
 import 'admin_models.dart';
@@ -74,7 +73,7 @@ class _AdminShellState extends State<AdminShell> {
   @override
   void initState() {
     super.initState();
-    if (restricted) page = 'staff-my-work';
+    if (restricted) page = widget.portalNavigation.landingPage;
     store.start();
   }
 
@@ -82,7 +81,7 @@ class _AdminShellState extends State<AdminShell> {
   void didUpdateWidget(covariant AdminShell oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (!allowed(page)) {
-      page = restricted ? 'staff-my-work' : 'dashboard';
+      page = restricted ? widget.portalNavigation.landingPage : 'dashboard';
       visitorId = null;
     }
   }
@@ -336,13 +335,7 @@ class _AdminShellState extends State<AdminShell> {
             ),
             onSignOut: staff.auth.signOut,
           );
-        } else if (restricted &&
-            page != 'validation' &&
-            page != 'ride-entry' &&
-            !(page == 'photos' && photos != null &&
-              widget.portalNavigation.roles.contains(StaffRole.photographer))) {
-          // Staff and Super Admin share AdminShell, styles and sidebar.
-          // Other modules remain UI-only until their backend role scopes exist.
+        } else if (restricted && page == 'dashboard') {
           body = StaffWorkspaceUi(
             navigation: widget.portalNavigation,
             staffName: widget.adminName,
@@ -454,10 +447,10 @@ class _AdminShellState extends State<AdminShell> {
               : page == 'crowd'
               ? CrowdMonitoringPage(
                   repository: park!,
-                  onManageFacilities: () => open('facilities'),
+                  onManageFacilities: allowed('facilities') ? () => open('facilities') : null,
                   cameras: cameras,
                 )
-              : ParkManagementPage(repository: park!);
+              : ParkManagementPage(repository: park!, showVoucherMetrics: !restricted);
         } else if (page == 'validation') {
           body = AdmissionScreen(
             key: ValueKey(scanTicket?.id ?? 'scan'),

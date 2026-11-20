@@ -1,7 +1,7 @@
 'use strict';
 
 const {HttpsError} = require('firebase-functions/v2/https');
-const {requireStaffShift, parkDay} = require('./staff_shift_access');
+const {requireStaffRole, parkDay} = require('./staff_shift_access');
 
 const ticketIdValid = id => /^[a-f0-9]{48}_([1-9]|10)$/.test(id);
 const fail = (code, message) => { throw new HttpsError(code, message); };
@@ -17,7 +17,7 @@ function ticketView(id, data) {
 
 function createStaffAdmission({db, FieldValue, clock = () => new Date()}) {
   async function find(request) {
-    await requireStaffShift({db, request, now: clock()}, 'admission_staff');
+    await requireStaffRole({db, request, now: clock()}, 'admission_staff');
     let id = String(request.data?.code ?? '').trim().replace(/^TP1:/, '');
     if (/^TP-[A-Z0-9-]{1,100}$/i.test(id)) {
       const ref = await db.doc('ticketReferences/' + id.toUpperCase()).get();
@@ -38,7 +38,7 @@ function createStaffAdmission({db, FieldValue, clock = () => new Date()}) {
     const receipt = db.doc('admissions/' + requestId);
     return db.runTransaction(async tx => {
       const now = clock();
-      const uid = await requireStaffShift({db, reader: tx, request, now}, 'admission_staff');
+      const uid = await requireStaffRole({db, reader: tx, request, now}, 'admission_staff');
       const ticket = (await tx.get(ref)).data();
       if (!ticket) fail('not-found', 'Ticket not found.');
       const day = parkDay(now);

@@ -6,7 +6,7 @@ const time = value => value?.toDate?.() ?? value;
 const dateValid = value => time(value) instanceof Date && Number.isFinite(time(value).getTime());
 const parkDay = now => new Date(now.getTime() + 8 * 3600000).toISOString().slice(0, 10);
 
-async function currentStaffShift({db, reader, request, now}) {
+async function authorizedStaffProfile({db, reader, request}) {
   const read = ref => reader ? reader.get(ref) : ref.get();
   const uid = request.auth?.uid;
   const token = request.auth?.token;
@@ -23,6 +23,14 @@ async function currentStaffShift({db, reader, request, now}) {
     deny('Your staff account is not available.');
   }
 
+  return profile;
+}
+
+async function currentStaffShift(options) {
+  const {db, reader, request, now} = options;
+  const read = ref => reader ? reader.get(ref) : ref.get();
+  const profile = await authorizedStaffProfile(options);
+  const uid = request.auth.uid;
   const roles = Array.isArray(profile.eligibleRoles) ? profile.eligibleRoles : [];
   const fixed = ['operations_manager', 'marketing_staff'].filter(role => roles.includes(role));
   if (fixed.length > 1) return null;
@@ -75,4 +83,29 @@ async function requireStaffShift(options, role, attractionId) {
   return options.request.auth.uid;
 }
 
-module.exports = {currentStaffShift, requireStaffShift, parkDay};
+// Portal permissions follow approved employee roles. Training still scopes
+// ride and admission duties, independently of the weekly roster.
+async function requireStaffRole(options, allowed, attractionId) {
+  const profile = await authorizedStaffProfile(options);
+  const roles = Array.isArray(allowed) ? allowed : [allowed];
+  if (!Array.isArray(profile.eligibleRoles) ||
+      !roles.some(role => profile.eligibleRoles.includes(role))) {
+    deny('Your staff role does not have access to this action.');
+  }
+  if (roles.length === 1 && ['admission_staff', 'attraction_operator', 'photographer', 'photo_counter_staff'].includes(roles[0])) {
+    const {db, reader, request, now = new Date()} = options;
+    const query = db.collection('staffQualifications').where('staffUid', '==', request.auth.uid);
+    const training = await (reader ? reader.get(query) : query.get());
+    const qualified = training.docs.some(doc => {
+      const item = doc.data();
+      return item.roleCode === roles[0] && item.status === 'approved' &&
+        dateValid(item.completedAt) && time(item.completedAt) <= now &&
+        (item.expiresAt == null || (dateValid(item.expiresAt) && time(item.expiresAt) > now)) &&
+        (roles[0] !== 'attraction_operator' || item.attractionId === attractionId);
+    });
+    if (!qualified) deny('This action requires current training for this role or attraction.');
+  }
+  return options.request.auth.uid;
+}
+
+module.exports = {currentStaffShift, requireStaffShift, requireStaffRole, parkDay};

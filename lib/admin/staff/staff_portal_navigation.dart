@@ -26,59 +26,27 @@ class StaffPortalNavigation {
   // viewOnly means non-destructive view access, not database write access.
   static const Map<StaffRole, Map<String, StaffMenuAccess>> _menus = {
     StaffRole.operationsManager: {
-      'dashboard': StaffMenuAccess.manage,
-      'visitors': StaffMenuAccess.viewOnly,
       'reports': StaffMenuAccess.viewOnly,
-      'crowd': StaffMenuAccess.manage,
-      'landmarks': StaffMenuAccess.manage,
-      'anomalies': StaffMenuAccess.manage,
-      'facilities': StaffMenuAccess.manage,
-      'reservations': StaffMenuAccess.manage,
-      'ride-entry': StaffMenuAccess.manage,
-      'activity': StaffMenuAccess.manage,
-      'support': StaffMenuAccess.viewOnly,
-    },
-    StaffRole.attractionOperator: {
-      'dashboard': StaffMenuAccess.manage,
       'crowd': StaffMenuAccess.viewOnly,
-      'facilities': StaffMenuAccess.viewOnly,
-      'reservations': StaffMenuAccess.manage,
-      'ride-entry': StaffMenuAccess.manage,
-      'activity': StaffMenuAccess.manage,
-    },
-    StaffRole.admissionStaff: {
-      'dashboard': StaffMenuAccess.manage,
-      'visitors': StaffMenuAccess.viewOnly,
-      'tickets': StaffMenuAccess.viewOnly,
-      'packages': StaffMenuAccess.viewOnly,
-      'validation': StaffMenuAccess.manage,
-    },
-    StaffRole.photographer: {
-      'dashboard': StaffMenuAccess.manage,
-      'photos': StaffMenuAccess.manage,
-    },
-    StaffRole.photoCounterStaff: {
-      'dashboard': StaffMenuAccess.manage,
-      'tickets': StaffMenuAccess.viewOnly,
-      'photos': StaffMenuAccess.manage,
-      'photo-kiosk': StaffMenuAccess.manage,
-    },
-    StaffRole.customerSupport: {
-      'dashboard': StaffMenuAccess.manage,
-      'visitors': StaffMenuAccess.viewOnly,
-      'tickets': StaffMenuAccess.viewOnly,
-      'packages': StaffMenuAccess.viewOnly,
-      'promotions': StaffMenuAccess.viewOnly,
+      'landmarks': StaffMenuAccess.manage,
+      'facilities': StaffMenuAccess.manage,
       'reservations': StaffMenuAccess.viewOnly,
-      'support': StaffMenuAccess.manage,
     },
+    StaffRole.attractionOperator: {'ride-entry': StaffMenuAccess.manage},
+    StaffRole.admissionStaff: {'validation': StaffMenuAccess.manage},
+    StaffRole.photographer: {'photos': StaffMenuAccess.manage},
+    StaffRole.photoCounterStaff: {'photo-kiosk': StaffMenuAccess.manage},
+    StaffRole.customerSupport: {'support': StaffMenuAccess.manage},
     StaffRole.marketingStaff: {
-      'dashboard': StaffMenuAccess.manage,
-      'packages': StaffMenuAccess.viewOnly,
       'promotions': StaffMenuAccess.manage,
       'reports': StaffMenuAccess.viewOnly,
     },
   };
+
+  String get landingPage => [
+    'validation', 'ride-entry', 'photos', 'photo-kiosk', 'promotions',
+    'support', 'reports', 'reservations',
+  ].where(allows).firstOrNull ?? 'staff-my-work';
 
   static const List<String> menuOrder = [
     'staff-my-work', 'dashboard', 'visitors', 'staff', 'commerce', 'tickets', 'packages', 'photos',

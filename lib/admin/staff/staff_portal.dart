@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
@@ -7,8 +5,6 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../firebase_options.dart';
-import '../../services/application_api.dart';
-import 'staff_access.dart';
 import 'staff_records.dart';
 import 'staff_records_repository.dart';
 import 'staff_portal_policy.dart';
@@ -283,7 +279,7 @@ class _StaffSignedInState extends State<_StaffSignedIn> {
               details: 'Your account is not ready. Please contact your supervisor.',
               onSignOut: widget.session.auth.signOut);
           }
-          return _StaffReadOnlyHome(profile: profile, repository: repo,
+          return _StaffAdminHome(profile: profile, repository: repo,
             auth: widget.session.auth, onSignOut: widget.session.auth.signOut);
         },
       );
@@ -293,8 +289,8 @@ class _StaffSignedInState extends State<_StaffSignedIn> {
 
 /// Shares the EXACT AdminShell/sidebar and feature file used by Super Admin.
 /// Uses the Firebase session supplied by the portal that authenticated staff.
-class _StaffReadOnlyHome extends StatefulWidget {
-  const _StaffReadOnlyHome({
+class _StaffAdminHome extends StatelessWidget {
+  const _StaffAdminHome({
     required this.profile,
     required this.repository,
     required this.auth,
@@ -306,73 +302,21 @@ class _StaffReadOnlyHome extends StatefulWidget {
   final Future<void> Function() onSignOut;
 
   @override
-  State<_StaffReadOnlyHome> createState() => _StaffReadOnlyHomeState();
-}
-
-class _StaffReadOnlyHomeState extends State<_StaffReadOnlyHome> {
-  StaffRole? _role;
-  Timer? _refreshTimer;
-  Timer? _expiryTimer;
-  bool _checking = false;
-
-  @override
-  void initState() {
-    super.initState();
-    unawaited(_readShift());
-    _refreshTimer = Timer.periodic(
-      const Duration(seconds: 20), (_) => unawaited(_readShift()),
-    );
-  }
-
-  Future<void> _readShift() async {
-    if (_checking) return;
-    _checking = true;
-    try {
-      final result = await ApplicationApi(auth: widget.auth)
-          .post('/v1/staff/current-shift');
-      if (!mounted) return;
-      final shift = result['shift'] as Map<String, dynamic>?;
-      final role = StaffRole.fromCode(shift?['role'] as String? ?? '');
-      final expiry = DateTime.tryParse(shift?['endsAt'] as String? ?? '');
-      _expiryTimer?.cancel();
-      if (expiry != null && expiry.isAfter(DateTime.now())) {
-        _expiryTimer = Timer(expiry.difference(DateTime.now()), _clearShift);
-      }
-      if (_role != role) setState(() => _role = role);
-    } catch (_) {
-      _clearShift();
-    } finally {
-      _checking = false;
-    }
-  }
-
-  void _clearShift() {
-    if (mounted && _role != null) setState(() => _role = null);
-  }
-
-  @override
-  void dispose() {
-    _refreshTimer?.cancel();
-    _expiryTimer?.cancel();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) => Theme(
     data: adminTheme(context),
     child: AdminShell(
-    key: ValueKey('staff-shell-${widget.profile.uid}-${_role?.code}'),
+    key: ValueKey(('staff-shell', profile.uid, profile.eligibleRoles.map((role) => role.code).join(','))),
     repository: StaffScopedAdminRepository(
-      auth: widget.auth,
-      db: widget.repository.db,
-      profile: widget.profile,
+      auth: auth,
+      db: repository.db,
+      profile: profile,
     ),
-    adminName: widget.profile.fullName,
-    adminEmail: widget.profile.email,
-    onSignOut: widget.onSignOut,
-    portalNavigation: StaffPortalNavigation.onDuty(_role),
-    staffWorkDb: widget.repository.db,
-    staffWorkProfile: widget.profile,
+    adminName: profile.fullName,
+    adminEmail: profile.email,
+    onSignOut: onSignOut,
+    portalNavigation: StaffPortalNavigation.employee(profile),
+    staffWorkDb: repository.db,
+    staffWorkProfile: profile,
   ));
 }
 

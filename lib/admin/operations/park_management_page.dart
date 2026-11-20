@@ -7,7 +7,8 @@ import '../../park/venue_configuration.dart';
 
 class ParkManagementPage extends StatefulWidget {
   final ParkAdminRepository repository;
-  const ParkManagementPage({super.key, required this.repository});
+  final bool showVoucherMetrics;
+  const ParkManagementPage({super.key, required this.repository, this.showVoucherMetrics = true});
   @override
   State<ParkManagementPage> createState() => _ParkManagementPageState();
 }
@@ -172,7 +173,7 @@ class _ParkManagementPageState extends State<ParkManagementPage> {
                       }).length}',
                       'Running promotions with 80%+ quota used', Icons.warning_amber_outlined),
                   ])
-                else
+                else if (widget.showVoucherMetrics)
                   StreamBuilder<List<Map<String, dynamic>>>(
                     stream: vouchers,
                     builder: (context, result) {

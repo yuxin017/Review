@@ -14,7 +14,7 @@ import 'live_crowd_panel.dart';
 
 class CrowdMonitoringPage extends StatefulWidget {
   final ParkAdminRepository repository;
-  final VoidCallback onManageFacilities;
+  final VoidCallback? onManageFacilities;
   final AttractionCameraStore? cameras;
   const CrowdMonitoringPage({
     super.key,
@@ -102,11 +102,12 @@ class _CrowdMonitoringPageState extends State<CrowdMonitoringPage> {
                     : Icons.videocam_outlined,
                 onPressed: () => setState(() => showCameras = !showCameras),
               ),
-            AdminButton(
-              'Manage Facilities',
-              icon: Icons.attractions_outlined,
-              onPressed: widget.onManageFacilities,
-            ),
+            if (widget.onManageFacilities != null)
+              AdminButton(
+                'Manage Facilities',
+                icon: Icons.attractions_outlined,
+                onPressed: widget.onManageFacilities,
+              ),
           ],
         ),
       ),

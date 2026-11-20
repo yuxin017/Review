@@ -468,6 +468,35 @@ class StaffScopedAdminRepository extends AdminRepository {
   final StaffProfile profile;
   late final _api = ApplicationApi(auth: auth);
 
+  final _facilityAccess = ValueNotifier<bool>(true);
+
+  @override
+  AdminAttractionStore get facilityStore => AdminAttractionRepository(firestore: db);
+
+  @override
+  SlotReader get facilitySlots => AttractionRepository(firestore: db);
+
+  @override
+  ValueListenable<bool> get facilityAccess => _facilityAccess;
+
+  @override
+  void dispose() => _facilityAccess.dispose();
+
+  @override
+  ParkAdminRepository get parkRepository => FirebaseParkAdminRepository(db: db, auth: auth);
+
+  @override
+  Stream<List<AdminReservation>> reservations(DateTime day) =>
+      AdminReservationRepository(db).watchDay(day);
+
+  @override
+  SupportRepository? get supportRepository =>
+      profile.eligibleRoles.contains(StaffRole.customerSupport)
+          ? FirebaseSupportRepository(
+              firestore: db, userId: userId, actorName: profile.fullName, isAdmin: true,
+            )
+          : null;
+
   @override
   VisitRepository get visitRepository => FirebaseVisitRepository(
     firestore: db, authentication: auth, staffCheckIn: true,

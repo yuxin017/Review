@@ -1,5 +1,6 @@
 'use strict';
 const crypto=require('node:crypto'),{HttpsError}=require('firebase-functions/v2/https');
+const {requireStaffRole}=require('./staff_shift_access');
 const fail=(code,message)=>{throw new HttpsError(code,message);};
 const refId=value=>typeof value==='string'&&/^[A-Za-z0-9_-]{2,100}$/.test(value);
 function integer(value,min,max,label){if(!Number.isInteger(value)||value<min||value>max)fail('invalid-argument',`Review ${label}.`);return value;}
@@ -7,10 +8,13 @@ function text(value,min,max,label){if(typeof value!=='string'||value.trim().leng
 function timestamp(value,label){const date=new Date(value);if(!Number.isFinite(date.getTime()))fail('invalid-argument',`Choose ${label}.`);return date;}
 const parkDay=date=>new Date(date.getTime()+8*3600000).toISOString().slice(0,10);
 function createParkManagementHandlers({db,FieldValue,clock=()=>new Date(),fetchWeather=globalThis.fetch}){
-  async function access(request,staff=true){
+  async function access(request,staff=true,roles=[]){
     const uid=request.auth?.uid,token=request.auth?.token;
     if(!uid||token?.email_verified!==true)fail('unauthenticated','Sign in using a verified account.');
-    if(staff&&token.admin!==true)fail('permission-denied','This action requires administrator access.');
+    if(staff&&token.admin!==true){
+      if(!roles.length)fail('permission-denied','This action requires administrator access.');
+      await requireStaffRole({db,request,now:clock()},roles);
+    }
     const [a,s]=await db.getAll(db.doc('visitorAccess/'+uid),db.doc('accountSecurity/'+uid));
     if(a.exists&&a.data().status!=='active')fail('permission-denied','This account is restricted. Please contact support.');
     if(s.data()?.closing||s.data()?.revokedBefore>=(token.auth_time??0))fail('unauthenticated','Your session has ended. Please sign in again.');
@@ -18,7 +22,7 @@ function createParkManagementHandlers({db,FieldValue,clock=()=>new Date(),fetchW
   }
   async function audit(uid,action,subject){await db.collection('adminAudit').add({actorUid:uid,action,subject,createdAt:FieldValue.serverTimestamp()});}
   async function saveCampaign(request){
-    const uid=await access(request),d=request.data,code=text(d.code,2,32,'the promotion code').toUpperCase();
+    const uid=await access(request,true,['marketing_staff']),d=request.data,code=text(d.code,2,32,'the promotion code').toUpperCase();
     if(!/^[A-Z0-9_-]+$/.test(code))fail('invalid-argument','Use letters, numbers, underscores or hyphens for the code.');
     const startsAt=timestamp(d.startsAt,'a start date'),endsAt=timestamp(d.endsAt,'an end date');if(endsAt<=startsAt)fail('invalid-argument','End the promotion after its start date.');
     if(!['percent','fixed'].includes(d.type)||!Array.isArray(d.scopes)||!d.scopes.length||d.scopes.some(x=>!['photos','tickets'].includes(x)))fail('invalid-argument','Choose the promotion type and eligible purchases.');
@@ -27,7 +31,7 @@ function createParkManagementHandlers({db,FieldValue,clock=()=>new Date(),fetchW
     await audit(uid,'campaign_saved',code);return{saved:true,code};
   }
   async function saveLoyalty(request){
-    const uid=await access(request),d=request.data;
+    const uid=await access(request,true,['marketing_staff']),d=request.data;
     const fields={purchasePointsPerRinggit:integer(d.purchasePointsPerRinggit,0,100,'purchase points'),ridePoints:integer(d.ridePoints,0,10000,'attraction check-in points'),noShowPenalty:integer(d.noShowPenalty??0,0,10000,'missed reservation points'),noShowThreshold:integer(d.noShowThreshold??2,2,20,'missed reservations before deduction (2 to 20)'),noShowEnabled:d.noShowEnabled===true,updatedAt:FieldValue.serverTimestamp(),updatedBy:uid};
     await db.runTransaction(async tx=>{const ref=db.doc('parkSettings/loyalty'),old=await tx.get(ref);tx.set(ref,{...fields,noShowEffectiveAt:fields.noShowEnabled&&old.data()?.noShowEnabled!==true?clock():old.data()?.noShowEffectiveAt??clock()});});
     await audit(uid,'loyalty_rules_saved','loyalty');return{saved:true};
@@ -61,14 +65,14 @@ function createParkManagementHandlers({db,FieldValue,clock=()=>new Date(),fetchW
     return {saved: true};
   }
   async function saveReward(request){
-    const uid=await access(request),d=request.data,id=d.id??crypto.randomUUID();if(!refId(id))fail('invalid-argument','Choose a valid reward.');
+    const uid=await access(request,true,['marketing_staff']),d=request.data,id=d.id??crypto.randomUUID();if(!refId(id))fail('invalid-argument','Choose a valid reward.');
     if(!['dining','shopping','photo'].includes(d.category))fail('invalid-argument','Choose a reward category.');
     for(const key of ['terms','instructions'])if(!Array.isArray(d[key])||d[key].length>12||d[key].some(t=>typeof t!=='string'||t.length>300))fail('invalid-argument','Keep reward terms and instructions to twelve clear lines.');
     const fields={name:text(d.name,2,100,'the reward name'),subtitle:text(d.subtitle??'',0,200,'the subtitle'),benefit:text(d.benefit,2,200,'the reward benefit'),category:d.category,pointsCost:integer(d.pointsCost,1,1000000,'the points cost'),validityDays:integer(d.validityDays,1,365,'the reward validity'),sortOrder:integer(d.sortOrder??0,0,10000,'the reward order'),terms:d.terms,instructions:d.instructions,active:d.active===true,updatedAt:FieldValue.serverTimestamp(),updatedBy:uid};
     await db.doc('rewardCatalogue/'+id).set(fields,{merge:true});await audit(uid,'reward_saved',id);return{saved:true,id};
   }
   async function saveWeather(request){
-    const uid=await access(request),d=request.data;
+    const uid=await access(request,true,['marketing_staff']),d=request.data;
     for(const [key,bound]of [['latitude',90],['longitude',180]])if(d[key]!==null&&d[key]!==undefined&&(!Number.isFinite(d[key])||Math.abs(d[key])>bound))fail('invalid-argument','Enter the actual park location.');
     if(d.enabled===true&&(!Number.isFinite(d.latitude)||!Number.isFinite(d.longitude)))fail('invalid-argument','Set the park location before enabling weather compensation.');
     const fields={enabled:d.enabled===true,latitude:d.latitude??null,longitude:d.longitude??null,parkName:text(d.parkName??'Theme Park',2,100,'the park name'),rainThresholdMm:typeof d.rainThresholdMm==='number'&&d.rainThresholdMm>=.1&&d.rainThresholdMm<=100?d.rainThresholdMm:fail('invalid-argument','Choose a rain threshold from 0.1 to 100 mm.'),voucherBenefit:text(d.voucherBenefit??'Rainy-day park benefit',2,200,'the compensation benefit'),validityDays:integer(d.validityDays??30,1,365,'voucher validity'),updatedBy:uid,updatedAt:FieldValue.serverTimestamp()};
@@ -118,7 +122,7 @@ function createParkManagementHandlers({db,FieldValue,clock=()=>new Date(),fetchW
     const last=page.docs.at(-1);await dispatch.set({cursor:page.size===100?{validUntil:last.data().validUntil,id:last.id}:null,checkedAt:clock()});return{issued};
   }
   async function report(request){
-    await access(request);const start=timestamp(request.data.start,'the report start date'),end=timestamp(request.data.end,'the report end date');
+    await access(request,true,['operations_manager','marketing_staff']);const start=timestamp(request.data.start,'the report start date'),end=timestamp(request.data.end,'the report end date');
     if(end<=start||end-start>93*86400000)fail('invalid-argument','Choose a report period up to 93 days.');
     async function rows(name,field,fields){const result=await db.collection(name).where(field,'>=',start).where(field,'<',end).select(...fields).limit(10001).get();if(result.size>10000)fail('resource-exhausted','Choose a shorter report period.');return result.docs.map(d=>({id:d.id,...d.data()}));}
     const [orders,photos,admissions,reservations,visits,vouchers,voucherUses]=await Promise.all([rows('orders','createdAt',['ownerUid','totalMinor','status','items','createdAt']),rows('photoOrders','createdAt',['ownerUid','totalMinor','status','items','createdAt']),rows('admissions','createdAt',['ownerUid','createdAt']),rows('reservations','createdAt',['ownerUid','status','attractionName','createdAt']),rows('rideAdmissions','createdAt',['ownerUid','attractionId','attractionName','createdAt']),rows('rewardVouchers','issuedAt',['status']),rows('rewardVouchers','usedAt',['usedAt'])]);

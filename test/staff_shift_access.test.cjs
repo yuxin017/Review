@@ -2,7 +2,7 @@
 
 const assert = require('node:assert/strict');
 const {test} = require('node:test');
-const {currentStaffShift, requireStaffShift} = require('../functions/src/staff_shift_access');
+const {currentStaffShift, requireStaffShift, requireStaffRole} = require('../functions/src/staff_shift_access');
 
 const start = date => new Date(date + 'T01:00:00Z');
 const end = date => new Date(date + 'T09:00:00Z');
@@ -76,4 +76,17 @@ test('regular duty has Malaysia working hours without a published shift', async 
   assert.equal(await currentStaffShift({...f, now: end('2026-11-19')}), null);
   f.leave.push({status: 'approved', startOn: '2026-11-19', endOn: '2026-11-19'});
   assert.equal(await currentStaffShift(onDuty), null);
+});
+
+test('portal roles work without a shift and stay scoped to current qualifications', async () => {
+  const f = fixture();
+  f.shifts.length = 0;
+  const request = {auth: {...f.request.auth, token: {...f.request.auth.token, admin: false}}};
+  const options = {...f, request, now: end('2026-11-20')};
+  assert.equal(await requireStaffRole(options, 'admission_staff'), 'worker');
+  assert.equal(await requireStaffRole(options, 'attraction_operator', 'coaster'), 'worker');
+  await assert.rejects(requireStaffRole(options, 'attraction_operator', 'ferris-wheel'), {code: 'permission-denied'});
+  await assert.rejects(requireStaffRole(options, 'marketing_staff'), {code: 'permission-denied'});
+  f.profile.status = 'inactive';
+  await assert.rejects(requireStaffRole(options, 'admission_staff'), {code: 'permission-denied'});
 });
