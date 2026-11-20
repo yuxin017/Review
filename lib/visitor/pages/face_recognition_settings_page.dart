@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'selfie_camera_stub.dart' if (dart.library.html) 'selfie_camera_web.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:image/image.dart' as img;
 import '../../accounts/account_widgets.dart';
@@ -19,19 +21,24 @@ class _FaceRecognitionSettingsPageState
     extends State<FaceRecognitionSettingsPage> {
   late final repo = widget.repository ?? FirebasePhotoRepository(),
       profile = repo.faceProfile();
-  bool consent = false, busy = false;
+  bool consent = false, busy = false, picking = false;
   Uint8List? selfie;
   String? error;
   Future<void> pick(ImageSource source) async {
+    if (busy || picking) return;
+    setState(() { picking = true; error = null; });
     try {
-      final photo = await ImagePicker().pickImage(
-        source: source,
-        maxWidth: 1000,
-        maxHeight: 1000,
-        imageQuality: 85,
-      );
-      if (photo == null) return;
-      final bytes = await photo.readAsBytes();
+      final Uint8List? bytes;
+      if (kIsWeb && source == ImageSource.camera) {
+        bytes = await captureWebSelfie(context);
+      } else {
+        final photo = await ImagePicker().pickImage(
+          source: source, preferredCameraDevice: CameraDevice.front,
+          maxWidth: 1000, maxHeight: 1000, imageQuality: 85,
+        );
+        bytes = await photo?.readAsBytes();
+      }
+      if (bytes == null || !mounted) return;
       if (bytes.length > 8000000) {
         throw StateError('Choose a selfie smaller than 8 MB.');
       }
@@ -58,6 +65,8 @@ class _FaceRecognitionSettingsPageState
               : 'Unable to open the photo. Please try again.',
         );
       }
+    } finally {
+      if (mounted) setState(() => picking = false);
     }
   }
 
@@ -296,7 +305,7 @@ class _FaceRecognitionSettingsPageState
                 Expanded(
                   child: PhotoButton(
                     'Take Selfie',
-                    onPressed: busy ? null : () => pick(ImageSource.camera),
+                    onPressed: (busy || picking) ? null : () => pick(ImageSource.camera),
                     outlined: true,
                     icon: Icons.camera_alt_outlined,
                   ),
@@ -305,7 +314,7 @@ class _FaceRecognitionSettingsPageState
                 Expanded(
                   child: PhotoButton(
                     'Upload Selfie',
-                    onPressed: busy ? null : () => pick(ImageSource.gallery),
+                    onPressed: (busy || picking) ? null : () => pick(ImageSource.gallery),
                     outlined: true,
                     icon: Icons.photo_library_outlined,
                   ),

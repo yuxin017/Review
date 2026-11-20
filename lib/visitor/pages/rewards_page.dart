@@ -372,19 +372,63 @@ class _RewardsPageState extends State<RewardsPage> {
     return ListView(
       padding: const EdgeInsets.fromLTRB(17, 8, 17, 24),
       children: [
-        Card(child: ListTile(
-          leading: const Icon(Icons.stars_outlined),
-          title: Text('${current.name} member'),
-          subtitle: Text(next == null
-              ? '$earned lifetime points · Highest tier'
-              : '$earned lifetime points · ${next.minPoints - earned} to ${next.name}'),
-        )),
+        Container(
+          padding: const EdgeInsets.all(22),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(22),
+            gradient: const LinearGradient(colors: [Color(0xFF42252C), Color(0xFF783847)]),
+          ),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(children: [
+              Expanded(child: Text('${current.name} Member',
+                style: const TextStyle(fontSize: 27, fontWeight: FontWeight.w700, color: Colors.white))),
+              const Icon(Icons.stars_outlined, size: 38, color: Color(0xFFFFD998)),
+            ]),
+            const SizedBox(height: 8),
+            Text('$earned lifetime points', style: const TextStyle(color: Color(0xFFFCE4CF))),
+            if (next != null) ...[
+              const SizedBox(height: 14),
+              LinearProgressIndicator(
+                value: ((earned - current.minPoints) / (next.minPoints - current.minPoints)).clamp(0.0, 1.0).toDouble(),
+                backgroundColor: const Color(0xFF9F6772), color: const Color(0xFFFFD998),
+              ),
+              const SizedBox(height: 7),
+              Text('${next.minPoints - earned} points to ${next.name}',
+                style: const TextStyle(color: Colors.white)),
+            ],
+            const SizedBox(height: 14),
+            FilledButton.tonal(
+              onPressed: () => go('catalogue'),
+              child: const Text('View rewards'),
+            ),
+          ]),
+        ),
+        const SizedBox(height: 14),
+        Card(child: Row(children: [
+          Expanded(child: ListTile(
+            leading: const Icon(Icons.stars_outlined),
+            title: Text('${store.balance}'),
+            subtitle: const Text('Points'),
+            onTap: () => go('points'),
+          )),
+          Expanded(child: ListTile(
+            leading: const Icon(Icons.confirmation_number_outlined),
+            title: const Text('Vouchers'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => go('vouchers'),
+          )),
+        ])),
+        const SizedBox(height: 16),
+        Text('Membership tiers', style: Theme.of(context).textTheme.titleLarge),
         const SizedBox(height: 12),
         for (final level in levels)
           Card(child: Padding(
             padding: const EdgeInsets.all(16),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(level.name, style: Theme.of(context).textTheme.titleMedium),
+              Row(children: [
+                Expanded(child: Text(level.name, style: Theme.of(context).textTheme.titleMedium)),
+                if (level.key == current.key) const Chip(label: Text('Current tier')),
+              ]),
               Text('${level.minPoints} lifetime points'),
               if (level.description.isNotEmpty) Text(level.description),
               for (final perk in level.highlights) Text('• $perk'),
@@ -394,11 +438,6 @@ class _RewardsPageState extends State<RewardsPage> {
                 const Text('Upgrade reward · Food voucher'),
             ]),
           )),
-        const SizedBox(height: 12),
-        OutlinedButton(
-          onPressed: () => go('catalogue'),
-          child: const Text('Browse redeemable rewards'),
-        ),
       ],
     );
   }

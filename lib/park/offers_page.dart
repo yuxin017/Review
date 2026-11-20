@@ -103,20 +103,9 @@ class _ParkOffersPageState extends State<ParkOffersPage> {
     body: ListView(
       padding: const EdgeInsets.all(22),
       children: [
-        const Text(
-          'A little more magic for your visit',
-          style: TextStyle(
-            fontSize: 26,
-            fontWeight: FontWeight.w700,
-            color: photoInk,
-          ),
-        ),
-        const SizedBox(height: 12),
-        const Text(
-          'Discover current offers and benefits. Each offer shows where it applies and how to use it.',
-          style: TextStyle(height: 1.6, color: Color(0xFF7C8289)),
-        ),
-        const SizedBox(height: 23),
+        const Text('Current promotions', style: TextStyle(
+          fontSize: 26, fontWeight: FontWeight.w800, color: photoInk)),
+        const SizedBox(height: 14),
         StreamBuilder<Map<String, dynamic>?>(
           stream: weather,
           builder: (context, s) {
@@ -284,11 +273,15 @@ class _ParkOffersPageState extends State<ParkOffersPage> {
                 ),
               );
             }
-            return Column(
-              children: [
+            return LayoutBuilder(builder: (context, bounds) {
+              final width = bounds.maxWidth.clamp(0.0, 380.0).toDouble();
+              return SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 for (final o in rows)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 20),
+                  Container(
+                    width: rows.length == 1 ? width : width * .92,
+                    margin: const EdgeInsets.only(right: 12, bottom: 12),
                     child: PhotoPanel(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -297,7 +290,7 @@ class _ParkOffersPageState extends State<ParkOffersPage> {
                             padding: const EdgeInsets.all(20),
                             decoration: BoxDecoration(
                               gradient: const LinearGradient(
-                                colors: [photoRose, Color(0xFFD7A295)],
+                                colors: [Color(0xFF4A232D), Color(0xFF853D4B)],
                               ),
                               borderRadius: BorderRadius.circular(11),
                             ),
@@ -306,10 +299,10 @@ class _ParkOffersPageState extends State<ParkOffersPage> {
                               children: [
                                 const Icon(
                                   Icons.redeem_outlined,
-                                  size: 35,
-                                  color: Colors.white,
+                                  size: 27,
+                                  color: Color(0xFFFFDBA9),
                                 ),
-                                const SizedBox(height: 20),
+                                const SizedBox(height: 12),
                                 Text(
                                   o['type'] == 'percent'
                                       ? '${o['value']}% OFF'
@@ -418,8 +411,9 @@ class _ParkOffersPageState extends State<ParkOffersPage> {
                       ),
                     ),
                   ),
-              ],
-            );
+                ]),
+              );
+            });
           },
         ),
       ],

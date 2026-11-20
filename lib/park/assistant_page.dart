@@ -16,12 +16,14 @@ class AssistantMessage {
   final String text, language;
   final bool fromVisitor;
   final List<String> actions;
+  final String? source;
   final DateTime time;
   AssistantMessage(
     this.text,
     this.language, {
     this.fromVisitor = false,
     this.actions = const [],
+    this.source,
   }) : time = DateTime.now();
 }
 
@@ -103,6 +105,7 @@ class _ParkAssistantPageState extends State<ParkAssistantPage> {
         response['answer'] as String,
         lang,
         actions: (response['actions'] as List? ?? []).cast<String>(),
+        source: response['source'] as String?,
       );
       setState(() => messages.add(message));
       if (voice) await speak(message);
@@ -364,6 +367,11 @@ class _ParkAssistantPageState extends State<ParkAssistantPage> {
                               ],
                             ),
                           ),
+                          if (m.source case final String source)
+                            Padding(
+                              padding: const EdgeInsets.only(left: 52, top: 3),
+                              child: Text(source, style: const TextStyle(fontSize: 10, color: photoRose)),
+                            ),
                           if (m.actions.isNotEmpty)
                             Padding(
                               padding: const EdgeInsets.only(left: 52, top: 6),

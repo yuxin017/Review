@@ -99,8 +99,6 @@ class _PurchaseHistoryBodyState extends State<PurchaseHistoryBody> {
             decoration:const InputDecoration(hintText:'Search purchase or order number',
               prefixIcon:Icon(Icons.search),border:OutlineInputBorder(),isDense:true)),
           const SizedBox(height:21),
-          const Text('Recent Purchases',style:TextStyle(fontSize:21,fontWeight:FontWeight.w700)),
-          const SizedBox(height:12),
           if(photos.hasError) const PhotoPanel(child:Text('Photo orders cannot be loaded.')),
           if(souvenirs.hasError) const PhotoPanel(child:Text('Souvenir orders cannot be loaded. Check Firestore permissions.')),
           if(matched.isEmpty && !photos.hasError && !souvenirs.hasError)
@@ -109,6 +107,19 @@ class _PurchaseHistoryBodyState extends State<PurchaseHistoryBody> {
           for(final row in matched)
             Padding(padding:const EdgeInsets.only(bottom:12),child:PhotoPanel(
               child:Column(crossAxisAlignment:CrossAxisAlignment.stretch,children:[
+                Row(children: [
+                  Expanded(child: Text(row.ticket != null ? 'Park Tickets' : row.photo != null ? 'Smart Photos' : 'Park Shop',
+                    style: const TextStyle(fontWeight: FontWeight.w700))),
+                  Text(row.souvenir?.data()['status'] == 'refunded' || row.ticket?.status == 'refunded'
+                      ? 'Refunded'
+                      : row.souvenir?.data()['refundStatus'] == 'requested'
+                          ? 'Refund requested'
+                          : row.ticket != null && row.ticket!.status != 'completed'
+                              ? 'Order details'
+                              : 'Confirmed',
+                    style: const TextStyle(color: photoRose, fontWeight: FontWeight.w600, fontSize: 12)),
+                ]),
+                const Divider(height: 20),
                 Row(children:[
                   CircleAvatar(backgroundColor:const Color(0xFFF3E3DE),
                     child:Icon(row.ticket!=null?Icons.confirmation_number_outlined:
@@ -121,7 +132,7 @@ class _PurchaseHistoryBodyState extends State<PurchaseHistoryBody> {
                     const SizedBox(height:4),
                     Text(row.ticket?.reference ?? (row.photo!=null
                       ? photoOrderReference(row.photo!.id)
-                      : '#${row.souvenir!.id.substring(0,10).toUpperCase()}'),
+                      : '#${row.souvenir!.id.split('').take(10).join().toUpperCase()}'),
                       style:const TextStyle(fontSize:11,color:Color(0xFF7C8289))),
                     if(row.time!=null) Text('${row.time!.toLocal().day}/${row.time!.toLocal().month}/${row.time!.toLocal().year}',
                       style:const TextStyle(fontSize:11,color:Color(0xFF7C8289))),
@@ -139,11 +150,14 @@ class _PurchaseHistoryBodyState extends State<PurchaseHistoryBody> {
                     : '${(row.souvenir!.data()['items'] as List? ?? []).length} item types · ${row.souvenir!.data()['status']=='refunded'?'Refunded':(row.souvenir!.data()['refundStatus']=='requested'?'Refund requested':'Paid')}',
                   style:const TextStyle(fontSize:12,color:photoRose)),
                 const SizedBox(height:12),
-                if(row.ticket!=null) ...[
-                  PhotoButton('View Tickets',outlined:true,onPressed:()=>widget.onTickets(row.ticket!)),
-                  TextButton(onPressed:()=>downloadTicketReceipt(context,row.ticket!),
-                    child:const Text('View Receipt')),
-                ] else if(row.photo!=null)
+                if(row.ticket!=null)
+                  Wrap(alignment: WrapAlignment.end, spacing: 8, children: [
+                    OutlinedButton(onPressed:()=>downloadTicketReceipt(context,row.ticket!),
+                      child:const Text('Receipt')),
+                    FilledButton(onPressed:()=>widget.onTickets(row.ticket!),
+                      child:const Text('View Tickets')),
+                  ])
+                else if(row.photo!=null)
                   PhotoButton('View Photo Order',outlined:true,onPressed:()=>Navigator.push(
                     context,MaterialPageRoute(builder:(_)=>PhotoOrderDetailPage(
                       repository:widget.photos!,orderId:row.photo!.id))))

@@ -8,8 +8,9 @@ import '../../commerce/stripe_commerce_client.dart';
 import '../widgets/souvenir_product_image.dart';
 
 class SouvenirShopPage extends StatefulWidget {
-  const SouvenirShopPage({super.key, this.initialOrders = false});
+  const SouvenirShopPage({super.key, this.initialOrders = false, this.initialSearch = ''});
   final bool initialOrders;
+  final String initialSearch;
   @override
   State<SouvenirShopPage> createState() => _SouvenirShopPageState();
 }
@@ -37,12 +38,14 @@ class _SouvenirShopPageState extends State<SouvenirShopPage> with WidgetsBinding
   void initState() {
     super.initState();
     _orders = widget.initialOrders;
+    _search = widget.initialSearch;
     WidgetsBinding.instance.addObserver(this);
     _loadPending();
   }
 
   @override
   void dispose() {
+    _searchController.dispose();
     _paymentStatusTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
@@ -487,6 +490,7 @@ class _SouvenirShopPageState extends State<SouvenirShopPage> with WidgetsBinding
 
   String _category = 'All';
   String _search = '';
+  late final _searchController = TextEditingController(text: widget.initialSearch);
 
   Widget _productCard(QueryDocumentSnapshot<Map<String, dynamic>> doc) {
     final p = doc.data();
@@ -753,6 +757,7 @@ class _SouvenirShopPageState extends State<SouvenirShopPage> with WidgetsBinding
                     const SizedBox(height: 14),
                     Container(decoration: _panelDecoration(),
                       child: TextField(
+                        controller: _searchController,
                         onChanged: (value) => setState(() => _search = value),
                         decoration: const InputDecoration(
                           border: InputBorder.none,

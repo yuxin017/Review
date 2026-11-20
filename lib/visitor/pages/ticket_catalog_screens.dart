@@ -30,6 +30,14 @@ class TicketHub extends StatefulWidget {
 
 class _TicketHubState extends State<TicketHub> {
   String category = 'Tickets';
+  String query = '';
+  static const departments = {
+    'Tickets': Icons.confirmation_number_outlined,
+    'Bundles': Icons.groups_outlined,
+    'Food': Icons.restaurant_outlined,
+    'Souvenirs': Icons.shopping_bag_outlined,
+    'Photos': Icons.photo_camera_outlined,
+  };
 
   @override
   Widget build(BuildContext context) {
@@ -44,36 +52,74 @@ class _TicketHubState extends State<TicketHub> {
     return TicketPageBody(
       padding: const EdgeInsets.fromLTRB(17, 0, 17, 16),
       children: [
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _shortcut(
-              Icons.confirmation_number_outlined,
-              'Day & Annual\nPasses',
-              () => onBuy(),
+        DecoratedBox(
+          decoration: BoxDecoration(
+            color: const Color(0xFF632932),
+            borderRadius: BorderRadius.circular(22),
+          ),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            Padding(
+              padding: const EdgeInsets.all(14),
+              child: TextField(
+                key: ValueKey(category),
+                onChanged: (value) => setState(() => query = value.trim().toLowerCase()),
+                decoration: InputDecoration(
+                  hintText: 'Search ${category.toLowerCase()}',
+                  prefixIcon: const Icon(Icons.search),
+                  filled: true, fillColor: Colors.white,
+                ),
+              ),
             ),
-            _shortcut(Icons.qr_code_scanner, 'Add Ticket\n(Scan)', widget.onScan),
-            _shortcut(
-              Icons.account_balance_wallet_outlined,
-              'My Tickets',
-              onTickets,
+            ClipRRect(
+              borderRadius: const BorderRadius.vertical(bottom: Radius.circular(22)),
+              child: InkWell(
+                onTap: () => onBuy(),
+                child: Image.asset('assets/images/ticketing/hero.png',
+                  height: 138, fit: BoxFit.cover, alignment: Alignment.center),
+              ),
             ),
-            _shortcut(Icons.shopping_bag_outlined, 'My Orders', widget.onHistory),
-          ],
-        ),
-        const SizedBox(height: 20),
-        if (widget.showLiveShop) ...[
-          Wrap(spacing: 8, runSpacing: 6, children: [
-            for (final name in ['Tickets', 'Bundles', 'Food', 'Souvenirs', 'Photos'])
-              ChoiceChip(label: Text(name), selected: category == name,
-                onSelected: (_) => setState(() => category = name)),
           ]),
-          const SizedBox(height: 16),
-        ],
+        ),
+        const SizedBox(height: 16),
+        if (widget.showLiveShop)
+          Row(children: [
+            for (final entry in departments.entries)
+              Expanded(child: InkWell(
+                borderRadius: BorderRadius.circular(12),
+                onTap: () => setState(() { category = entry.key; query = ''; }),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 6),
+                  child: Column(children: [
+                    CircleAvatar(
+                      backgroundColor: category == entry.key ? ticketRose : const Color(0xFFF3E4DF),
+                      foregroundColor: category == entry.key ? Colors.white : ticketRose,
+                      child: Icon(entry.value, size: 20),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(entry.key, maxLines: 1, overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600)),
+                  ]),
+                ),
+              )),
+          ]),
+        const SizedBox(height: 14),
+        Row(children: [
+          _shortcut(Icons.qr_code_scanner, 'Scan Ticket', widget.onScan),
+          _shortcut(Icons.account_balance_wallet_outlined, 'My Tickets', onTickets),
+          _shortcut(Icons.shopping_bag_outlined, 'My Orders', widget.onHistory),
+        ]),
+        const SizedBox(height: 22),
         if (category == 'Tickets') ...[
         _section('Day & Annual Passes', () => onBuy()),
         const SizedBox(height: 12),
-        if (journey.loading)
+        if (query.isNotEmpty)
+          ...journey.packages.where((item) => item.name.toLowerCase().contains(query))
+              .map((item) => Card(child: ListTile(
+                title: Text(item.name),
+                trailing: Text(ticketDisplayPrice(context, item.priceMinor)),
+                onTap: () => onSelect(item),
+              )))
+        else if (journey.loading)
           const Center(
             child: Padding(
               padding: EdgeInsets.all(30),
@@ -109,10 +155,10 @@ class _TicketHubState extends State<TicketHub> {
         const SizedBox(height: 18),
         ] else if (category == 'Souvenirs')
           TicketButton('Browse souvenirs', onPressed: () => Navigator.of(context).push(
-            MaterialPageRoute(builder: (_) => const SouvenirShopPage()),
+            MaterialPageRoute(builder: (_) => SouvenirShopPage(initialSearch: query)),
           ))
         else ...[
-          _LiveShopCatalogue(category: category),
+          _LiveShopCatalogue(category: category, term: query),
           if (category == 'Photos') ...[
             const SizedBox(height: 8),
             const Text('Check available formats and final prices in My Photos.'),
@@ -126,37 +172,6 @@ class _TicketHubState extends State<TicketHub> {
           ],
         ],
         const SizedBox(height: 12),
-        InkWell(
-          onTap: onTickets,
-          child: TicketSurface(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-            child: Row(
-              children: [
-                const Icon(Icons.confirmation_number_outlined, size: 28),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'My Digital Tickets',
-                        style: TextStyle(fontWeight: FontWeight.w600),
-                      ),
-                      Text(
-                        '${journey.tickets.where((t) => t.filter == 'Upcoming').length} active tickets',
-                        style: const TextStyle(
-                          color: ticketMuted,
-                          fontSize: 12,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const Icon(Icons.chevron_right),
-              ],
-            ),
-          ),
-        ),
       ],
     );
   }
@@ -269,8 +284,8 @@ class _TicketHubState extends State<TicketHub> {
 }
 
 class _LiveShopCatalogue extends StatelessWidget {
-  const _LiveShopCatalogue({required this.category});
-  final String category;
+  const _LiveShopCatalogue({required this.category, required this.term});
+  final String category, term;
 
   @override
   Widget build(BuildContext context) {
@@ -314,12 +329,22 @@ class _LiveShopCatalogue extends StatelessWidget {
         if (!snapshot.hasData) return const LinearProgressIndicator();
         final items = snapshot.data!.docs.map((doc) => doc.data())
             .where((item) => venues == null || venues.containsKey(item['storeId']))
+            .where((item) => (item['name'] ?? '').toString().toLowerCase().contains(term))
             .toList()
           ..sort((a, b) => (a['name'] ?? '').toString().compareTo((b['name'] ?? '').toString()));
-        if (items.isEmpty) return Text('No ${category.toLowerCase()} available.');
+        if (items.isEmpty) return TicketSurface(
+          child: Text(term.isNotEmpty ? 'No matching products.' :
+            category == 'Bundles' ? 'No group bundles are published yet.' : 'No ${category.toLowerCase()} available.'),
+        );
         return Column(children: [
           for (final item in items)
             Card(child: ListTile(
+              leading: item['imageUrl'] is String && (item['imageUrl'] as String).isNotEmpty
+                  ? ClipRRect(borderRadius: BorderRadius.circular(8), child: Image.network(
+                    item['imageUrl'] as String, width: 54, height: 54, fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => Icon(_TicketHubState.departments[category]),
+                  ))
+                  : Icon(_TicketHubState.departments[category]),
               title: Text((item['name'] ?? category).toString()),
               subtitle: Text([
                 if (category == 'Bundles')

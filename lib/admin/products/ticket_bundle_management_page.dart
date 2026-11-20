@@ -92,6 +92,7 @@ class _TicketBundleManagementPageState extends State<TicketBundleManagementPage>
       setState(() => feedback = 'Create an active admission pass under Tickets & Passes first.');
       return;
     }
+    var publication = (existing?['status'] ?? (docId == null ? 'published' : 'draft')).toString();
     final name = TextEditingController(text: existing?['name']?.toString() ?? 'Family Adventure Bundle');
     final adults = TextEditingController(text: '${existing?['adults'] ?? 2}');
     final children = TextEditingController(text: '${existing?['children'] ?? 2}');
@@ -306,6 +307,13 @@ class _TicketBundleManagementPageState extends State<TicketBundleManagementPage>
           actions: [
             TextButton(onPressed: () => Navigator.pop(ctx),
                 child: const Text('Cancel', style: TextStyle(color: adminRose))),
+            if (publication != 'archived')
+              FilterChip(
+                label: const Text('Publish to Shop'),
+                selected: publication == 'published',
+                onSelected: uploading ? null : (value) =>
+                    update(() => publication = value ? 'published' : 'draft'),
+              ),
             FilledButton(
               onPressed: uploading || !validGroup || !validPrice ? null : () async {
                 if (form.currentState?.validate() != true) return;
@@ -319,7 +327,7 @@ class _TicketBundleManagementPageState extends State<TicketBundleManagementPage>
                     'name': name.text.trim(), 'basePackageId': packageId,
                     'adults': a, 'children': c, 'basePriceMinor': baseMinor,
                     'discountMinor': discountMinor, 'priceMinor': finalMinor,
-                    'currency': 'MYR', 'status': existing?['status'] ?? 'draft',
+                    'currency': 'MYR', 'status': publication,
                     if (imageUrl != null) 'imageUrl': imageUrl,
                     'updatedAt': FieldValue.serverTimestamp(),
                   });
