@@ -9,7 +9,8 @@ import 'pages/map_page.dart';
 import 'pages/queue_page.dart';
 import 'pages/profile_page.dart';
 import 'pages/souvenir_shop_page.dart'; // PARKSMART_V16_REFUND_CROWD_HISTORY
-import 'pages/purchase_history_page.dart';
+import '../photos/photo_checkout_pages.dart' show PhotoPaymentPage;
+import '../photos/photo_repository.dart' show FirebasePhotoRepository;
 import 'widgets/visitor_bottom_nav.dart';
 
 class VisitorMainPage extends StatefulWidget {
@@ -64,13 +65,19 @@ class _VisitorMainPageState extends State<VisitorMainPage> {
       if (kind == 'ticket') {
         unawaited(_verifyReturnedTicket());
       } else if (kind == 'photo') {
-        Navigator.of(context).push(MaterialPageRoute(builder: (_) =>
-          const CombinedPurchaseHistoryPage()));
+        _openReturnedPhoto(orderId);
       } else {
         Navigator.of(context).push(MaterialPageRoute(builder: (_) =>
           const SouvenirShopPage(initialOrders: true)));
       }
     });
+  }
+
+  void _openReturnedPhoto(String orderId) {
+    Navigator.of(context).push(MaterialPageRoute(builder: (_) => PhotoPaymentPage(
+      repository: FirebasePhotoRepository(),
+      returningPaymentId: orderId,
+    )));
   }
 
   Future<void> _verifyReturnedTicket() async {
@@ -122,7 +129,15 @@ class _VisitorMainPageState extends State<VisitorMainPage> {
     }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || _commerceReturnOpened || !Uri.base.queryParameters.containsKey('commerce_payment')) return;
-      _commerceReturnOpened=true;
+      _commerceReturnOpened = true;
+      final query = Uri.base.queryParameters;
+      if (query['purchase_type'] == 'photo') {
+        final id = query['order'];
+        if (id != null && RegExp(r'^[a-f0-9]{64}$').hasMatch(id)) {
+          _openReturnedPhoto(id);
+        }
+        return;
+      }
       Navigator.of(context).push(MaterialPageRoute(builder: (_) =>
         const SouvenirShopPage(initialOrders:true)));
     });

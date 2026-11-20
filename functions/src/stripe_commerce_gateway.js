@@ -144,7 +144,7 @@ function createCommerceStripeGateway({db, FieldValue, photos, projectId, getStri
       tx.create(ref,payload);
       return payload;
     });
-    if (record.status==='paid') return {status:'paid',orderId:id};
+    if (record.status==='paid') return {status:'paid',orderId:id,photoOrderId:record.photoOrderId??null};
     if (record.status==='manual_review') return {status:'manual_review',orderId:id};
     if (record.status==='expired') bad('failed-precondition','Payment expired. Create a new checkout.');
     if (record.url && record.sessionId) return {status:'pending',orderId:id,url:record.url};
@@ -258,17 +258,20 @@ function createCommerceStripeGateway({db, FieldValue, photos, projectId, getStri
     const uid=auth(request),id=request.data?.orderId;
     if(!/^[a-f0-9]{64}$/.test(id??''))bad('invalid-argument','Invalid order reference.');
     const ref=paymentRef(id),doc=await ref.get();
-    if(!doc.exists||doc.data().ownerUid!==uid)bad('permission-denied','Order not found for this account.');
+    if(!doc.exists||doc.data().ownerUid!==uid||
+        (request.data.type && doc.data().type!==request.data.type))
+      bad('permission-denied','Order not found for this account.');
     const value=doc.data();
     if(value.status==='paid'||value.status==='manual_review'||value.status==='expired'||value.status==='refunded'){
       return {status:value.status,orderId:id,photoOrderId:value.photoOrderId??null};
     }
-    if(!value.sessionId)return {status:'pending',orderId:id,url:value.url??null};
+    if(!value.sessionId)return {status:'pending',orderId:id};
     const session=await api(getStripeKey(),'GET','/checkout/sessions/'+encodeURIComponent(value.sessionId));
     if(session.payment_status==='paid')await fulfill(session);
     else if(session.status==='expired')await expired(session);
     const updated=(await ref.get()).data();
-    return {status:updated.status,orderId:id,photoOrderId:updated.photoOrderId??null,url:updated.url??null};
+    return {status:updated.status,orderId:id,photoOrderId:updated.photoOrderId??null,url:updated.status==='pending' && session.status==='open' &&
+      session.payment_status==='unpaid' ? session.url??null : null};
   }
   return {quote,start,status,fulfill,expired};
 }

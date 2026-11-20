@@ -54,8 +54,8 @@ class StripeCommerceClient {
         ...payload, 'type':type, 'requestId':requestId, 'returnUrl':returnUrl,
       });
 
-  Future<Map<String,dynamic>> status(String orderId) =>
-      post('stripeCommerceStatus', {'orderId':orderId});
+  Future<Map<String,dynamic>> status(String orderId, {String? type}) =>
+      post('stripeCommerceStatus', {'orderId':orderId, if (type != null) 'type': type});
 
   // PARKSMART_V15_PAYMENT_CROWD: verified server-only payment operations.
   Future<Map<String, dynamic>> cancel(String orderId) =>
@@ -71,7 +71,7 @@ class StripeCommerceClient {
   Future<Map<String,dynamic>> recoverCheckout(String requestId) =>
       post('stripeCommerceRecover', {'type':'souvenir','requestId':requestId});
 
-  Future<void> openCheckout(String url) async {
+  Future<void> openCheckout(String url, {bool keepCurrentTab = false}) async {
     final uri = Uri.tryParse(url);
     if (uri == null || uri.scheme != 'https' ||
         uri.host != 'checkout.stripe.com') {
@@ -79,7 +79,7 @@ class StripeCommerceClient {
     }
     // PARKSMART_V16_REFUND_CROWD_HISTORY: web uses current tab, not an extra browser tab.
     final opened = kIsWeb
-        ? await launchUrl(uri, mode: LaunchMode.platformDefault, webOnlyWindowName: '_self')
+        ? await launchUrl(uri, mode: LaunchMode.platformDefault, webOnlyWindowName: keepCurrentTab ? '_blank' : '_self')
         : await launchUrl(uri, mode: LaunchMode.externalApplication);
     if (!opened) {
       throw StateError('Could not open the secure checkout page.');

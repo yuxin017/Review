@@ -941,10 +941,12 @@ Future<Map<String, dynamic>> confirmPhotoPurchase(
 class PhotoPaymentPage extends StatefulWidget {
   final PhotoRepository repository;
   final String promoCode;
+  final String? returningPaymentId;
   const PhotoPaymentPage({
     super.key,
     required this.repository,
     this.promoCode = '',
+    this.returningPaymentId,
   });
   @override
   State<PhotoPaymentPage> createState() => _PhotoPaymentPageState();
@@ -959,6 +961,10 @@ class _PhotoPaymentPageState extends State<PhotoPaymentPage> {
     auth: widget.repository is FirebasePhotoRepository
       ? (widget.repository as FirebasePhotoRepository).auth : null);
   String? _pendingCommerceId;
+  String? _resumeUrl;
+  bool _loadingPending = true;
+  bool get _keepKioskOpen => widget.repository is FirebasePhotoRepository &&
+      !(widget.repository as FirebasePhotoRepository).persistCart;
   String? _pendingPhotoRequestId;
   String? error;
   String get _stripePhotoKey => 'photo_stripe_pending_${widget.repository.uid}';
@@ -973,15 +979,29 @@ class _PhotoPaymentPageState extends State<PhotoPaymentPage> {
   @override
   void initState() {
     super.initState();
-    refresh();
     _loadStripePending();
   }
 
   Future<void> _loadStripePending() async {
-    final prefs=await SharedPreferences.getInstance();
-    final id=prefs.getString(_stripePhotoKey);
-    if(mounted && id!=null && id.isNotEmpty) setState(()=>_pendingCommerceId=id);
+    await widget.repository.cart.ready;
+    final prefs = await SharedPreferences.getInstance();
+    final id = widget.returningPaymentId ?? prefs.getString(_stripePhotoKey);
+    if (!mounted) return;
+    setState(() {
+      _pendingCommerceId = id;
+      _loadingPending = false;
+    });
+    if (id != null) await _checkStripePhoto(showPendingMessage: false);
+    if (mounted && widget.repository.cart.items.isNotEmpty) {
+      await refresh(clearError: false);
+    }
+    if (mounted && widget.repository.cart.items.isEmpty) {
+      setState(() => loading = false);
+    }
   }
+
+  Future<void> _openStripePhoto(String url) =>
+      _commerce.openCheckout(url, keepCurrentTab: _keepKioskOpen);
 
   Future<void> _finishPhoto(String orderId) async {
     final prefs=await SharedPreferences.getInstance();
@@ -992,35 +1012,63 @@ class _PhotoPaymentPageState extends State<PhotoPaymentPage> {
       PhotoPaymentSuccessPage(repository:widget.repository,orderId:orderId)));
   }
 
-  Future<void> _checkStripePhoto() async {
-    final id=_pendingCommerceId;
-    if(id==null || busy)return;
-    setState(() {busy=true;error=null;});
+  Future<void> _checkStripePhoto({bool showPendingMessage = true}) async {
+    final id = _pendingCommerceId;
+    if (id == null || busy) return;
+    setState(() { busy = true; error = null; _resumeUrl = null; });
     try {
-      final result=await _commerce.status(id);
-      if(result['status']=='paid' && result['photoOrderId'] is String) {
+      final result = await _commerce.status(id, type: 'photo');
+      if (result['status'] == 'paid' && result['photoOrderId'] is String) {
         await _finishPhoto(result['photoOrderId'] as String);
-      } else if(mounted) {
-        setState(() => error=result['status']=='manual_review'
-          ? 'Payment received. Photo fulfillment needs staff review. Do not pay again.'
-          : 'Payment not yet confirmed. Complete checkout, then check again.');
+        return;
       }
-    }catch(e){if(mounted)setState(()=>error=e.toString());}
-    finally{if(mounted)setState(()=>busy=false);}
+      if (result['status'] == 'expired') {
+        final prefs = await SharedPreferences.getInstance();
+        if (prefs.getString(_stripePhotoKey) == id) await prefs.remove(_stripePhotoKey);
+        if (mounted) setState(() {
+          _pendingCommerceId = null;
+          _pendingPhotoRequestId = null;
+          error = 'Checkout expired. You can start a new payment.';
+        });
+        return;
+      }
+      if (mounted) setState(() {
+        _resumeUrl = result['status'] == 'pending' ? result['url'] as String? : null;
+        error = result['status'] == 'manual_review' || result['status'] == 'paid'
+            ? 'Payment received. Your photo order is still being confirmed.'
+            : showPendingMessage
+                ? 'Payment has not been confirmed yet.'
+                : null;
+      });
+    } catch (_) {
+      if (mounted) setState(() => error = 'Could not check this payment. Try again.');
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
   }
 
-  Future<void> refresh() async {
+  Future<void> _resumeStripePhoto() async {
+    final url = _resumeUrl;
+    if (url == null || busy) return;
+    try {
+      await _openStripePhoto(url);
+    } catch (e) {
+      if (mounted) setState(() => error = photoError(e));
+    }
+  }
+
+  Future<void> refresh({bool clearError = true}) async {
     final current = ++generation;
     setState(() {
       loading = true;
-      error = null;
+      if (clearError) error = null;
     });
     try {
       final value = await widget.repository.request('quote', body);
       if (mounted && current == generation) setState(() => quote = value);
     } catch (e) {
       if (mounted && current == generation) {
-        setState(() => error = e.toString());
+        setState(() => error = photoError(e));
       }
     } finally {
       if (mounted && current == generation) setState(() => loading = false);
@@ -1028,7 +1076,7 @@ class _PhotoPaymentPageState extends State<PhotoPaymentPage> {
   }
 
   Future<void> pay() async {
-    if (busy || loading || quote == null || !accepted) return;
+    if (busy || loading || _loadingPending || _pendingCommerceId != null || quote == null || !accepted) return;
     setState(() {
       busy = true;
       error = null;
@@ -1053,14 +1101,14 @@ class _PhotoPaymentPageState extends State<PhotoPaymentPage> {
         if(response['status']=='paid' && response['photoOrderId'] is String) {
           await _finishPhoto(response['photoOrderId'] as String);
         } else if(response['url'] is String) {
-          await _commerce.openCheckout(response['url'] as String);
-          if(mounted)setState(()=>error='Return here and use Check Payment Status after payment.');
+          _resumeUrl = response['url'] as String;
+          await _openStripePhoto(_resumeUrl!);
         } else {
           throw StateError('Payment is pending. Use Check Payment Status.');
         }
       }
     } catch (e) {
-      if (mounted) setState(() => error = e.toString());
+      if (mounted) setState(() => error = photoError(e));
     } finally {
       if (mounted) setState(() => busy = false);
     }
@@ -1135,7 +1183,7 @@ class _PhotoPaymentPageState extends State<PhotoPaymentPage> {
                       ),
                       Switch(
                         value: usePoints,
-                        onChanged: busy || loading || max < 100
+                        onChanged: busy || loading || _pendingCommerceId != null || max < 100
                             ? null
                             : (v) {
                                 setState(() {
@@ -1157,7 +1205,7 @@ class _PhotoPaymentPageState extends State<PhotoPaymentPage> {
                       max: max.toDouble(),
                       divisions: max ~/ 100,
                       value: points.toDouble().clamp(0, max.toDouble()),
-                      onChanged: busy
+                      onChanged: busy || _pendingCommerceId != null
                           ? null
                           : (v) => setState(() {
                               points = (v / 100).round() * 100;
@@ -1217,16 +1265,18 @@ class _PhotoPaymentPageState extends State<PhotoPaymentPage> {
             child: Text(error!, style: const TextStyle(color: photoRose)),
           ),
         const SizedBox(height: 12),
-        PhotoButton(
-          quote == null
-              ? 'Pay & Confirm'
-              : 'Pay ${photoMoney(quote!['totalMinor'] as num)}',
-          onPressed: !accepted || loading || quote == null || _pendingCommerceId != null ? null : pay,
-          busy: busy,
-        ),
-        if (_pendingCommerceId != null) ...[
-          const SizedBox(height: 10),
-          PhotoButton('Check Payment Status', onPressed:_checkStripePhoto, busy:busy),
+        if (_pendingCommerceId == null)
+          PhotoButton(
+            quote == null ? 'Pay & Confirm' : 'Pay ${photoMoney(quote!['totalMinor'] as num)}',
+            onPressed: !accepted || loading || _loadingPending || quote == null ? null : pay,
+            busy: busy,
+          )
+        else ...[
+          if (_resumeUrl != null) ...[
+            PhotoButton('Continue Stripe Checkout', onPressed: _resumeStripePhoto, busy: busy),
+            const SizedBox(height: 10),
+          ],
+          PhotoButton('Check Payment Status', onPressed: () => _checkStripePhoto(), busy: busy),
         ],
         const SizedBox(height: 15),
         const Row(
