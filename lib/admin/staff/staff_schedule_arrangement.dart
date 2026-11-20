@@ -42,9 +42,10 @@ ScheduleDraft arrangeStaffWeek({
 
   final staffNodes = {for (final person in people) person.uid: node()};
   for (final staffNode in staffNodes.values) {
-    connect(staffNode, 1, 5);
+    connect(staffNode, 1, 7);
   }
   final optionalEdges = <_Edge>[];
+  final otherRequiredEdges = <_Edge>[];
   final slots =
       <
         ({String label, bool required, List<(_Edge, StaffShiftPlan)> options})
@@ -88,8 +89,14 @@ ScheduleDraft arrangeStaffWeek({
       for (final (index, target) in targets.indexed) {
         final isRequired = index == 0 || role == StaffRole.attractionOperator;
         final slotNode = node();
-        final demand = connect(0, slotNode, isRequired ? 1 : 0);
-        if (!isRequired) optionalEdges.add(demand);
+        final priorityPost = isRequired &&
+            (role == StaffRole.admissionStaff || role == StaffRole.attractionOperator);
+        final demand = connect(0, slotNode, priorityPost ? 1 : 0);
+        if (!isRequired) {
+          optionalEdges.add(demand);
+        } else if (!priorityPost) {
+          otherRequiredEdges.add(demand);
+        }
         final options = <(_Edge, StaffShiftPlan)>[];
         for (final person in available) {
           final valid = qualifications.where(
@@ -155,7 +162,13 @@ ScheduleDraft arrangeStaffWeek({
   }
 
   while (assign(0, <int>{})) {
-    // Each pass fills one more shift.
+    // Cover the entrance and individual attractions first.
+  }
+  for (final edge in otherRequiredEdges) {
+    edge.remaining = 1;
+  }
+  while (assign(0, <int>{})) {
+    // Fill other required posts while retaining entrance and ride coverage.
   }
   for (final edge in optionalEdges) {
     edge.remaining = 1;

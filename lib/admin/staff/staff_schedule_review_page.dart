@@ -38,12 +38,12 @@ class _StaffScheduleReviewPageState extends State<StaffScheduleReviewPage> {
 
   late final _attractionNames = _readAttractions();
 
-  Future<Map<String, String>> _readAttractions({bool openOnly = false}) async {
+  Future<Map<String, String>> _readAttractions() async {
     final snapshot = await db.collection('attractions').get();
     final attractions = <String, String>{};
     for (final doc in snapshot.docs) {
       final data = doc.data();
-      if (openOnly && (data['deletedAt'] != null || data['status'] != 'open')) continue;
+      if (data['deletedAt'] != null) continue;
       final kind = ParkPlaceKind.values.where((item) => item.name == data['kind']).firstOrNull ??
           ParkPlaceKind.fromCategory(data['category']?.toString() ?? '');
       if (kind == ParkPlaceKind.attractions) {
@@ -74,7 +74,7 @@ class _StaffScheduleReviewPageState extends State<StaffScheduleReviewPage> {
       availability: {for (final employee in directory) employee.uid: rosterDays},
       leaves: leaves,
       qualifications: qualifications,
-      attractions: await _readAttractions(openOnly: true),
+      attractions: await _readAttractions(),
     );
   }
 
@@ -117,13 +117,13 @@ class _StaffScheduleReviewPageState extends State<StaffScheduleReviewPage> {
   }
 
   Future<void> _approve() async {
-    if (busy || draft.isEmpty) return;
+    if (busy || draft.isEmpty || gaps.isNotEmpty) return;
     final confirmed = await showDialog<bool>(context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Approve weekly schedule?'),
-        content: Text(gaps.isEmpty
-          ? 'Publish ${draft.length} shifts for the week of $weekKey? This replaces that week’s published schedule.'
-          : '${gaps.length} shifts remain unfilled. Publish ${draft.length} shifts and replace that week’s published schedule?'),
+        content: Text(
+          'Publish ${draft.length} shifts for the week of $weekKey? This replaces that week’s published schedule.',
+        ),
         actions: [TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
           FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Approve & Publish'))],
       ),
@@ -140,11 +140,13 @@ class _StaffScheduleReviewPageState extends State<StaffScheduleReviewPage> {
         return current?.staffUid != shift.staffUid ||
             current?.attractionId != shift.attractionId;
       });
-      if (changed) {
+      if (changed || latest.gaps.isNotEmpty) {
         if (mounted) setState(() {
           draft = latest.assignments;
           gaps = latest.gaps;
-          message = 'Staff details changed. Review the updated draft before publishing.';
+          message = latest.gaps.isNotEmpty
+              ? 'Fill every required post before publishing.'
+              : 'Staff details changed. Review the updated draft before publishing.';
         });
         return;
       }
@@ -322,7 +324,7 @@ class _StaffScheduleReviewPageState extends State<StaffScheduleReviewPage> {
       const Text('Weekly Staff Schedule',
         style: TextStyle(fontSize: 25, fontWeight: FontWeight.w700)),
       const SizedBox(height: 6),
-      const Text('Plan the week, review staffing gaps, then approve the roster.',
+      const Text('Cover the entrance and each attraction every day before publishing.',
         style: TextStyle(color: Color(0xFF827573), fontSize: 13)),
       const SizedBox(height: 16),
       Card(child: Padding(padding: const EdgeInsets.all(16),
@@ -376,7 +378,7 @@ class _StaffScheduleReviewPageState extends State<StaffScheduleReviewPage> {
                 label: const Text('Generate Draft')),
               OutlinedButton.icon(onPressed: busy || draft.isEmpty ? null : _saveDraft,
                 icon: const Icon(Icons.save_outlined), label: const Text('Save Draft')),
-              FilledButton.icon(onPressed: busy || draft.isEmpty || pastWeek ? null : _approve,
+              FilledButton.icon(onPressed: busy || draft.isEmpty || gaps.isNotEmpty || pastWeek ? null : _approve,
                 icon: const Icon(Icons.verified_outlined),
                 label: const Text('Approve & Publish')),
             ]))),

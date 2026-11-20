@@ -83,7 +83,7 @@ void main() {
     expect(result.gaps, hasLength(7));
   });
 
-  test('a worker receives at most five shifts per week', () {
+  test('an entrance worker covers all seven days when eligible', () {
     final result = arrangeStaffWeek(
       monday: monday,
       roles: {admission},
@@ -96,8 +96,41 @@ void main() {
       leaves: [],
       qualifications: [qualification('A', admission)],
     );
-    expect(result.assignments, hasLength(5));
-    expect(result.gaps, hasLength(2));
+    expect(result.assignments, hasLength(7));
+    expect(result.gaps, isEmpty);
+  });
+
+  test('three attractions and the entrance have dedicated coverage every day', () {
+    const rides = {'coaster': 'Coaster', 'wheel': 'Ferris Wheel', 'cars': 'Bumper Cars'};
+    final employees = [
+      staff('gate', {admission}),
+      for (final ride in rides.keys) staff(ride, {operator}),
+    ];
+    final result = arrangeStaffWeek(
+      monday: monday,
+      roles: {admission, operator, StaffRole.photographer},
+      directory: employees,
+      availability: {
+        for (final employee in employees)
+          employee.uid: {for (var day = 16; day <= 22; day++) '2026-11-$day'},
+      },
+      leaves: [],
+      qualifications: [
+        qualification('gate', admission),
+        for (final ride in rides.keys)
+          StaffQualification(
+            id: ride, staffUid: ride, role: operator, title: rides[ride]!,
+            status: 'approved', completedAt: DateTime.utc(2025), attractionId: ride,
+          ),
+      ],
+      attractions: rides,
+    );
+    expect(result.gaps, hasLength(7));
+    for (var day = 16; day <= 22; day++) {
+      final shifts = result.assignments.where((shift) => shift.date.day == day);
+      expect(shifts.where((shift) => shift.roleCode == admission.code), hasLength(1));
+      expect(shifts.map((shift) => shift.attractionId).whereType<String>(), unorderedEquals(rides.keys));
+    }
   });
 
   test('regular-duty staff stay out of rotating shift coverage', () {
