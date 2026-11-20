@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "374786580183",
+    "project_id": "themeparksmartmanagement",
+    "storage_bucket": "themeparksmartmanagement.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:374786580183:android:94e6d44078057404569a92",
+        "android_client_info": {
+          "package_name": "my.edu.tarumt.collaborative_asg"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC_ZJgbwoAJlSRHkmYcNQJ0_BYJrgyrzkw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:374786580183:android:5fa154507efbfa7b569a92",
+        "android_client_info": {
+          "package_name": "my.edu.tarumt.collaborative_asg.camera"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC_ZJgbwoAJlSRHkmYcNQJ0_BYJrgyrzkw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

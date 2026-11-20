@@ -1,3 +1,6 @@
+import 'dart:async'; // PARKSMART_V19_ANDROID_PAYMENT_RETURN
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter/material.dart';
 
 import 'pages/home_page.dart';
@@ -6,6 +9,7 @@ import 'pages/map_page.dart';
 import 'pages/queue_page.dart';
 import 'pages/profile_page.dart';
 import 'pages/souvenir_shop_page.dart'; // PARKSMART_V16_REFUND_CROWD_HISTORY
+import 'pages/purchase_history_page.dart';
 import 'widgets/visitor_bottom_nav.dart';
 
 class VisitorMainPage extends StatefulWidget {
@@ -29,6 +33,64 @@ class _VisitorMainPageState extends State<VisitorMainPage> {
     state._onTabSelected(1, resetTickets: false);
   }
 
+  // PARKSMART_V19_ANDROID_PAYMENT_RETURN: Android's callback is not a payment receipt.
+  static const MethodChannel _androidPaymentChannel = MethodChannel('parksmart/payment-return');
+  String? _lastMobileReturn;
+
+  Future<void> _consumeAndroidPaymentReturn() async {
+    try {
+      final link = await _androidPaymentChannel.invokeMethod<String>('consumePending');
+      if (mounted && link != null) _handleAndroidPaymentReturn(link);
+    } on MissingPluginException {
+      // This callback is only installed by Android native builds.
+    } on PlatformException {
+      // Manual order-status verification remains available.
+    }
+  }
+
+  void _handleAndroidPaymentReturn(String link) {
+    final uri = Uri.tryParse(link);
+    if (!mounted || link == _lastMobileReturn || uri == null ||
+        uri.scheme != 'parksmart-fyp' || uri.host != 'payment') return;
+    final kind = uri.queryParameters['kind'];
+    final orderId = uri.queryParameters['order'] ?? '';
+    final validOrder = RegExp(kind == 'ticket' ? r'^[a-f0-9]{48}$' : r'^[a-f0-9]{64}$').hasMatch(orderId);
+    if (!validOrder || !['ticket', 'souvenir', 'photo'].contains(kind)) return;
+    _lastMobileReturn = link;
+    // Native intent can arrive without a new Dart frame; ensure the navigation runs.
+    WidgetsBinding.instance.scheduleFrame();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (kind == 'ticket') {
+        unawaited(_verifyReturnedTicket());
+      } else if (kind == 'photo') {
+        Navigator.of(context).push(MaterialPageRoute(builder: (_) =>
+          const CombinedPurchaseHistoryPage()));
+      } else {
+        Navigator.of(context).push(MaterialPageRoute(builder: (_) =>
+          const SouvenirShopPage(initialOrders: true)));
+      }
+    });
+  }
+
+  Future<void> _verifyReturnedTicket() async {
+    _onTabSelected(1, resetTickets: false);
+    final tickets = _ticketsKey.currentState;
+    if (tickets == null || !tickets.mounted) return;
+    if (tickets.journey.pending == null) {
+      tickets.showSection(tickets.journey.completed != null ? 'success' : 'hub');
+      return;
+    }
+    tickets.showSection('payment');
+    try {
+      final confirmed = await tickets.journey.verifyHostedPayment();
+      if (!mounted || !tickets.mounted) return;
+      tickets.showSection(confirmed ? 'success' : 'payment');
+    } catch (_) {
+      // The payment screen retains its manual status-verification action.
+    }
+  }
+
   final _ticketsKey = GlobalKey<TicketsPageState>();
   static void openTickets(BuildContext context, String section) {
     final state = _active;
@@ -47,6 +109,17 @@ class _VisitorMainPageState extends State<VisitorMainPage> {
   void initState() {
     super.initState();
     _active = this;
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+      _androidPaymentChannel.setMethodCallHandler((call) async {
+        if (call.method == 'paymentReturned' && call.arguments is String) {
+          _handleAndroidPaymentReturn(call.arguments as String);
+          unawaited(_consumeAndroidPaymentReturn());
+        }
+      });
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) unawaited(_consumeAndroidPaymentReturn());
+      });
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || _commerceReturnOpened || !Uri.base.queryParameters.containsKey('commerce_payment')) return;
       _commerceReturnOpened=true;
@@ -58,6 +131,9 @@ class _VisitorMainPageState extends State<VisitorMainPage> {
   @override
   void dispose() {
     if (identical(_active, this)) _active = null;
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+      _androidPaymentChannel.setMethodCallHandler(null);
+    }
     _startPlace.dispose();
     super.dispose();
   }

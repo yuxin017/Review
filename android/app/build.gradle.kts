@@ -14,6 +14,24 @@ plugins {
 }
 
 android {
+
+    // PARKSMART_V20_TWO_ANDROID_FLAVORS: one Flutter project, two Android packages.
+    flavorDimensions += "parkRole"
+    productFlavors {
+        create("visitor") {
+            dimension = "parkRole"
+            manifestPlaceholders["parksmartPaymentScheme"] = "parksmart-fyp"
+            // Keep the original package to preserve existing Firebase/Stripe app links.
+            applicationId = "my.edu.tarumt.collaborative_asg"
+        }
+        create("camera") {
+            dimension = "parkRole"
+            manifestPlaceholders["parksmartPaymentScheme"] = "parksmart-camera-inactive"
+            // Independent Android app; same Dart source, same Firebase project.
+            applicationIdSuffix = ".camera"
+        }
+    }
+
     namespace = "my.edu.tarumt.collaborative_asg"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion

@@ -19,6 +19,9 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterFragmentActivity() {
+    // PARKSMART_V19_ANDROID_PAYMENT_RETURN: navigation only, never proof of payment.
+    private var paymentReturnChannel: MethodChannel? = null
+    private var pendingPaymentReturn: String? = null
     private var attractionCamera: AttractionCameraBridge? = null
     private var speechResult:MethodChannel.Result?=null
     private var readResult:MethodChannel.Result?=null
@@ -27,6 +30,15 @@ class MainActivity : FlutterFragmentActivity() {
     private val readTimeout=Runnable { finishRead(null,"No pass was detected. Try again or scan the QR code.") }
     override fun configureFlutterEngine(engine:FlutterEngine){
         super.configureFlutterEngine(engine)
+        pendingPaymentReturn = pendingPaymentReturn ?: validPaymentReturn(intent)
+        paymentReturnChannel = MethodChannel(engine.dartExecutor.binaryMessenger, "parksmart/payment-return")
+        paymentReturnChannel?.setMethodCallHandler { call,result ->
+            if (call.method == "consumePending") {
+                val pending = pendingPaymentReturn
+                pendingPaymentReturn = null
+                result.success(pending)
+            } else result.notImplemented()
+        }
         attractionCamera = AttractionCameraBridge(this, engine.dartExecutor.binaryMessenger)
         MethodChannel(engine.dartExecutor.binaryMessenger,"themepark/screen").setMethodCallHandler { call,result ->
             if(call.method!="brightness"){result.notImplemented();return@setMethodCallHandler}
@@ -75,6 +87,24 @@ class MainActivity : FlutterFragmentActivity() {
                 "stopReader" -> {finishRead(null,"NFC reading was cancelled.");result.success(null)}
                 else -> result.notImplemented()
             }
+        }
+    }
+    // PARKSMART_V19_ANDROID_PAYMENT_RETURN: accepts only a navigation hint.
+    private fun validPaymentReturn(incoming: Intent?): String? {
+        val uri = incoming?.data ?: return null
+        if (uri.scheme != "parksmart-fyp" || uri.host != "payment") return null
+        val kind = uri.getQueryParameter("kind") ?: return null
+        val order = uri.getQueryParameter("order") ?: return null
+        if (kind !in setOf("souvenir", "photo", "ticket")) return null
+        if (!(if (kind == "ticket") Regex("^[a-f0-9]{48}$") else Regex("^[a-f0-9]{64}$")).matches(order)) return null
+        return uri.toString()
+    }
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        validPaymentReturn(intent)?.let { url ->
+            pendingPaymentReturn = url
+            paymentReturnChannel?.invokeMethod("paymentReturned", url)
         }
     }
     private fun validPass(value:String)=value.length<=300 && Regex("^(TP1|RQ1|PK1|RV1):[A-Za-z0-9_:-]+$").matches(value)

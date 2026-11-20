@@ -166,8 +166,8 @@ function createCommerceStripeGateway({db, FieldValue, photos, projectId, getStri
       'line_items[0][price_data][unit_amount]':String(record.amountMinor),
       'line_items[0][price_data][product_data][name]':type==='souvenir'?'Park Souvenirs':'Park Photos',
       'line_items[0][quantity]':'1',
-      success_url:`${origin}/?commerce_payment=success&order=${encodeURIComponent(id)}#/`,
-      cancel_url:`${origin}/?commerce_payment=cancel&order=${encodeURIComponent(id)}#/`,
+      success_url:`${origin}/?commerce_payment=success&order=${encodeURIComponent(id)}&purchase_type=${encodeURIComponent(type)}#/`, // PARKSMART_V19_ANDROID_PAYMENT_RETURN
+      cancel_url:`${origin}/?commerce_payment=cancel&order=${encodeURIComponent(id)}&purchase_type=${encodeURIComponent(type)}#/`,
     },`park-commerce-${id}`);
     if (typeof session?.id!=='string'||typeof session?.url!=='string'||
         !session.url.startsWith('https://checkout.stripe.com/')) {

@@ -72,6 +72,37 @@ function reply(res, status, payload) {
   res.writeHead(status, {'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});
   res.end(JSON.stringify(payload));
 }
+// PARKSMART_V19_ANDROID_PAYMENT_RETURN: browser-only landing page for USB-connected Android Stripe TEST.
+// Never infer a paid order from URL parameters; the authenticated mobile client checks Stripe status.
+function mobilePaymentReturnPage(res, parsedUrl) {
+  const ticket = parsedUrl.searchParams.has('ticket_payment');
+  const commerce = parsedUrl.searchParams.has('commerce_payment');
+  if (ticket === commerce) {reply(res, 400, {error:'Invalid return type.'});return;}
+  const order = parsedUrl.searchParams.get('order') || '';
+  if (!(ticket ? /^[a-f0-9]{48}$/ : /^[a-f0-9]{64}$/).test(order)) {
+    reply(res, 400, {error:'Invalid checkout reference.'});return;
+  }
+  const kind = ticket ? 'ticket' :
+    parsedUrl.searchParams.get('purchase_type') === 'photo' ? 'photo' : 'souvenir';
+  const outcome = parsedUrl.searchParams.get(ticket ? 'ticket_payment' : 'commerce_payment');
+  if (!['success','cancel'].includes(outcome)) {
+    reply(res, 400, {error:'Invalid checkout return.'});return;
+  }
+  // Chrome may block programmatic external-app launches without a user gesture.
+  // The prominent link is a real user click and remains available as a fallback.
+  const intentLink = `intent://payment?kind=${kind}&order=${order}#Intent;scheme=parksmart-fyp;package=my.edu.tarumt.collaborative_asg;end`;
+  const heading = outcome === 'success' ? 'Return to Theme Park' : 'Checkout closed';
+  const detail = 'Open the app to verify your payment with Stripe. This page does not confirm payment.';
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${heading}</title>
+  <style>body{margin:0;background:#fff6f4;color:#352528;font-family:system-ui,-apple-system,sans-serif;display:grid;min-height:100vh;place-items:center;padding:20px;box-sizing:border-box}main{max-width:420px;background:white;border:1px solid #e3d5d3;border-radius:20px;padding:30px;box-shadow:0 12px 30px #3b1c1c16}h1{font-size:24px;margin:0 0 14px}p{line-height:1.55}.btn{display:block;text-align:center;padding:15px;background:#ad7472;color:white;text-decoration:none;border-radius:12px;font-weight:650;margin:22px 0 16px}.sub{font-size:13px;color:#645257}</style></head><body><main><h1>${heading}</h1><p>${detail}</p><a class="btn" href="${intentLink}">Return to Theme Park App</a><p class="sub">If Chrome stays on this page, tap the button above. If the app isn't installed, reopen it manually. Your payment status is verified inside the app.</p></main><script>try{window.location.href=${JSON.stringify(intentLink)}}catch(_){}</script></body></html>`;
+  res.writeHead(200, {
+    'Content-Type':'text/html; charset=utf-8', 'Cache-Control':'no-store',
+    'X-Content-Type-Options':'nosniff', 'Referrer-Policy':'no-referrer',
+    'Content-Security-Policy':"default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+  });
+  res.end(html);
+}
+
 function readBuffer(req) {
   return new Promise((resolve, reject)=>{
     const chunks=[]; let size=0;
@@ -85,7 +116,8 @@ function readBuffer(req) {
   });
 }
 http.createServer(async(req,res)=>{
-  const route=new URL(req.url || '/', 'http://127.0.0.1').pathname;
+  const parsedUrl = new URL(req.url || '/', 'http://127.0.0.1'); // PARKSMART_V19_ANDROID_PAYMENT_RETURN
+  const route = parsedUrl.pathname;
   const origin=req.headers.origin;
   if(!originAllowed(origin)) {reply(res,403,{error:'This application origin is not allowed.'});return;}
   if (origin) {
@@ -96,6 +128,9 @@ http.createServer(async(req,res)=>{
   }
   if(req.method==='OPTIONS'){res.writeHead(204);res.end();return;}
   if (req.method==='GET' && route==='/health') {reply(res,200,{ok:true,mode:'stripe_test',projectId});return;}
+  if(req.method==='GET' && route==='/' && (parsedUrl.searchParams.has('commerce_payment') || parsedUrl.searchParams.has('ticket_payment'))) {
+    mobilePaymentReturnPage(res, parsedUrl);return;
+  }
   if(req.method!=='POST'||(route!=='/stripeTicketWebhook'&&!handlers[route])){
     reply(res,404,{error:'Unknown payment endpoint.'});return;
   }

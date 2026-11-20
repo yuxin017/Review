@@ -123,9 +123,8 @@ class NfcPassService {
           builder: (context) => AlertDialog(
             title: const Text('NFC is unavailable'),
             content: Text(
-              e.code == 'disabled'
-                  ? 'Turn on NFC in your phone settings, then try again. Your QR pass is also ready to scan.'
-                  : 'This phone cannot share the pass over NFC. Show the QR code at the scanner instead.',
+              'NFC Error: ${e.code}\n'
+                  'Details: ${e.message ?? "No details"}',
             ),
             actions: [
               TextButton(
