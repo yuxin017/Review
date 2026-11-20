@@ -125,6 +125,13 @@ function createAccountService({auth,db,projectId,workspaceId,reservations,recove
         const code = error?.code;
         if (['auth/id-token-expired', 'auth/id-token-revoked', 'auth/invalid-id-token',
              'auth/argument-error', 'auth/user-disabled', 'auth/user-not-found'].includes(code)) {
+          const message = typeof error.message === 'string' ? error.message : '';
+          const reason = /incorrect .*(aud|iss).*claim/i.test(message)
+            ? 'firebase-project-mismatch'
+            : /issued in the future|used too early/i.test(message)
+              ? 'clock-skew'
+              : code;
+          console.warn('Firebase session rejected:', reason);
           fail(401, 'session-expired', 'Your session has ended. Please sign in again.');
         }
         console.warn('Firebase session verification unavailable:', code || 'unknown-error');
